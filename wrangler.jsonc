@@ -1,8 +1,8 @@
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syndroo",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-09-01",
+  "main": "apps/cloudflare-worker/src/index.ts",
+  "compatibility_date": "2026-09-02",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
     "required": [
@@ -16,7 +16,7 @@
     {
       "binding": "DB",
       "database_name": "syndroo",
-      "migrations_dir": "migrations"
+      "migrations_dir": "apps/cloudflare-worker/migrations"
     }
   ],
   "queues": {

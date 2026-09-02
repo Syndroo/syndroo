@@ -2,6 +2,8 @@
 
 Open-source publishing infrastructure for the social web.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daiyanze/syndroo)
+
 Syndroo v0.1 is a small npm-workspaces monorepo. It accepts immediate or scheduled posts, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers.
 
 Only the native Bluesky adapter is installed in v0.1. The public platform and publishing contracts already live in `@syndroo/core`; adding another platform means adding an adapter package and wiring one explicit switch in the Worker. Requests for known but uninstalled platforms return `PLATFORM_NOT_CONFIGURED` instead of silently doing nothing.
@@ -30,10 +32,11 @@ Repository layout:
     │   ├── core/                     # domain types, Publisher, normalized errors
     │   └── bluesky/                  # native text-only Bluesky adapter
     ├── apps/
-    │   └── cloudflare-worker/        # HTTP, auth, D1, Queue, Cron, deployment config
+    │   └── cloudflare-worker/        # HTTP, auth, D1 repository, Queue, Cron
     ├── experiments/
     │   └── crosspost-cloudflare/     # isolated workerd failure reproduction
-    └── docs/
+    ├── docs/
+    └── wrangler.jsonc                # one production deployment manifest
 
 Dependency direction is `core ← bluesky ← cloudflare-worker`. Core imports neither platform code nor Cloudflare APIs.
 
@@ -52,7 +55,7 @@ All repository-owned executable code and tests are TypeScript. JSONC, JSON, SQL,
 
 ```bash
 npm install
-cp apps/cloudflare-worker/.dev.vars.example apps/cloudflare-worker/.dev.vars
+cp .dev.vars.example .dev.vars
 npm run db:migrate:local
 npm test
 npm run check
@@ -113,24 +116,35 @@ The detail response includes each platform publication, attempt count, normalize
 
 ## Cloudflare deployment
 
-Set secrets interactively:
+For the fastest setup, click the **Deploy to Cloudflare** button at the top of this README. Cloudflare will fork the repository into your GitHub account, prompt for the four required values, provision D1 and Queue resources, apply the D1 migration, configure the Cron Trigger, and deploy the Worker. Future pushes to the generated repository are deployed by Workers Builds.
+
+The required values are:
+
+- `SYNDROO_API_KEY`: a long random secret used by clients as the Bearer token;
+- `BLUESKY_IDENTIFIER`: your Bluesky handle;
+- `BLUESKY_PASSWORD`: a Bluesky app password, not your account password;
+- `BLUESKY_HOST`: normally `bsky.social`.
+
+The deploy button requires a public GitHub or GitLab source repository. It deploys only the production Worker described by the root `wrangler.jsonc`; the Crosspost experiment is not deployed.
+
+For manual CLI deployment, set secrets interactively:
 
 ```bash
-npx wrangler secret put SYNDROO_API_KEY --cwd apps/cloudflare-worker
-npx wrangler secret put BLUESKY_IDENTIFIER --cwd apps/cloudflare-worker
-npx wrangler secret put BLUESKY_PASSWORD --cwd apps/cloudflare-worker
-npx wrangler secret put BLUESKY_HOST --cwd apps/cloudflare-worker
+npx wrangler secret put SYNDROO_API_KEY
+npx wrangler secret put BLUESKY_IDENTIFIER
+npx wrangler secret put BLUESKY_PASSWORD
+npx wrangler secret put BLUESKY_HOST
 ```
 
-Then provision/deploy, migrate the automatically provisioned D1 database, and deploy the schema-ready version:
+For a new account, provision once, then apply the schema:
 
 ```bash
-npx wrangler deploy --cwd apps/cloudflare-worker
+npm run build
+npx wrangler deploy
 npm run db:migrate:remote
-npx wrangler deploy --cwd apps/cloudflare-worker
 ```
 
-Wrangler provisions the declared `syndroo` D1 database and `syndroo-publications` Queue when they do not exist. Review the generated resource identifiers before committing configuration changes.
+After initial provisioning, `npm run deploy` applies pending migrations and deploys the Worker. Wrangler provisions the declared `syndroo` D1 database and `syndroo-publications` Queue when they do not exist. Review generated resource identifiers before committing configuration changes.
 
 ## Implementation notes
 
