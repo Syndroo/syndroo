@@ -1,0 +1,46 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "syndroo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "secrets": {
+    "required": [
+      "SYNDROO_API_KEY",
+      "BLUESKY_IDENTIFIER",
+      "BLUESKY_PASSWORD",
+      "BLUESKY_HOST"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "syndroo",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "PUBLICATION_QUEUE",
+        "queue": "syndroo-publications"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "syndroo-publications",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 2,
+        "retry_delay": 60
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

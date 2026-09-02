@@ -1,0 +1,23 @@
+{
+  "name": "@syndroo/cloudflare-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@syndroo/bluesky": "0.1.0",
+    "@syndroo/core": "0.1.0"
+  },
+  "scripts": {
+    "types": "wrangler types",
+    "check": "npm run types && tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply syndroo --local",
+    "db:migrate:remote": "wrangler d1 migrations apply syndroo --remote",
+    "bundle": "wrangler deploy --dry-run --outdir dist",
+    "startup": "wrangler check startup"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.2"
+  }
+}
