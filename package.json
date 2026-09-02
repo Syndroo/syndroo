@@ -27,12 +27,14 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky",
-    "check": "npm run build && npm run check --workspaces --if-present",
+    "build:scripts": "tsc -p tsconfig.scripts.json",
+    "check": "npm run build && npm run check:scripts && npm run check --workspaces --if-present",
+    "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/cloudflare-worker",
     "dev": "npm run dev --workspace @syndroo/cloudflare-worker",
     "db:migrate:local": "npm run db:migrate:local --workspace @syndroo/cloudflare-worker",
     "db:migrate:remote": "npm run db:migrate:remote --workspace @syndroo/cloudflare-worker",
-    "deploy": "npm run db:migrate:remote && wrangler deploy",
+    "deploy": "npm run build:scripts && node .build/scripts/deploy.js",
     "bundle": "npm run bundle --workspace @syndroo/cloudflare-worker",
     "startup": "npm run startup --workspace @syndroo/cloudflare-worker",
     "spike:crosspost:bundle": "npm run bundle --workspace @syndroo/crosspost-cloudflare-experiment",
@@ -43,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
+    "jsonc-parser": "^3.3.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
     "wrangler": "^4.127.1"
