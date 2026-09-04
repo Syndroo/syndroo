@@ -150,7 +150,7 @@ Expected response:
 }
 ```
 
-Cron scans once per minute. Publication can therefore occur shortly after the requested time rather than at the exact millisecond. A `scheduledAt` value in the past is handled as an immediate post.
+Cron scans every 15 minutes. Scheduled publication can therefore occur up to roughly 15 minutes after the requested time. A `scheduledAt` value in the past is handled as an immediate post.
 
 ### 6. List recent posts
 
