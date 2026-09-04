@@ -83,6 +83,86 @@ describe("Syndroo API", () => {
     });
   });
 
+  it("persists Threads and Bluesky publications", async () => {
+    const createResponse = await exports.default.fetch(`${origin}/v1/posts`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        content: "Shared content",
+        platforms: ["threads", "bluesky"],
+        overrides: {
+          threads: { content: "Threads content" },
+          bluesky: { content: "Bluesky content" },
+        },
+        scheduledAt: "2030-01-02T03:04:05.000Z",
+      }),
+    });
+
+    expect(createResponse.status).toBe(202);
+    const created = await json(createResponse);
+    const id = stringField(created, "id");
+    const getResponse = await exports.default.fetch(`${origin}/v1/posts/${id}`, {
+      headers: authHeaders,
+    });
+
+    expect(await json(getResponse)).toMatchObject({
+      platforms: ["threads", "bluesky"],
+      publications: [
+        { platform: "threads", provider: "threads-native", content: "Threads content" },
+        { platform: "bluesky", provider: "bluesky-native", content: "Bluesky content" },
+      ],
+    });
+  });
+
+  it("replays matching idempotent requests without creating another post", async () => {
+    const headers = { ...authHeaders, "idempotency-key": "grantdai:post:en:test" };
+    const body = JSON.stringify({
+      content: "Shared content",
+      platforms: ["threads", "bluesky"],
+      scheduledAt: "2030-01-02T03:04:05.000Z",
+    });
+    const first = await exports.default.fetch(`${origin}/v1/posts`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    const second = await exports.default.fetch(`${origin}/v1/posts`, {
+      method: "POST",
+      headers,
+      body,
+    });
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(200);
+    const firstBody = await json(first);
+    await expect(json(second)).resolves.toMatchObject({
+      id: firstBody.id,
+      status: "scheduled",
+      replayed: true,
+    });
+  });
+
+  it("rejects a reused idempotency key with different content", async () => {
+    const headers = { ...authHeaders, "idempotency-key": "grantdai:post:en:conflict" };
+    const request = (content: string) =>
+      exports.default.fetch(`${origin}/v1/posts`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          content,
+          platforms: ["bluesky"],
+          scheduledAt: "2030-01-02T03:04:05.000Z",
+        }),
+      });
+
+    expect((await request("First")).status).toBe(202);
+    const conflict = await request("Second");
+    expect(conflict.status).toBe(409);
+    await expect(json(conflict)).resolves.toMatchObject({
+      error: { code: "IDEMPOTENCY_CONFLICT" },
+    });
+  });
+
   it("rejects platform adapters that are not installed", async () => {
     const response = await exports.default.fetch(`${origin}/v1/posts`, {
       method: "POST",

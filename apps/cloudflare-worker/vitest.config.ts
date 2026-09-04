@@ -25,6 +25,7 @@ export default defineConfig({
           BLUESKY_IDENTIFIER: "test.invalid",
           BLUESKY_PASSWORD: "not-a-real-password",
           BLUESKY_HOST: "bsky.social",
+          THREADS_ACCESS_TOKEN: "not-a-real-token",
         },
       },
     })),

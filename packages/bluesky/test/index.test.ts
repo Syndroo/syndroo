@@ -72,6 +72,46 @@ describe("BlueskyPublisher", () => {
     } satisfies Partial<PublishError>);
   });
 
+  it("adds clickable URL facets with UTF-8 byte offsets", async () => {
+    const responses = [
+      Response.json({ accessJwt: "access-token", did: "did:plc:alice" }),
+      Response.json({
+        cid: "bafy-post",
+        uri: "at://did:plc:alice/app.bsky.feed.post/3example",
+      }),
+    ];
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => responses.shift() ?? Response.error());
+    const content = "中文 https://grant-dai.com/posts/example";
+
+    await createPublisher().publish({
+      publicationId: "pub-1",
+      platform: "bluesky",
+      content,
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      record: Record<string, unknown>;
+    };
+    const byteStart = new TextEncoder().encode("中文 ").byteLength;
+    const uri = "https://grant-dai.com/posts/example";
+    expect(body.record.facets).toEqual([
+      {
+        index: {
+          byteStart,
+          byteEnd: byteStart + new TextEncoder().encode(uri).byteLength,
+        },
+        features: [
+          {
+            $type: "app.bsky.richtext.facet#link",
+            uri,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("rejects oversized content before network access", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     const result = createPublisher().publish({

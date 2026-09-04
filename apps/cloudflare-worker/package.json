@@ -5,7 +5,8 @@
   "type": "module",
   "dependencies": {
     "@syndroo/bluesky": "0.1.0",
-    "@syndroo/core": "0.1.0"
+    "@syndroo/core": "0.1.0",
+    "@syndroo/threads": "0.1.0"
   },
   "scripts": {
     "types": "wrangler types worker-configuration.d.ts --config ../../wrangler.jsonc",

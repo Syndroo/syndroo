@@ -26,6 +26,17 @@ interface BlueskyRecord {
   uri: string;
 }
 
+interface BlueskyFacet {
+  index: {
+    byteStart: number;
+    byteEnd: number;
+  };
+  features: Array<{
+    $type: "app.bsky.richtext.facet#link";
+    uri: string;
+  }>;
+}
+
 class BlueskyRequestError extends Error {
   constructor(
     message: string,
@@ -111,6 +122,7 @@ export class BlueskyPublisher implements Publisher {
     session: BlueskySession,
     content: string,
   ): Promise<BlueskyRecord> {
+    const facets = createLinkFacets(content);
     const response = await this.request(
       "/xrpc/com.atproto.repo.createRecord",
       {
@@ -120,6 +132,7 @@ export class BlueskyPublisher implements Publisher {
           $type: "app.bsky.feed.post",
           text: content,
           createdAt: new Date().toISOString(),
+          ...(facets.length > 0 ? { facets } : {}),
         },
       },
       "publish",
@@ -176,6 +189,43 @@ export class BlueskyPublisher implements Publisher {
 
     return responseBody;
   }
+}
+
+function createLinkFacets(content: string): BlueskyFacet[] {
+  const encoder = new TextEncoder();
+  const facets: BlueskyFacet[] = [];
+  const pattern = /https?:\/\/[^\s<>"']+/gu;
+
+  for (const match of content.matchAll(pattern)) {
+    const matchedUrl = match[0];
+    const uri = matchedUrl.replace(/[.,!?;:]+$/u, "");
+
+    if (!uri || match.index === undefined) {
+      continue;
+    }
+
+    try {
+      new URL(uri);
+    } catch {
+      continue;
+    }
+
+    const byteStart = encoder.encode(content.slice(0, match.index)).byteLength;
+    facets.push({
+      index: {
+        byteStart,
+        byteEnd: byteStart + encoder.encode(uri).byteLength,
+      },
+      features: [
+        {
+          $type: "app.bsky.richtext.facet#link",
+          uri,
+        },
+      ],
+    });
+  }
+
+  return facets;
 }
 
 function normalizeHost(host: string): string {

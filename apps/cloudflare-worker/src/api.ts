@@ -20,13 +20,17 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
 
   if (request.method === "POST" && url.pathname === "/v1/posts") {
     const input = parseCreatePost(await readJsonBody(request));
+    const idempotencyKey = parseIdempotencyKey(
+      request.headers.get("idempotency-key"),
+    );
     const result = await createPost(
       input,
       repository,
       env.PUBLICATION_QUEUE as Queue<PublicationJob>,
       new Date(),
+      idempotencyKey,
     );
-    return json(result, 202);
+    return json(result, result.replayed ? 200 : 202);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/posts") {
@@ -49,6 +53,22 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
   }
 
   return json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404);
+}
+
+function parseIdempotencyKey(value: string | null): string | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(value)) {
+    throw new ApiError(
+      "Idempotency-Key must use 1-128 letters, digits, dots, underscores, colons, or hyphens",
+      400,
+      "INVALID_REQUEST",
+    );
+  }
+
+  return value;
 }
 
 function parseLimit(value: string | null): number {

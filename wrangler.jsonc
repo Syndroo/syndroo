@@ -9,7 +9,8 @@
       "SYNDROO_API_KEY",
       "BLUESKY_IDENTIFIER",
       "BLUESKY_PASSWORD",
-      "BLUESKY_HOST"
+      "BLUESKY_HOST",
+      "THREADS_ACCESS_TOKEN"
     ]
   },
   "d1_databases": [

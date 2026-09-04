@@ -23,6 +23,10 @@ interface PostRow {
   created_at: string;
 }
 
+interface IdempotentPostRow extends PostRow {
+  idempotency_key: string;
+}
+
 interface PublicationRow {
   id: string;
   post_id: string;
@@ -66,13 +70,17 @@ const PUBLICATION_SELECT =
 export class D1Repository {
   constructor(private readonly db: D1Database) {}
 
-  async createPost(post: Post, publications: Publication[]): Promise<void> {
+  async createPost(
+    post: Post,
+    publications: Publication[],
+    idempotencyKey?: string,
+  ): Promise<void> {
     const statements: D1PreparedStatement[] = [
       this.db
         .prepare(
           "INSERT INTO posts " +
-            "(id, content, platforms, overrides, scheduled_at, status, created_at, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, content, platforms, overrides, scheduled_at, status, created_at, updated_at, idempotency_key) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(
           post.id,
@@ -83,6 +91,7 @@ export class D1Repository {
           post.status,
           post.createdAt,
           post.createdAt,
+          idempotencyKey ?? null,
         ),
     ];
 
@@ -109,6 +118,18 @@ export class D1Repository {
     }
 
     await this.db.batch(statements);
+  }
+
+  async getPostByIdempotencyKey(key: string): Promise<Post | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT id, content, platforms, overrides, scheduled_at, status, created_at, idempotency_key " +
+          "FROM posts WHERE idempotency_key = ?",
+      )
+      .bind(key)
+      .first<IdempotentPostRow>();
+
+    return row ? mapPost(row) : null;
   }
 
   async listPosts(limit = 50): Promise<Post[]> {

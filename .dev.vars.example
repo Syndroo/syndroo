@@ -1,5 +1,10 @@
 # Copy to .dev.vars. Never commit real values.
 SYNDROO_API_KEY=replace-with-a-long-random-secret
+
+# Bluesky credentials
 BLUESKY_IDENTIFIER=your-handle.bsky.social
 BLUESKY_PASSWORD=your-bluesky-app-password
 BLUESKY_HOST=bsky.social
+
+# Threads credentials
+THREADS_ACCESS_TOKEN=your-long-lived-threads-user-access-token

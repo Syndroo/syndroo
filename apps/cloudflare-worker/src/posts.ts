@@ -12,13 +12,14 @@ import { ApiError } from "./http.js";
 import { D1Repository } from "./repository.js";
 
 const MAX_CONTENT_CODE_POINTS = 10_000;
-const AVAILABLE_PLATFORMS = new Set<Platform>(["bluesky"]);
+const AVAILABLE_PLATFORMS = new Set<Platform>(["threads", "bluesky"]);
 
 export interface CreatePostResult {
   id: string;
-  status: "queued" | "scheduled";
+  status: Post["status"];
   scheduledAt?: string;
   enqueueDeferred?: boolean;
+  replayed?: boolean;
 }
 
 export function parseCreatePost(value: unknown): CreatePostInput {
@@ -48,7 +49,16 @@ export async function createPost(
   repository: D1Repository,
   queue: Queue<PublicationJob>,
   now: Date,
+  idempotencyKey?: string,
 ): Promise<CreatePostResult> {
+  if (idempotencyKey) {
+    const existing = await repository.getPostByIdempotencyKey(idempotencyKey);
+
+    if (existing) {
+      return replayResult(existing, input);
+    }
+  }
+
   const nowIso = now.toISOString();
   const scheduled =
     input.scheduledAt !== undefined &&
@@ -82,7 +92,19 @@ export async function createPost(
     ...(input.scheduledAt ? { scheduledAt: input.scheduledAt } : {}),
   }));
 
-  await repository.createPost(post, publications);
+  try {
+    await repository.createPost(post, publications, idempotencyKey);
+  } catch (error) {
+    if (idempotencyKey) {
+      const existing = await repository.getPostByIdempotencyKey(idempotencyKey);
+
+      if (existing) {
+        return replayResult(existing, input);
+      }
+    }
+
+    throw error;
+  }
 
   if (scheduled && input.scheduledAt !== undefined) {
     return {
@@ -230,8 +252,9 @@ function providerFor(platform: Platform): string {
   switch (platform) {
     case "bluesky":
       return "bluesky-native";
-    case "x":
     case "threads":
+      return "threads-native";
+    case "x":
     case "mastodon":
     case "linkedin":
     case "nostr":
@@ -241,6 +264,37 @@ function providerFor(platform: Platform): string {
         "PLATFORM_NOT_CONFIGURED",
       );
   }
+}
+
+function replayResult(post: Post, input: CreatePostInput): CreatePostResult {
+  if (!samePostRequest(post, input)) {
+    throw new ApiError(
+      "Idempotency-Key was already used with a different request",
+      409,
+      "IDEMPOTENCY_CONFLICT",
+    );
+  }
+
+  return {
+    id: post.id,
+    status: post.status,
+    ...(post.scheduledAt ? { scheduledAt: post.scheduledAt } : {}),
+    replayed: true,
+  };
+}
+
+function samePostRequest(post: Post, input: CreatePostInput): boolean {
+  return (
+    post.content === input.content &&
+    post.platforms.length === input.platforms.length &&
+    post.platforms.every(platform => input.platforms.includes(platform)) &&
+    PLATFORMS.every(
+      platform =>
+        post.overrides?.[platform]?.content ===
+        input.overrides?.[platform]?.content,
+    ) &&
+    post.scheduledAt === input.scheduledAt
+  );
 }
 
 function createId(prefix: "post" | "pub"): string {

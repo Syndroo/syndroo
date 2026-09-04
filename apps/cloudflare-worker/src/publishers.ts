@@ -1,4 +1,5 @@
 import { BlueskyPublisher } from "@syndroo/bluesky";
+import { ThreadsPublisher } from "@syndroo/threads";
 import {
   PublishError,
   type Platform,
@@ -13,8 +14,11 @@ export function publisherFor(platform: Platform, env: Env): Publisher {
         password: env.BLUESKY_PASSWORD,
         host: env.BLUESKY_HOST,
       });
-    case "x":
     case "threads":
+      return new ThreadsPublisher({
+        accessToken: env.THREADS_ACCESS_TOKEN,
+      });
+    case "x":
     case "mastodon":
     case "linkedin":
     case "nostr":
