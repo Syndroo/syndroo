@@ -2,7 +2,7 @@
 
 Open-source publishing infrastructure for the social web.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daiyanze/syndroo)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Syndroo/syndroo)
 
 Syndroo v0.1 is a small npm-workspaces monorepo. It accepts immediate or scheduled posts, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers.
 
@@ -225,7 +225,7 @@ Common responses:
     client
       │ Bearer-authenticated HTTP
       ▼
-    apps/cloudflare-worker
+    packages/cloudflare-worker
       ├── D1: posts + per-platform publications
       ├── Queue producer/consumer
       ├── Cron: due-post scan + stale-job recovery
@@ -243,9 +243,8 @@ Repository layout:
     ├── packages/
     │   ├── core/                     # domain types, Publisher, normalized errors
     │   ├── bluesky/                  # native text-only Bluesky adapter
-    │   └── threads/                  # native text-only Threads adapter
-    ├── apps/
-    │   └── cloudflare-worker/        # HTTP, auth, D1 repository, Queue, Cron
+    │   ├── threads/                  # native text-only Threads adapter
+    │   └── cloudflare-worker/        # public bundled Worker package
     ├── experiments/
     │   └── crosspost-cloudflare/     # isolated workerd failure reproduction
     ├── docs/
@@ -259,6 +258,23 @@ The abstraction is deliberately narrow:
 - one concrete `D1Repository`, without an ORM or generic repository layer;
 - one explicit platform switch, without a registry or dependency-injection container;
 - Cloudflare bindings and lifecycle handlers stay inside the Worker app.
+
+## Distribution and upgrades
+
+`@syndroo/cloudflare-worker` is the only public npm package. It contains the
+Worker plus the core, Bluesky, and Threads implementation; those internal
+workspace packages are not separate public APIs.
+
+The long-term deployment entry point is the separate
+`Syndroo/syndroo-deploy-template` repository. That repository stays small: it
+pins one Worker package version and owns only the Cloudflare configuration and
+user customizations. Dependabot proposes package upgrades as pull requests.
+Users review Worker changes, D1 migrations, and any new secrets before merging.
+Nothing automatically merges or writes to production `main`.
+
+Until the first npm package and deployment template are published, the deploy
+button above continues to use this source repository. See
+[Releasing Syndroo](docs/releasing.md) for the bootstrap and release process.
 
 ## Local use
 
@@ -281,7 +297,7 @@ The local Worker defaults to `http://localhost:8787`.
 
 ## Cloudflare deployment
 
-For the fastest setup, click the **Deploy to Cloudflare** button at the top of this README. Cloudflare will fork the repository into your GitHub account, prompt for the five required values, provision D1 and Queue resources, apply D1 migrations, configure the Cron Trigger, and deploy the Worker. Future pushes to the generated repository are deployed by Workers Builds.
+For the fastest setup, click the **Deploy to Cloudflare** button at the top of this README. Cloudflare creates an independent repository in your GitHub account; it is not a GitHub fork and does not retain an upstream relationship. Cloudflare then prompts for the five required values, provisions D1 and Queue resources, applies D1 migrations, configures the Cron Trigger, and deploys the Worker. Future pushes to the generated repository are deployed by Workers Builds.
 
 The required values are:
 
@@ -321,11 +337,14 @@ The deployment script checks the declared `syndroo` D1 database, repairs a missi
 - A publication stuck in `publishing` for 15 minutes becomes an ambiguous failure instead of being blindly replayed.
 - The request body is capped at 64 KiB. Bluesky text is validated before network access.
 - Run `npm run check` after changing bindings; Wrangler regenerates `Env` types from `wrangler.jsonc`.
-- Keep Cloudflare-specific routing, bindings, and deployment code inside `apps/cloudflare-worker`.
+- Keep Cloudflare-specific routing, bindings, and Worker code inside `packages/cloudflare-worker`.
 - Keep experiments out of production imports and dependencies.
 
 Crosspost 1.0.4 remains an isolated compatibility experiment because it bundles but cannot boot in workerd. See [Crosspost Cloudflare spike](docs/crosspost-cloudflare-spike.md).
 
 ## License
 
-License not selected yet.
+Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Grant Dai.
+
+Contributions require a Developer Certificate of Origin sign-off. See
+[CONTRIBUTING.md](CONTRIBUTING.md).

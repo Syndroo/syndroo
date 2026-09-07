@@ -16,7 +16,7 @@ Syndroo is an npm-workspaces TypeScript monorepo:
 packages/core              Platform-neutral domain contracts and errors
 packages/bluesky           Native text-only Bluesky publisher
 packages/threads           Native text-only Threads publisher
-apps/cloudflare-worker     HTTP API, D1 repository, Queue, Cron, orchestration
+packages/cloudflare-worker Public bundled Worker, D1, Queue, Cron, orchestration
 experiments/               Isolated compatibility experiments
 scripts/deploy.ts          Cloudflare deployment and D1 recovery
 wrangler.jsonc             Sole production Worker manifest
@@ -38,9 +38,9 @@ Dependency direction:
 - Prefer the smallest concrete design that satisfies current requirements.
 - Keep one `Publisher.publish()` contract in `@syndroo/core`.
 - Keep one concrete `D1Repository`; do not add a generic repository layer or ORM without a demonstrated need.
-- Select publishers through the explicit switch in `apps/cloudflare-worker/src/publishers.ts`.
+- Select publishers through the explicit switch in `packages/cloudflare-worker/src/publishers.ts`.
 - Do not add a dependency-injection container, plugin registry, adapter factory hierarchy, or speculative runtime abstraction.
-- Keep Cloudflare bindings, handlers, routing, persistence, Queue, Cron, and deployment code inside `apps/cloudflare-worker` or `scripts/deploy.ts`.
+- Keep Cloudflare bindings, handlers, routing, persistence, Queue, Cron, and Worker code inside `packages/cloudflare-worker`; keep deployment orchestration in `scripts/deploy.ts`.
 - Keep experiments out of production imports and dependencies.
 
 ## Platform adapters
@@ -86,7 +86,7 @@ To add a platform:
 
 - D1 stores posts, per-platform publications, and idempotency records.
 - Add a new numbered migration for schema changes. Do not rewrite an applied migration.
-- Keep migrations under `apps/cloudflare-worker/migrations`.
+- Keep migrations under `packages/cloudflare-worker/migrations`.
 - Update repository mappings, fixtures, and tests with every schema change.
 - Run local migrations before Worker tests when adding a migration.
 - Do not commit account-specific D1 IDs.
@@ -110,6 +110,7 @@ npm test
 npm run check
 npm run bundle
 npm run startup
+npm run build:package
 npm run dev
 ```
 
@@ -129,4 +130,10 @@ After binding changes, run `npm run check`; the Worker workspace regenerates `wo
 - State clearly that v0.1 is an HTTP API service without a web dashboard.
 - Keep supported platforms, required secrets, content limits, Cron cadence, and deployment steps synchronized with code.
 - Do not claim a platform feature before its adapter, tests, configuration, and documentation all exist.
-- No license has been selected. Do not add one without user direction.
+- The repository and public Worker package use Apache-2.0. Preserve `LICENSE`,
+  `NOTICE`, and required notices in distributions.
+- Only `@syndroo/cloudflare-worker` is a public package. Core and platform
+  adapters remain bundled implementation details unless the user changes this
+  policy.
+- Require DCO sign-off for contributions. Do not add a CLA without user
+  direction.

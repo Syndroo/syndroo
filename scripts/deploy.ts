@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { spawn } from "node:child_process";
 import { copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

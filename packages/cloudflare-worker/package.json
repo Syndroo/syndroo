@@ -1,0 +1,63 @@
+{
+  "name": "@syndroo/cloudflare-worker",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-hosted Syndroo publishing Worker for Cloudflare.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syndroo/syndroo.git",
+    "directory": "packages/cloudflare-worker"
+  },
+  "bugs": {
+    "url": "https://github.com/Syndroo/syndroo/issues"
+  },
+  "homepage": "https://github.com/Syndroo/syndroo#readme",
+  "main": "./dist/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "syndroo-deploy": "./dist/deploy.js"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "types",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "scripts": {
+    "build:package": "npm run bundle && npm run build:deploy",
+    "build:deploy": "tsc -p tsconfig.deploy.json",
+    "types": "wrangler types worker-configuration.d.ts --config ../../wrangler.jsonc",
+    "check": "npm run types && tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev --config ../../wrangler.jsonc",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --config ../../wrangler.jsonc",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config ../../wrangler.jsonc",
+    "bundle": "wrangler deploy --dry-run --outdir dist --config ../../wrangler.jsonc",
+    "startup": "wrangler check startup --config ../../wrangler.jsonc",
+    "prepack": "npm run build:package --prefix ../.."
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.2",
+    "@syndroo/bluesky": "0.1.0",
+    "@syndroo/core": "0.1.0",
+    "@syndroo/threads": "0.1.0"
+  }
+}

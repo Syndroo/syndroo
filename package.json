@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "Open-source publishing infrastructure for the social web.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syndroo/syndroo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Syndroo/syndroo/issues"
+  },
+  "homepage": "https://github.com/Syndroo/syndroo#readme",
   "cloudflare": {
     "bindings": {
       "SYNDROO_API_KEY": {
@@ -25,14 +34,15 @@
   },
   "workspaces": [
     "packages/*",
-    "apps/*",
     "experiments/*"
   ],
   "scripts": {
     "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads",
+    "build:package": "npm run build && npm run build:package --workspace @syndroo/cloudflare-worker",
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "check": "npm run build && npm run check:scripts && npm run check --workspaces --if-present",
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
+    "dco:check": "npm run build:scripts && node .build/scripts/check-dco.js",
     "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/cloudflare-worker",
     "dev": "npm run dev --workspace @syndroo/cloudflare-worker",
     "db:migrate:local": "npm run db:migrate:local --workspace @syndroo/cloudflare-worker",
@@ -40,6 +50,7 @@
     "deploy": "npm run build:scripts && node .build/scripts/deploy.js",
     "bundle": "npm run bundle --workspace @syndroo/cloudflare-worker",
     "startup": "npm run startup --workspace @syndroo/cloudflare-worker",
+    "release:check": "npm run build:scripts && node .build/scripts/check-release.js",
     "spike:crosspost:bundle": "npm run bundle --workspace @syndroo/crosspost-cloudflare-experiment",
     "spike:crosspost:dev": "npm run dev --workspace @syndroo/crosspost-cloudflare-experiment"
   },

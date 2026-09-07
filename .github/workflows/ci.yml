@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - "20"
+          - "24"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check DCO sign-offs
+        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        run: npm run dco:check
+        env:
+          SYNDROO_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SYNDROO_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run tests
+        run: npm test
+
+      - name: Check types and generated bindings
+        run: npm run check
+
+      - name: Bundle Worker
+        run: npm run bundle
+
+      - name: Check Worker startup
+        run: npm run startup
+
+      - name: Inspect publish package
+        if: matrix.node-version == '24'
+        run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
+
+      - name: Verify generated files
+        run: git diff --exit-code
