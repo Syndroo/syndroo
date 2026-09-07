@@ -278,7 +278,7 @@ button above continues to use this source repository. See
 
 ## Local use
 
-Requirements: Node.js 20 or newer and npm.
+Requirements: Node.js 22 or newer and npm.
 
 All repository-owned executable code and tests are TypeScript. JSONC, JSON, SQL, and Markdown remain in their native configuration or data formats. Internal `.js` import suffixes are intentional NodeNext ESM paths that resolve from TypeScript source to compiled JavaScript.
 

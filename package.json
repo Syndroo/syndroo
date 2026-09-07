@@ -55,7 +55,7 @@
     "spike:crosspost:dev": "npm run dev --workspace @syndroo/crosspost-cloudflare-experiment"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
