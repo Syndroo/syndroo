@@ -6,11 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
     "required": [
-      "SYNDROO_API_KEY",
-      "BLUESKY_IDENTIFIER",
-      "BLUESKY_PASSWORD",
-      "BLUESKY_HOST",
-      "THREADS_ACCESS_TOKEN"
+      "SYNDROO_API_KEY"
     ]
   },
   "d1_databases": [
@@ -43,5 +39,24 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  // Wrangler only loads listed secrets locally. Missing platform credentials
+  // produce local warnings but do not prevent using another platform.
+  "env": {
+    "local": {
+      "name": "syndroo-local",
+      "secrets": {
+        "required": ["SYNDROO_API_KEY", "BLUESKY_IDENTIFIER", "BLUESKY_PASSWORD", "BLUESKY_HOST", "THREADS_ACCESS_TOKEN", "X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "TUMBLR_CONSUMER_KEY", "TUMBLR_CONSUMER_SECRET", "TUMBLR_TOKEN", "TUMBLR_TOKEN_SECRET", "TUMBLR_BLOG", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR", "LINKEDIN_API_VERSION"]
+      },
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "syndroo",
+        "migrations_dir": "packages/cloudflare-worker/migrations"
+      }],
+      "queues": {
+        "producers": [{ "binding": "PUBLICATION_QUEUE", "queue": "syndroo-publications" }],
+        "consumers": [{ "queue": "syndroo-publications", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 2, "retry_delay": 60 }]
+      }
+    }
   }
 }

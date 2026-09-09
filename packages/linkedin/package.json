@@ -1,18 +1,10 @@
 {
-  "name": "@syndroo/bluesky",
+  "name": "@syndroo/linkedin",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "dependencies": {
-    "@atproto/api": "0.20.42",
-    "@syndroo/core": "0.1.0"
-  },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "dependencies": { "@syndroo/core": "0.1.0" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",

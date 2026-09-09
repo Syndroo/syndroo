@@ -19,7 +19,7 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
   const repository = new D1Repository(env.DB);
 
   if (request.method === "POST" && url.pathname === "/v1/posts") {
-    const input = parseCreatePost(await readJsonBody(request));
+    const input = parseCreatePost(await readJsonBody(request), env);
     const idempotencyKey = parseIdempotencyKey(
       request.headers.get("idempotency-key"),
     );

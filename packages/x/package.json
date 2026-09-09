@@ -1,5 +1,5 @@
 {
-  "name": "@syndroo/bluesky",
+  "name": "@syndroo/x",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,9 @@
     }
   },
   "dependencies": {
-    "@atproto/api": "0.20.42",
-    "@syndroo/core": "0.1.0"
+    "@syndroo/core": "0.1.0",
+    "@xdevplatform/xdk": "0.6.6",
+    "twitter-text": "3.1.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

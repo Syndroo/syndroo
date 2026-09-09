@@ -16,6 +16,9 @@ Syndroo is an npm-workspaces TypeScript monorepo:
 packages/core              Platform-neutral domain contracts and errors
 packages/bluesky           Native text-only Bluesky publisher
 packages/threads           Native text-only Threads publisher
+packages/x                 Official X SDK text-only publisher
+packages/tumblr            Native HTTP NPF text publisher
+packages/linkedin          Native HTTP LinkedIn Posts publisher
 packages/cloudflare-worker Public bundled Worker, D1, Queue, Cron, orchestration
 experiments/               Isolated compatibility experiments
 scripts/deploy.ts          Cloudflare deployment and D1 recovery
@@ -25,7 +28,7 @@ wrangler.jsonc             Sole production Worker manifest
 Dependency direction:
 
 ```text
-@syndroo/core <- {@syndroo/bluesky, @syndroo/threads} <- @syndroo/cloudflare-worker
+@syndroo/core <- {@syndroo/bluesky, @syndroo/threads, @syndroo/x, @syndroo/tumblr, @syndroo/linkedin} <- @syndroo/cloudflare-worker
 ```
 
 `@syndroo/core` must not import platform adapters, Cloudflare APIs, or runtime-specific types.
@@ -45,7 +48,8 @@ Dependency direction:
 
 ## Platform adapters
 
-Installed adapters: `threads` and `bluesky`.
+Installed adapters: `threads`, `bluesky`, `x`, `tumblr`, and `linkedin`. Threads, Tumblr, and LinkedIn use native HTTP;
+Bluesky and X use official SDKs. X requires all four OAuth 1.0a credentials.
 
 Known but uninstalled platforms must return `PLATFORM_NOT_CONFIGURED` at request validation. Never accept work that cannot be dispatched.
 

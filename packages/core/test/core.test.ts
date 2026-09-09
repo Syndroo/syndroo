@@ -8,6 +8,7 @@ describe("core domain", () => {
       "x",
       "threads",
       "bluesky",
+      "tumblr",
       "mastodon",
       "linkedin",
       "nostr",

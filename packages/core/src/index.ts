@@ -2,6 +2,7 @@ export const PLATFORMS = [
   "x",
   "threads",
   "bluesky",
+  "tumblr",
   "mastodon",
   "linkedin",
   "nostr",

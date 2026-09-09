@@ -29,6 +29,42 @@
       },
       "THREADS_ACCESS_TOKEN": {
         "description": "A long-lived Threads user access token with `threads_basic` and `threads_content_publish`."
+      },
+      "X_API_KEY": {
+        "description": "Optional: X OAuth 1.0a consumer API key for an app with Read and Write permissions."
+      },
+      "X_API_SECRET": {
+        "description": "Optional: X OAuth 1.0a consumer API secret."
+      },
+      "X_ACCESS_TOKEN": {
+        "description": "Optional: X OAuth 1.0a user access token, issued after enabling write permissions."
+      },
+      "X_ACCESS_TOKEN_SECRET": {
+        "description": "Optional: Secret paired with the X OAuth 1.0a user access token."
+      },
+      "TUMBLR_CONSUMER_KEY": {
+        "description": "Optional: Tumblr OAuth consumer key."
+      },
+      "TUMBLR_CONSUMER_SECRET": {
+        "description": "Optional: Tumblr OAuth consumer secret."
+      },
+      "TUMBLR_TOKEN": {
+        "description": "Optional: Tumblr user OAuth token."
+      },
+      "TUMBLR_TOKEN_SECRET": {
+        "description": "Optional: Tumblr user OAuth token secret."
+      },
+      "TUMBLR_BLOG": {
+        "description": "Optional: Target Tumblr blog name, for example alice (not a URL)."
+      },
+      "LINKEDIN_ACCESS_TOKEN": {
+        "description": "Optional: LinkedIn user access token authorized for publishing."
+      },
+      "LINKEDIN_AUTHOR": {
+        "description": "Optional: LinkedIn person or organization URN; one author per deployment."
+      },
+      "LINKEDIN_API_VERSION": {
+        "description": "Optional: Explicit supported LinkedIn API version in YYYYMM format."
       }
     }
   },
@@ -37,13 +73,13 @@
     "experiments/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads",
+    "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads && npm run build --workspace @syndroo/linkedin && npm run build --workspace @syndroo/tumblr && npm run build --workspace @syndroo/x",
     "build:package": "npm run build && npm run build:package --workspace @syndroo/cloudflare-worker",
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "check": "npm run build && npm run check:scripts && npm run check --workspaces --if-present",
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "dco:check": "npm run build:scripts && node .build/scripts/check-dco.js",
-    "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/cloudflare-worker",
+    "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/linkedin && npm run test --workspace @syndroo/tumblr && npm run test --workspace @syndroo/x && npm run test --workspace @syndroo/cloudflare-worker",
     "dev": "npm run dev --workspace @syndroo/cloudflare-worker",
     "db:migrate:local": "npm run db:migrate:local --workspace @syndroo/cloudflare-worker",
     "db:migrate:remote": "npm run db:migrate:remote --workspace @syndroo/cloudflare-worker",

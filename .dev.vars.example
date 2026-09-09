@@ -1,10 +1,29 @@
 # Copy to .dev.vars. Never commit real values.
 SYNDROO_API_KEY=replace-with-a-long-random-secret
 
-# Bluesky credentials
+# Optional: configure both credentials to enable Bluesky.
 BLUESKY_IDENTIFIER=your-handle.bsky.social
 BLUESKY_PASSWORD=your-bluesky-app-password
 BLUESKY_HOST=bsky.social
 
-# Threads credentials
+# Optional: configure this token to enable Threads.
 THREADS_ACCESS_TOKEN=your-long-lived-threads-user-access-token
+
+# Optional: configure all four OAuth 1.0a credentials to enable X.
+X_API_KEY=your-x-consumer-key
+X_API_SECRET=your-x-consumer-secret
+X_ACCESS_TOKEN=your-x-user-access-token
+X_ACCESS_TOKEN_SECRET=your-x-user-access-token-secret
+
+# Optional: configure all five values to enable Tumblr.
+TUMBLR_CONSUMER_KEY=your-tumblr-consumer-key
+TUMBLR_CONSUMER_SECRET=your-tumblr-consumer-secret
+TUMBLR_TOKEN=your-tumblr-user-token
+TUMBLR_TOKEN_SECRET=your-tumblr-user-token-secret
+TUMBLR_BLOG=your-blog-name
+
+# Optional: configure all three values to enable LinkedIn.
+LINKEDIN_ACCESS_TOKEN=your-linkedin-user-access-token
+LINKEDIN_AUTHOR=urn:li:person:your-member-id
+# Explicitly select a supported version; update before LinkedIn retires it.
+LINKEDIN_API_VERSION=202604

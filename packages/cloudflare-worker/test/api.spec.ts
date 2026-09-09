@@ -1,5 +1,7 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { routeApi } from "../src/api.js";
+import { publisherFor } from "../src/publishers.js";
 
 const origin = "https://syndroo.test";
 const authHeaders = {
@@ -23,6 +25,30 @@ function stringField(
 }
 
 describe("Syndroo API", () => {
+  it.each(["bluesky", "threads"] as const)("rejects missing %s credentials before persistence or enqueue", async platform => {
+    const unconfigured: Env = {
+      SYNDROO_API_KEY: "test-api-key",
+      DB: { prepare() { throw new Error("Unexpected database access"); } } as unknown as D1Database,
+      PUBLICATION_QUEUE: { sendBatch() { throw new Error("Unexpected queue access"); } } as unknown as Env["PUBLICATION_QUEUE"],
+    };
+    await expect(routeApi(new Request(`${origin}/v1/posts`, {
+      method: "POST", headers: authHeaders,
+      body: JSON.stringify({ content: "Hello", platforms: [platform] }),
+    }), unconfigured)).rejects.toMatchObject({ status: 422, code: "PLATFORM_NOT_CONFIGURED" });
+    expect(() => publisherFor(platform, unconfigured)).toThrow("Platform credentials are not configured");
+  });
+
+  it("accepts Threads alone without Bluesky credentials", async () => {
+    const threadsOnly = { ...env };
+    delete threadsOnly.BLUESKY_IDENTIFIER;
+    delete threadsOnly.BLUESKY_PASSWORD;
+    const response = await routeApi(new Request(`${origin}/v1/posts`, {
+      method: "POST", headers: authHeaders,
+      body: JSON.stringify({ content: "Threads only", platforms: ["threads"], scheduledAt: "2030-01-02T03:04:05.000Z" }),
+    }), threadsOnly);
+    expect(response.status).toBe(202);
+  });
+
   it("serves a public health endpoint", async () => {
     const response = await exports.default.fetch(`${origin}/health`);
 

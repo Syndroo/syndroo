@@ -10,9 +10,9 @@ import {
 
 import { ApiError } from "./http.js";
 import { D1Repository } from "./repository.js";
+import { isPlatformConfigured } from "./publishers.js";
 
 const MAX_CONTENT_CODE_POINTS = 10_000;
-const AVAILABLE_PLATFORMS = new Set<Platform>(["threads", "bluesky"]);
 
 export interface CreatePostResult {
   id: string;
@@ -22,13 +22,13 @@ export interface CreatePostResult {
   replayed?: boolean;
 }
 
-export function parseCreatePost(value: unknown): CreatePostInput {
+export function parseCreatePost(value: unknown, env: Env): CreatePostInput {
   if (!isRecord(value)) {
     throw invalid("Request body must be an object");
   }
 
   const content = parseContent(value.content, "content");
-  const platforms = parsePlatforms(value.platforms);
+  const platforms = parsePlatforms(value.platforms, env);
   const overrides = parseOverrides(value.overrides, platforms);
   const scheduledAt = parseScheduledAt(value.scheduledAt);
   const input: CreatePostInput = { content, platforms };
@@ -157,7 +157,7 @@ function parseContent(value: unknown, field: string): string {
   return value;
 }
 
-function parsePlatforms(value: unknown): Platform[] {
+function parsePlatforms(value: unknown, env: Env): Platform[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw invalid("platforms must be a non-empty array");
   }
@@ -174,7 +174,7 @@ function parsePlatforms(value: unknown): Platform[] {
       throw invalid("platforms contains an unsupported platform");
     }
 
-    if (!AVAILABLE_PLATFORMS.has(item)) {
+    if (!isPlatformConfigured(item, env)) {
       throw new ApiError(
         "Platform is not configured yet: " + item,
         422,
@@ -255,8 +255,12 @@ function providerFor(platform: Platform): string {
     case "threads":
       return "threads-native";
     case "x":
-    case "mastodon":
+      return "x-sdk";
+    case "tumblr":
+      return "tumblr-native";
     case "linkedin":
+      return "linkedin-native";
+    case "mastodon":
     case "nostr":
       throw new ApiError(
         "Platform is not configured yet: " + platform,

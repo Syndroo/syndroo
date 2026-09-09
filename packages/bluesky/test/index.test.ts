@@ -4,6 +4,8 @@ import { PublishError } from "@syndroo/core";
 
 import { BlueskyPublisher } from "../src/index.js";
 
+const cid = "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -11,9 +13,9 @@ afterEach(() => {
 describe("BlueskyPublisher", () => {
   it("creates a text record", async () => {
     const responses = [
-      Response.json({ accessJwt: "access-token", did: "did:plc:alice" }),
+      sessionResponse(),
       Response.json({
-        cid: "bafy-post",
+        cid,
         uri: "at://did:plc:alice/app.bsky.feed.post/3example",
       }),
     ];
@@ -37,7 +39,7 @@ describe("BlueskyPublisher", () => {
     });
 
     expect(result).toEqual({
-      externalId: "bafy-post",
+      externalId: cid,
       externalUrl: "https://bsky.app/profile/did%3Aplc%3Aalice/post/3example",
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -55,7 +57,7 @@ describe("BlueskyPublisher", () => {
   it("marks post-stage network failures as ambiguous", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
-        Response.json({ accessJwt: "access-token", did: "did:plc:alice" }),
+        sessionResponse(),
       )
       .mockRejectedValueOnce(new TypeError("fetch failed"));
 
@@ -74,9 +76,9 @@ describe("BlueskyPublisher", () => {
 
   it("adds clickable URL facets with UTF-8 byte offsets", async () => {
     const responses = [
-      Response.json({ accessJwt: "access-token", did: "did:plc:alice" }),
+      sessionResponse(),
       Response.json({
-        cid: "bafy-post",
+        cid,
         uri: "at://did:plc:alice/app.bsky.feed.post/3example",
       }),
     ];
@@ -91,7 +93,7 @@ describe("BlueskyPublisher", () => {
       content,
     });
 
-    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+    const body = await new Response(fetchMock.mock.calls[1]?.[1]?.body).json() as {
       record: Record<string, unknown>;
     };
     const byteStart = new TextEncoder().encode("中文 ").byteLength;
@@ -127,6 +129,41 @@ describe("BlueskyPublisher", () => {
     } satisfies Partial<PublishError>);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [401, "AUTH", false],
+    [429, "RATE_LIMIT", false],
+    [400, "INVALID_CONTENT", false],
+    [503, "PROVIDER_UNAVAILABLE", true],
+  ])("does not retry publish HTTP %s", async (status, code, ambiguous) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(Response.json({ error: "Rejected", message: "secret-must-not-escape" }, { status }));
+    const result = createPublisher().publish({ publicationId: "pub-1", platform: "bluesky", content: "Hello" });
+    await expect(result).rejects.toMatchObject({ code, ambiguous });
+    await expect(result).rejects.not.toHaveProperty("message", expect.stringContaining("secret-must-not-escape"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps session failures unambiguous", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("network failed"));
+    await expect(createPublisher().publish({ publicationId: "pub-1", platform: "bluesky", content: "Hello" }))
+      .rejects.toMatchObject({ code: "NETWORK", ambiguous: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    () => Response.json({ cid: "invalid", uri: "invalid" }),
+    () => new Response("not JSON"),
+    () => new Response("x".repeat(65 * 1024)),
+  ])("marks invalid publish responses as ambiguous without retrying", async response => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response());
+    await expect(createPublisher().publish({ publicationId: "pub-1", platform: "bluesky", content: "Hello" }))
+      .rejects.toMatchObject({ code: "UNKNOWN", ambiguous: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 function createPublisher(): BlueskyPublisher {
@@ -134,5 +171,14 @@ function createPublisher(): BlueskyPublisher {
     identifier: "alice.bsky.social",
     password: "app-password",
     host: "bsky.social",
+  });
+}
+
+function sessionResponse(): Response {
+  return Response.json({
+    accessJwt: "access-token",
+    refreshJwt: "refresh-token",
+    handle: "alice.bsky.social",
+    did: "did:plc:alice",
   });
 }

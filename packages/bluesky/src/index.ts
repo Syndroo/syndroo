@@ -1,3 +1,5 @@
+import { Agent } from "@atproto/api";
+
 import {
   PublishError,
   type Publisher,
@@ -14,16 +16,6 @@ export interface BlueskyPublisherOptions {
   password: string;
   host: string;
   timeoutMs?: number;
-}
-
-interface BlueskySession {
-  accessJwt: string;
-  did: string;
-}
-
-interface BlueskyRecord {
-  cid: string;
-  uri: string;
 }
 
 interface BlueskyFacet {
@@ -82,9 +74,38 @@ export class BlueskyPublisher implements Publisher {
       throw new PublishError("Bluesky content exceeds post limits", "INVALID_CONTENT");
     }
 
+    let stage: "session" | "publish" = "session";
+    let transportError: unknown;
+    // A fresh, stateless SDK client avoids token-refresh retries of a write.
+    const agent = new Agent(async (path, init) => {
+      try {
+        return await this.request(path, init, stage);
+      } catch (error) {
+        transportError = error;
+        throw error;
+      }
+    });
+
     try {
-      const session = await this.createSession();
-      const response = await this.createRecord(session, request.content);
+      const session = (await agent.com.atproto.server.createSession({
+        identifier: this.options.identifier,
+        password: this.options.password,
+      })).data;
+      if (!session.accessJwt || !session.did) {
+        throw new PublishError("Invalid Bluesky session response", "UNKNOWN");
+      }
+      stage = "publish";
+      const facets = createLinkFacets(request.content);
+      const response = (await agent.com.atproto.repo.createRecord({
+        repo: session.did,
+        collection: "app.bsky.feed.post",
+        record: {
+          $type: "app.bsky.feed.post",
+          text: request.content,
+          createdAt: new Date().toISOString(),
+          ...(facets.length > 0 ? { facets } : {}),
+        },
+      }, { headers: { authorization: `Bearer ${session.accessJwt}` } })).data;
       const recordKey = response.uri.split("/").at(-1);
 
       if (!recordKey) {
@@ -100,94 +121,53 @@ export class BlueskyPublisher implements Publisher {
         externalUrl: `https://bsky.app/profile/${encodeURIComponent(session.did)}/post/${encodeURIComponent(recordKey)}`,
       };
     } catch (error) {
-      throw normalizeError(error);
+      throw normalizeError(transportError ?? error, stage);
     }
-  }
-
-  private async createSession(): Promise<BlueskySession> {
-    const response = await this.request(
-      "/xrpc/com.atproto.server.createSession",
-      { identifier: this.options.identifier, password: this.options.password },
-      "session",
-    );
-
-    if (!isRecord(response) || !isString(response.accessJwt) || !isString(response.did)) {
-      throw new PublishError("Invalid Bluesky session response", "UNKNOWN");
-    }
-
-    return { accessJwt: response.accessJwt, did: response.did };
-  }
-
-  private async createRecord(
-    session: BlueskySession,
-    content: string,
-  ): Promise<BlueskyRecord> {
-    const facets = createLinkFacets(content);
-    const response = await this.request(
-      "/xrpc/com.atproto.repo.createRecord",
-      {
-        repo: session.did,
-        collection: "app.bsky.feed.post",
-        record: {
-          $type: "app.bsky.feed.post",
-          text: content,
-          createdAt: new Date().toISOString(),
-          ...(facets.length > 0 ? { facets } : {}),
-        },
-      },
-      "publish",
-      session.accessJwt,
-    );
-
-    if (!isRecord(response) || !isString(response.cid) || !isString(response.uri)) {
-      throw new PublishError("Invalid Bluesky publish response", "UNKNOWN", true);
-    }
-
-    return { cid: response.cid, uri: response.uri };
   }
 
   private async request(
     path: string,
-    body: object,
+    init: RequestInit,
     stage: "session" | "publish",
-    accessToken?: string,
-  ): Promise<unknown> {
-    const headers = new Headers({ "content-type": "application/json" });
-
-    if (accessToken) {
-      headers.set("authorization", `Bearer ${accessToken}`);
-    }
-
+  ): Promise<Response> {
     let response: Response;
 
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
+        ...init,
+        redirect: "error",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
       throw new PublishError(
-        error instanceof Error ? error.message : "Bluesky network failure",
+        "Bluesky network failure",
         "NETWORK",
         stage === "publish",
         error instanceof Error ? { cause: error } : undefined,
       );
     }
 
-    const responseBody = await readJson(response, stage);
+    let responseBody: unknown;
+    try {
+      responseBody = await readJson(response, stage);
+    } catch (error) {
+      if (error instanceof PublishError) {
+        throw error;
+      }
+      throw new PublishError(
+        "Bluesky response was interrupted", "NETWORK", stage === "publish",
+      );
+    }
 
     if (!response.ok) {
-      const detail = errorDetail(responseBody);
       throw new BlueskyRequestError(
-        `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
+        `Bluesky request failed (HTTP ${response.status})`,
         response.status,
         stage,
       );
     }
 
-    return responseBody;
+    return Response.json(responseBody ?? null);
   }
 }
 
@@ -249,6 +229,7 @@ async function readJson(
   const declaredLength = Number(response.headers.get("content-length") ?? 0);
 
   if (declaredLength > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel("Response exceeded size limit");
     throw responseError("Bluesky response exceeded size limit", stage);
   }
 
@@ -309,16 +290,16 @@ function responseError(message: string, stage: "session" | "publish"): PublishEr
   return new PublishError(message, "UNKNOWN", stage === "publish");
 }
 
-function normalizeError(error: unknown): PublishError {
+function normalizeError(error: unknown, stage: "session" | "publish"): PublishError {
   if (error instanceof PublishError) {
     return error;
   }
 
   if (!(error instanceof BlueskyRequestError)) {
     return new PublishError(
-      error instanceof Error ? error.message : "Unknown Bluesky publishing failure",
+      "Invalid Bluesky SDK response",
       "UNKNOWN",
-      true,
+      stage === "publish",
       error instanceof Error ? { cause: error } : undefined,
     );
   }
@@ -346,22 +327,4 @@ function normalizeError(error: unknown): PublishError {
   return new PublishError(error.message, "UNKNOWN", error.stage === "publish", {
     cause: error,
   });
-}
-
-function errorDetail(value: unknown): string | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const error = isString(value.error) ? value.error : undefined;
-  const message = isString(value.message) ? value.message : undefined;
-  return [error, message].filter(isString).join(" - ") || undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === "string";
 }
