@@ -13,6 +13,15 @@ export interface PostDetail extends Post {
   publications: Publication[];
 }
 
+/**
+ * Worker-internal publication view. `retryAt` is the persisted earliest retry
+ * time and stays out of the public API shape (`getPost` maps plain
+ * `Publication` values).
+ */
+export interface StoredPublication extends Publication {
+  retryAt?: string;
+}
+
 interface PostRow {
   id: string;
   content: string;
@@ -43,6 +52,7 @@ interface PublicationRow {
   scheduled_at: string | null;
   enqueued_at: string | null;
   publishing_at: string | null;
+  retry_at: string | null;
   created_at: string;
   published_at: string | null;
 }
@@ -51,21 +61,29 @@ interface PostIdRow {
   post_id: string;
 }
 
-interface StatusCountRow {
-  total: number;
-  scheduled: number;
-  pending: number;
-  publishing: number;
-  published: number;
-  failed: number;
-}
-
 const PUBLICATION_SELECT =
   "SELECT p.id, p.post_id, p.platform, p.provider, p.content, p.status, " +
   "p.attempts, p.external_id, p.external_url, p.error_code, p.error_message, " +
   "p.error_ambiguous, po.scheduled_at, p.enqueued_at, p.publishing_at, " +
-  "p.created_at, p.published_at FROM publications p " +
+  "p.retry_at, p.created_at, p.published_at FROM publications p " +
   "JOIN posts po ON po.id = p.post_id";
+
+// Mirrors retryDelaySeconds in src/retry.ts so a failure transaction can derive
+// the earliest retry time from the stored attempt count without a second read.
+const RETRY_DELAY_SECONDS_SQL =
+  "CASE WHEN attempts <= 1 THEN 60 WHEN attempts = 2 THEN 120 " +
+  "WHEN attempts = 3 THEN 240 WHEN attempts = 4 THEN 480 ELSE 900 END";
+
+// Compute from the transaction's current rows, never from an earlier JS snapshot.
+const POST_STATUS_UPDATE =
+  "UPDATE posts SET status = (SELECT CASE " +
+  "WHEN COUNT(*) = 0 THEN posts.status " +
+  "WHEN SUM(status = 'published') = COUNT(*) THEN 'published' " +
+  "WHEN SUM(status = 'failed') = COUNT(*) THEN 'failed' " +
+  "WHEN SUM(status IN ('published', 'failed')) = COUNT(*) THEN 'partial' " +
+  "WHEN SUM(status = 'publishing') > 0 THEN 'publishing' " +
+  "WHEN SUM(status = 'scheduled') = COUNT(*) THEN 'scheduled' " +
+  "ELSE 'queued' END FROM publications WHERE post_id = posts.id), updated_at = ? ";
 
 export class D1Repository {
   constructor(private readonly db: D1Database) {}
@@ -168,30 +186,38 @@ export class D1Repository {
     };
   }
 
-  async getPublication(id: string): Promise<Publication | null> {
+  async getPublication(id: string): Promise<StoredPublication | null> {
     const row = await this.db
       .prepare(PUBLICATION_SELECT + " WHERE p.id = ?")
       .bind(id)
       .first<PublicationRow>();
 
-    return row ? mapPublication(row) : null;
+    return row ? mapStoredPublication(row) : null;
   }
 
-  async claimPublication(id: string, now: string): Promise<Publication | null> {
-    const result = await this.db
-      .prepare(
+  async claimPublication(
+    id: string,
+    now: string,
+  ): Promise<StoredPublication | null> {
+    const [claim, , selected] = await this.db.batch<PublicationRow>([
+      this.db.prepare(
         "UPDATE publications SET status = 'publishing', attempts = attempts + 1, " +
-          "publishing_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'",
-      )
-      .bind(now, now, id)
-      .run();
+          "publishing_at = ?, updated_at = ?, retry_at = NULL WHERE id = ? " +
+          "AND status = 'pending' AND (retry_at IS NULL OR retry_at <= ?)",
+      ).bind(now, now, id, now),
+      this.postStatusUpdateForPublication(id, now),
+      this.db.prepare(PUBLICATION_SELECT + " WHERE p.id = ?").bind(id),
+    ]);
 
-    if (result.meta.changes !== 1) {
+    if (claim?.meta.changes !== 1) {
       return null;
     }
 
-    await this.refreshPostStatusForPublication(id, now);
-    return this.getPublication(id);
+    const row = selected?.results[0];
+    if (!row) {
+      throw new Error("Claimed publication was not returned");
+    }
+    return mapStoredPublication(row);
   }
 
   async markPublished(
@@ -200,28 +226,38 @@ export class D1Repository {
     externalUrl: string | undefined,
     now: string,
   ): Promise<void> {
-    await this.db
-      .prepare(
+    await this.db.batch([
+      this.db.prepare(
         "UPDATE publications SET status = 'published', external_id = ?, external_url = ?, " +
           "error_code = NULL, error_message = NULL, error_ambiguous = 0, " +
-          "published_at = ?, updated_at = ? WHERE id = ?",
+          "published_at = ?, updated_at = ?, retry_at = NULL WHERE id = ?",
       )
-      .bind(externalId ?? null, externalUrl ?? null, now, now, id)
-      .run();
-
-    await this.refreshPostStatusForPublication(id, now);
+      .bind(externalId ?? null, externalUrl ?? null, now, now, id),
+      this.postStatusUpdateForPublication(id, now),
+    ]);
   }
 
+  /**
+   * Persist a failure together with its retry eligibility in one transaction.
+   * `retryAt` is the earliest time the next attempt may run; when omitted, the
+   * delay is derived from the stored attempt count so `retry: true` can never
+   * leave a publication immediately claimable. Terminal failures clear it.
+   */
   async markFailed(
     id: string,
     error: PublishError,
     retry: boolean,
     now: string,
+    retryAt?: string,
   ): Promise<void> {
-    await this.db
-      .prepare(
+    await this.db.batch([
+      this.db.prepare(
         "UPDATE publications SET status = ?, error_code = ?, error_message = ?, " +
-          "error_ambiguous = ?, publishing_at = NULL, updated_at = ? WHERE id = ?",
+          "error_ambiguous = ?, publishing_at = NULL, updated_at = ?, " +
+          "retry_at = CASE WHEN ? = 1 THEN COALESCE(?, " +
+          "strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+' || (" +
+          RETRY_DELAY_SECONDS_SQL +
+          ") || ' seconds')) ELSE NULL END WHERE id = ?",
       )
       .bind(
         retry ? "pending" : "failed",
@@ -229,49 +265,48 @@ export class D1Repository {
         error.message,
         error.ambiguous ? 1 : 0,
         now,
+        retry ? 1 : 0,
+        retryAt ?? null,
+        now,
         id,
-      )
-      .run();
-
-    await this.refreshPostStatusForPublication(id, now);
+      ),
+      this.postStatusUpdateForPublication(id, now),
+    ]);
   }
 
   async findDuePublications(
     now: string,
     enqueuedCutoff: string,
     limit = 50,
-  ): Promise<Publication[]> {
+  ): Promise<StoredPublication[]> {
     const result = await this.db
       .prepare(
         PUBLICATION_SELECT +
-          " WHERE (p.status = 'scheduled' AND po.scheduled_at <= ? " +
+          " WHERE (p.retry_at IS NULL OR p.retry_at <= ?) AND " +
+          "((p.status = 'scheduled' AND po.scheduled_at <= ? " +
           "AND p.enqueued_at IS NULL) OR (p.status = 'pending' AND " +
-          "(p.enqueued_at IS NULL OR p.enqueued_at < ?)) " +
+          "(p.enqueued_at IS NULL OR p.enqueued_at < ?))) " +
           "ORDER BY po.scheduled_at, p.created_at LIMIT ?",
       )
-      .bind(now, enqueuedCutoff, limit)
+      .bind(now, now, enqueuedCutoff, limit)
       .run<PublicationRow>();
 
-    return result.results.map(mapPublication);
+    return result.results.map(mapStoredPublication);
   }
 
   async activateScheduled(id: string, now: string): Promise<boolean> {
-    const result = await this.db
-      .prepare(
+    const [result] = await this.db.batch([
+      this.db.prepare(
         "UPDATE publications SET status = 'pending', updated_at = ? " +
           "WHERE id = ? AND status = 'scheduled' AND EXISTS (" +
           "SELECT 1 FROM posts WHERE posts.id = publications.post_id " +
           "AND posts.scheduled_at <= ?)",
       )
-      .bind(now, id, now)
-      .run();
+      .bind(now, id, now),
+      this.postStatusUpdateForPublication(id, now),
+    ]);
 
-    if (result.meta.changes === 1) {
-      await this.refreshPostStatusForPublication(id, now);
-      return true;
-    }
-
-    return false;
+    return result?.meta.changes === 1;
   }
 
   async markEnqueued(ids: string[], now: string): Promise<void> {
@@ -299,86 +334,30 @@ export class D1Repository {
       .bind(cutoff)
       .run<PostIdRow>();
 
-    const result = await this.db
-      .prepare(
-        "UPDATE publications SET status = 'failed', error_code = 'UNKNOWN', " +
-          "error_message = 'Publish outcome was not persisted before timeout', " +
-          "error_ambiguous = 1, updated_at = ? " +
-          "WHERE status = 'publishing' AND publishing_at < ?",
-      )
-      .bind(now, cutoff)
-      .run();
-
+    let recovered = 0;
     for (const row of affected.results) {
-      await this.refreshPostStatus(row.post_id, now);
+      // Limit each transaction to one Post. Recheck the predicate so a provider
+      // result committed since discovery is never overwritten by stale recovery.
+      const [result] = await this.db.batch([
+        this.db.prepare(
+          "UPDATE publications SET status = 'failed', error_code = 'UNKNOWN', " +
+            "error_message = 'Publish outcome was not persisted before timeout', " +
+            "error_ambiguous = 1, retry_at = NULL, updated_at = ? " +
+            "WHERE post_id = ? AND status = 'publishing' AND publishing_at < ?",
+        ).bind(now, row.post_id, cutoff),
+        this.db.prepare(POST_STATUS_UPDATE + "WHERE id = ?").bind(now, row.post_id),
+      ]);
+      recovered += result?.meta.changes ?? 0;
     }
 
-    return result.meta.changes;
+    return recovered;
   }
 
-  private async refreshPostStatusForPublication(
-    publicationId: string,
-    now: string,
-  ): Promise<void> {
-    const row = await this.db
-      .prepare("SELECT post_id FROM publications WHERE id = ?")
-      .bind(publicationId)
-      .first<PostIdRow>();
-
-    if (row) {
-      await this.refreshPostStatus(row.post_id, now);
-    }
+  private postStatusUpdateForPublication(id: string, now: string): D1PreparedStatement {
+    return this.db.prepare(
+      POST_STATUS_UPDATE + "WHERE id = (SELECT post_id FROM publications WHERE id = ?)",
+    ).bind(now, id);
   }
-
-  private async refreshPostStatus(postId: string, now: string): Promise<void> {
-    const counts = await this.db
-      .prepare(
-        "SELECT COUNT(*) AS total, " +
-          "SUM(status = 'scheduled') AS scheduled, " +
-          "SUM(status = 'pending') AS pending, " +
-          "SUM(status = 'publishing') AS publishing, " +
-          "SUM(status = 'published') AS published, " +
-          "SUM(status = 'failed') AS failed " +
-          "FROM publications WHERE post_id = ?",
-      )
-      .bind(postId)
-      .first<StatusCountRow>();
-
-    if (!counts || counts.total === 0) {
-      return;
-    }
-
-    const status = aggregatePostStatus(counts);
-
-    await this.db
-      .prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?")
-      .bind(status, now, postId)
-      .run();
-  }
-}
-
-function aggregatePostStatus(counts: StatusCountRow): PostStatus {
-  if (counts.published === counts.total) {
-    return "published";
-  }
-
-  if (counts.failed === counts.total) {
-    return "failed";
-  }
-
-  if (counts.published + counts.failed === counts.total) {
-    return "partial";
-  }
-
-  if (counts.publishing > 0) {
-    return "publishing";
-  }
-
-  if (counts.scheduled === counts.total) {
-    return "scheduled";
-  }
-
-  return "queued";
 }
 
 function mapPost(row: PostRow): Post {
@@ -428,6 +407,16 @@ function mapPublication(row: PublicationRow): Publication {
 
   if (row.error_code !== null) {
     publication.errorCode = row.error_code as PublishErrorCode;
+  }
+
+  return publication;
+}
+
+function mapStoredPublication(row: PublicationRow): StoredPublication {
+  const publication: StoredPublication = mapPublication(row);
+
+  if (row.retry_at !== null) {
+    publication.retryAt = row.retry_at;
   }
 
   return publication;

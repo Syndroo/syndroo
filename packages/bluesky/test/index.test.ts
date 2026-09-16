@@ -164,7 +164,62 @@ describe("BlueskyPublisher", () => {
       .rejects.toMatchObject({ code: "UNKNOWN", ambiguous: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  // workerd rejects `redirect: "error"` before the request is dispatched, so
+  // the transport must ask for "manual" and treat a 3xx as a failure itself.
+  it("requests manual redirect handling in both stages", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(Response.json({
+        cid,
+        uri: "at://did:plc:alice/app.bsky.feed.post/3example",
+      }));
+
+    await createPublisher().publish({
+      publicationId: "pub-1",
+      platform: "bluesky",
+      content: "Hello from Syndroo",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBe("manual");
+    expect(fetchMock.mock.calls[1]?.[1]?.redirect).toBe("manual");
+  });
+
+  it("does not follow a session redirect", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      redirectResponse(),
+    );
+
+    await expect(createPublisher().publish({
+      publicationId: "pub-1",
+      platform: "bluesky",
+      content: "Hello from Syndroo",
+    })).rejects.toMatchObject({ code: "UNKNOWN", ambiguous: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not follow a publish redirect", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(redirectResponse());
+
+    await expect(createPublisher().publish({
+      publicationId: "pub-1",
+      platform: "bluesky",
+      content: "Hello from Syndroo",
+    })).rejects.toMatchObject({ code: "UNKNOWN", ambiguous: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1]?.redirect).toBe("manual");
+  });
 });
+
+function redirectResponse(): Response {
+  return new Response(null, {
+    status: 302,
+    headers: { location: "https://attacker.example/collect" },
+  });
+}
 
 function createPublisher(): BlueskyPublisher {
   return new BlueskyPublisher({

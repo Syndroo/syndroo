@@ -135,7 +135,10 @@ export class BlueskyPublisher implements Publisher {
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         ...init,
-        redirect: "error",
+        // workerd rejects `redirect: "error"` before dispatching the request.
+        // "manual" keeps the same guarantee: the response is inspected and a
+        // 3xx is a failure, never a followed hop.
+        redirect: "manual",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {

@@ -6,8 +6,27 @@ const PACKAGE_PATH = resolve(
   process.cwd(),
   "packages/cloudflare-worker/package.json",
 );
-const STABLE_SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
+const REGISTRY_URL = "https://registry.npmjs.org";
+
+const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const CANDIDATE_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-rc\.([1-9]\d*)$/;
+
+type DistTag = "latest" | "next";
+
+type ReleaseChannel = {
+  readonly distTag: DistTag;
+  readonly prerelease: boolean;
+};
+
+type ReleaseEvent =
+  | { readonly kind: "absent" }
+  | {
+      readonly kind: "release";
+      readonly tag: string;
+      readonly prerelease: boolean;
+    };
 
 type PackageManifest = {
   name: string;
@@ -26,9 +45,7 @@ async function main(): Promise<void> {
     throw new Error(`Expected package name ${PACKAGE_NAME}.`);
   }
 
-  if (!STABLE_SEMVER.test(manifest.version)) {
-    throw new Error("Package version must be a stable SemVer version.");
-  }
+  const channel = classifyVersion(manifest.version);
 
   if (manifest.private === true) {
     throw new Error("Release package must not be private.");
@@ -38,44 +55,95 @@ async function main(): Promise<void> {
     throw new Error("Release package must use Apache-2.0.");
   }
 
-  if (
-    manifest.repository?.url !==
-    "git+https://github.com/Syndroo/syndroo.git"
-  ) {
+  if (manifest.repository?.url !== REPOSITORY_URL) {
     throw new Error("Package repository URL does not match Syndroo/syndroo.");
   }
 
-  const releaseTag = process.env.SYNDROO_RELEASE_TAG || undefined;
-
-  if (process.env.SYNDROO_RELEASE_PRERELEASE === "true") {
-    throw new Error("Prerelease GitHub releases cannot publish the stable package.");
-  }
-
-  if (releaseTag !== undefined && releaseTag !== `v${manifest.version}`) {
-    throw new Error(
-      `Release tag ${releaseTag} does not match package version ${manifest.version}.`,
-    );
-  }
+  const release = parseReleaseEvent(process.env);
+  assertReleaseMatchesVersion(release, manifest.version, channel);
 
   const published = await packageVersionExists(manifest.version);
-  const outputPath = process.env.GITHUB_OUTPUT;
 
-  if (outputPath !== undefined) {
-    await appendFile(
-      outputPath,
-      `version=${manifest.version}\npublished=${String(published)}\n`,
-      "utf8",
-    );
-  }
+  await writeGithubOutput([
+    ["version", manifest.version],
+    ["published", String(published)],
+    ["dist_tag", channel.distTag],
+  ]);
 
   console.log(
     JSON.stringify({
       package: manifest.name,
       version: manifest.version,
-      releaseTag,
+      distTag: channel.distTag,
+      releaseTag: release.kind === "release" ? release.tag : null,
       published,
     }),
   );
+}
+
+// Stable versions publish under `latest`; `-rc.<n>` candidates publish under
+// `next`. The release workflow always passes this value through as an explicit
+// `npm publish --tag`, because npm requires one for prerelease versions.
+function classifyVersion(version: string): ReleaseChannel {
+  if (STABLE_VERSION.test(version)) {
+    return { distTag: "latest", prerelease: false };
+  }
+
+  if (CANDIDATE_VERSION.test(version)) {
+    return { distTag: "next", prerelease: true };
+  }
+
+  throw new Error(
+    `Package version ${JSON.stringify(version)} must be <major>.<minor>.<patch> or <major>.<minor>.<patch>-rc.<n>.`,
+  );
+}
+
+function parseReleaseEvent(env: NodeJS.ProcessEnv): ReleaseEvent {
+  const tag = optionalValue(env["SYNDROO_RELEASE_TAG"]);
+  const prerelease = optionalValue(env["SYNDROO_RELEASE_PRERELEASE"]);
+  const isReleaseEvent = optionalValue(env["GITHUB_EVENT_NAME"]) === "release";
+
+  if (tag === undefined && prerelease === undefined && !isReleaseEvent) {
+    return { kind: "absent" };
+  }
+
+  if (tag === undefined || prerelease === undefined) {
+    throw new Error(
+      "SYNDROO_RELEASE_TAG and SYNDROO_RELEASE_PRERELEASE must be set together; a release event must provide both.",
+    );
+  }
+
+  if (prerelease !== "true" && prerelease !== "false") {
+    throw new Error(
+      `SYNDROO_RELEASE_PRERELEASE must be "true" or "false", received ${JSON.stringify(prerelease)}.`,
+    );
+  }
+
+  return { kind: "release", tag, prerelease: prerelease === "true" };
+}
+
+function assertReleaseMatchesVersion(
+  release: ReleaseEvent,
+  version: string,
+  channel: ReleaseChannel,
+): void {
+  if (release.kind === "absent") {
+    return;
+  }
+
+  if (release.tag !== `v${version}`) {
+    throw new Error(
+      `Release tag ${JSON.stringify(release.tag)} does not match package version ${version}.`,
+    );
+  }
+
+  if (release.prerelease !== channel.prerelease) {
+    throw new Error(
+      channel.prerelease
+        ? `Release candidate ${version} must be published as a GitHub prerelease.`
+        : `Stable version ${version} must be published as a non-prerelease GitHub release.`,
+    );
+  }
 }
 
 async function packageVersionExists(version: string): Promise<boolean> {
@@ -83,14 +151,7 @@ async function packageVersionExists(version: string): Promise<boolean> {
     return false;
   }
 
-  const response = await fetch(
-    `https://registry.npmjs.org/${encodeURIComponent(PACKAGE_NAME)}/${version}`,
-    {
-      headers: {
-        accept: "application/json",
-      },
-    },
-  );
+  const response = await fetchRegistry(version);
 
   if (response.status === 404) {
     return false;
@@ -98,7 +159,7 @@ async function packageVersionExists(version: string): Promise<boolean> {
 
   if (!response.ok) {
     throw new Error(
-      `npm registry check failed with HTTP ${String(response.status)}.`,
+      `npm registry check failed with HTTP ${String(response.status)}; refusing to publish.`,
     );
   }
 
@@ -107,6 +168,50 @@ async function packageVersionExists(version: string): Promise<boolean> {
   }
 
   return true;
+}
+
+async function fetchRegistry(version: string): Promise<Response> {
+  const url = `${REGISTRY_URL}/${encodeURIComponent(PACKAGE_NAME)}/${encodeURIComponent(version)}`;
+
+  try {
+    return await fetch(url, { headers: { accept: "application/json" } });
+  } catch (error) {
+    throw new Error(
+      `npm registry check failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function writeGithubOutput(
+  outputs: ReadonlyArray<readonly [string, string]>,
+): Promise<void> {
+  const outputPath = optionalValue(process.env["GITHUB_OUTPUT"]);
+
+  if (outputPath === undefined) {
+    return;
+  }
+
+  const lines = outputs.map(([key, value]) => {
+    if (!/^[a-z][a-z0-9_]*$/.test(key)) {
+      throw new Error(`Refusing to write unsafe output name ${JSON.stringify(key)}.`);
+    }
+
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`Refusing to write unsafe output value for ${key}.`);
+    }
+
+    return `${key}=${value}`;
+  });
+
+  await appendFile(outputPath, `${lines.join("\n")}\n`, "utf8");
+}
+
+function optionalValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function parseManifest(json: string): PackageManifest {

@@ -31,6 +31,10 @@ export default defineConfig({
     })),
   ],
   test: {
+    // The Worker suites each start their own workerd isolated-storage instance.
+    // Running several files in parallel hangs the current vitest/vitest-plugin
+    // pair, so the files run serially; concurrency inside a file is unchanged.
+    maxWorkers: 1,
     setupFiles: ["./test/setup.ts"],
   },
 });

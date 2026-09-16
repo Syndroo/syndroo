@@ -8,14 +8,35 @@ Most users should deploy through
 [syndroo-deploy-template](https://github.com/Syndroo/syndroo-deploy-template)
 instead of importing this package directly.
 
+## Release candidate status (0.2.0-rc.1)
+
+This candidate is validated locally, not against live social accounts. All five
+adapters are implemented and covered by unit and local integration tests.
+
+- Bluesky and Threads are release gates: both must pass live-account validation
+  before `0.2.0` ships under `latest`.
+- X, Tumblr, and LinkedIn are **experimental** in this release. Their adapters,
+  request signing, and error mapping are implemented and locally tested, but
+  live publishing has not been validated for them.
+
+The `syndroo-deploy-template` linked above is prepared for this candidate but is
+itself unvalidated: it has no registry-backed lockfile until this version is
+published, and its deployment path has not been rehearsed. Do not treat it as a
+ready-to-deploy target yet. The npm candidate is also not published: install it
+from the local tarball until `0.2.0-rc.1` exists under the `next` dist-tag.
+
 The package contains:
 
 - bundled Worker entry point;
 - complete D1 migration history;
+- `dist/THIRD_PARTY_LICENSES.txt`, generated from the bundle source map, with the
+  license text of every bundled third-party package;
+- `licenses/third-party-license-exceptions.json`, recording any bundled package
+  that distributes no license text of its own;
 - `syndroo-deploy` command, which repairs a missing D1 database binding,
   applies remote migrations, and deploys the Worker.
 
-It currently supports text publishing to Threads, Bluesky, X, Tumblr, and LinkedIn.
+It supports text publishing to Threads, Bluesky, X, Tumblr, and LinkedIn.
 
 X uses the official `@xdevplatform/xdk` SDK. Configure all four optional secrets:
 `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, and `X_ACCESS_TOKEN_SECRET`.
@@ -50,8 +71,8 @@ LinkedIn uses native HTTP, not the restricted SDK. Configure optional secrets
 `LINKEDIN_API_VERSION` (supported YYYYMM version, explicitly pinned).
 Personal publishing needs `w_member_social`; organizations need
 `w_organization_social`, API product access, and an eligible Page role.
-v0.1 publishes public text only and limits escaped little-text commentary to
-3,000 UTF-16 units. It requires a confirmed created-post ID header and cancels
+This release publishes public text only and limits escaped little-text commentary
+to 3,000 UTF-16 units. It requires a confirmed created-post ID header and cancels
 unread response bodies. No automatic retries of ambiguous writes or token refresh.
 Add binding names to the local secret list, not production `secrets.required`.
 No migration is required. Review API versions before updating them.

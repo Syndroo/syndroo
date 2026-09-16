@@ -4,6 +4,12 @@
   "main": "packages/cloudflare-worker/src/index.ts",
   "compatibility_date": "2026-09-02",
   "compatibility_flags": ["nodejs_compat"],
+  // Optional, non-secret maintenance admission switch. Only the exact string
+  // "true" rejects new posts during a cutover; any other value, including an
+  // unset variable, keeps normal operation. Queue and Cron are not paused.
+  "vars": {
+    "SYNDROO_MAINTENANCE": "false"
+  },
   "secrets": {
     "required": [
       "SYNDROO_API_KEY"
@@ -45,6 +51,7 @@
   "env": {
     "local": {
       "name": "syndroo-local",
+      "vars": { "SYNDROO_MAINTENANCE": "false" },
       "secrets": {
         "required": ["SYNDROO_API_KEY", "BLUESKY_IDENTIFIER", "BLUESKY_PASSWORD", "BLUESKY_HOST", "THREADS_ACCESS_TOKEN", "X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "TUMBLR_CONSUMER_KEY", "TUMBLR_CONSUMER_SECRET", "TUMBLR_TOKEN", "TUMBLR_TOKEN_SECRET", "TUMBLR_BLOG", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR", "LINKEDIN_API_VERSION"]
       },

@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cloudflare-worker",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "type": "module",
   "description": "Self-hosted Syndroo publishing Worker for Cloudflare.",
   "license": "Apache-2.0",
@@ -26,6 +26,7 @@
   },
   "files": [
     "dist",
+    "licenses",
     "migrations",
     "types",
     "LICENSE",
@@ -42,20 +43,21 @@
     "jsonc-parser": "^3.3.1"
   },
   "scripts": {
-    "build:package": "npm run bundle && npm run build:deploy",
+    "build:package": "npm run bundle && npm run build:deploy && npm run licenses",
     "build:deploy": "tsc -p tsconfig.deploy.json",
+    "licenses": "node ../../.build/scripts/generate-package-licenses.js",
     "types": "wrangler types worker-configuration.d.ts --config ../../wrangler.jsonc",
     "check": "npm run types && tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "wrangler dev --env local --config ../../wrangler.jsonc",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config ../../wrangler.jsonc",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config ../../wrangler.jsonc",
-    "bundle": "wrangler deploy --dry-run --outdir dist --config ../../wrangler.jsonc",
+    "bundle": "npm run build:scripts --prefix ../.. && node ../../.build/scripts/bundle-worker.js",
     "startup": "wrangler check startup --config ../../wrangler.jsonc",
     "prepack": "npm run build:package --prefix ../.."
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.1.2",
+    "@cloudflare/vitest-plugin": "^1.1.10",
     "@syndroo/bluesky": "0.1.0",
     "@syndroo/core": "0.1.0",
     "@syndroo/threads": "0.1.0",

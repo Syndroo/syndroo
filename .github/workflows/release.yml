@@ -55,10 +55,34 @@ jobs:
       - name: Inspect package contents
         run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
 
+      - name: Verify package artifact
+        run: npm run verify:package
+
+      - name: Run Mock SNS end-to-end suite
+        run: npm run test:e2e
+
       - name: Publish package
         if: github.event_name == 'release' && steps.package.outputs.published != 'true'
-        run: npm publish --workspace @syndroo/cloudflare-worker
+        env:
+          DIST_TAG: ${{ steps.package.outputs.dist_tag }}
+        run: |
+          case "$DIST_TAG" in
+            next)
+              npm publish --workspace @syndroo/cloudflare-worker --tag next
+              ;;
+            latest)
+              npm publish --workspace @syndroo/cloudflare-worker
+              ;;
+            *)
+              echo "Unexpected dist-tag '$DIST_TAG'; refusing to publish." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Report existing package
         if: github.event_name == 'release' && steps.package.outputs.published == 'true'
         run: echo "@syndroo/cloudflare-worker@${{ steps.package.outputs.version }} already exists; skipping publish."
+
+      - name: Report validation-only run
+        if: github.event_name != 'release'
+        run: echo "This event validates the release candidate only; publishing requires a release event."

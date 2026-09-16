@@ -1,2 +1,6 @@
 Syndroo
 Copyright 2026 Grant Dai
+
+This distribution bundles third-party code. The complete set of bundled
+licenses is generated from the built Worker bundle and ships with the package
+as `dist/THIRD_PARTY_LICENSES.txt`.

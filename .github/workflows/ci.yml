@@ -55,6 +55,13 @@ jobs:
       - name: Check Worker startup
         run: npm run startup
 
+      - name: Verify package artifact
+        if: matrix.node-version == '24'
+        run: npm run verify:package
+
+      - name: Run Mock SNS end-to-end suite
+        run: npm run test:e2e
+
       - name: Inspect publish package
         if: matrix.node-version == '24'
         run: npm pack --workspace @syndroo/cloudflare-worker --dry-run

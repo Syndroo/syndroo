@@ -1,13 +1,15 @@
 import {
   PublishError,
-  type Publication,
   type PublicationJob,
 } from "@syndroo/core";
 
 import { publisherFor } from "./publishers.js";
-import { D1Repository } from "./repository.js";
-
-const MAX_ATTEMPTS = 3;
+import { D1Repository, type StoredPublication } from "./repository.js";
+import {
+  retryAtFor,
+  secondsUntilRetry,
+  shouldRetry,
+} from "./retry.js";
 
 export async function consumePublications(
   batch: MessageBatch<PublicationJob>,
@@ -37,7 +39,7 @@ async function consumeOne(
   }
 
   const now = new Date().toISOString();
-  let publication: Publication | null;
+  let publication: StoredPublication | null;
 
   try {
     publication = await repository.claimPublication(
@@ -50,10 +52,24 @@ async function consumeOne(
   }
 
   if (!publication) {
-    const current = await repository.getPublication(message.body.publicationId);
+    let current: StoredPublication | null;
+
+    try {
+      current = await repository.getPublication(message.body.publicationId);
+    } catch (error) {
+      retryInfrastructure(message, "publication_read_failed", error);
+      return;
+    }
 
     if (current?.status === "publishing") {
       message.retry({ delaySeconds: 15 * 60 });
+    } else if (current?.status === "pending" && current.retryAt !== undefined) {
+      // Duplicate delivery before the persisted retry time. Keep the retry
+      // delivery instead of acking it, without calling the provider or
+      // increasing attempts; the stored time gates the next claim.
+      message.retry({
+        delaySeconds: secondsUntilRetry(current.retryAt, Date.now()),
+      });
     } else {
       message.ack();
     }
@@ -72,13 +88,16 @@ async function consumeOne(
   } catch (error) {
     const publishError = normalizePublishError(error);
     const retry = shouldRetry(publishError, publication.attempts);
+    const failedAt = new Date().toISOString();
+    const retryAt = retry ? retryAtFor(failedAt, publication.attempts) : undefined;
 
     try {
       await repository.markFailed(
         publication.id,
         publishError,
         retry,
-        new Date().toISOString(),
+        failedAt,
+        retryAt,
       );
     } catch (persistError) {
       retryInfrastructure(message, "publish_failure_persist_failed", persistError);
@@ -97,8 +116,9 @@ async function consumeOne(
       }),
     );
 
-    if (retry) {
-      message.retry({ delaySeconds: retryDelay(publication.attempts) });
+    if (retry && retryAt !== undefined) {
+      // Wait at least until the persisted earliest retry time.
+      message.retry({ delaySeconds: secondsUntilRetry(retryAt, Date.now()) });
     } else {
       message.ack();
     }
@@ -127,22 +147,6 @@ async function consumeOne(
     }),
   );
   message.ack();
-}
-
-function shouldRetry(error: PublishError, attempts: number): boolean {
-  if (error.ambiguous || attempts >= MAX_ATTEMPTS) {
-    return false;
-  }
-
-  return (
-    error.code === "RATE_LIMIT" ||
-    error.code === "PROVIDER_UNAVAILABLE" ||
-    error.code === "NETWORK"
-  );
-}
-
-function retryDelay(attempts: number): number {
-  return Math.min(60 * 2 ** Math.max(0, attempts - 1), 15 * 60);
 }
 
 function retryInfrastructure(

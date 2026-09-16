@@ -4,13 +4,29 @@ Open-source publishing infrastructure for the social web.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Syndroo/syndroo)
 
-Syndroo v0.1 is a small npm-workspaces monorepo. It accepts immediate or scheduled posts, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers.
+Syndroo `0.2.0-rc.1` is a release candidate, not a published release. It is a small npm-workspaces monorepo that accepts immediate or scheduled posts, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers.
 
-Threads, Bluesky, X, Tumblr, and LinkedIn adapters are installed in v0.1. The public platform and publishing contracts live in `@syndroo/core`; adding another platform means adding one adapter package and wiring one explicit switch in the Worker. Requests for uninstalled or unconfigured platforms return `PLATFORM_NOT_CONFIGURED` instead of silently doing nothing. See the [SDK development roadmap](docs/platform-roadmap.md) for upcoming adapters.
+Threads, Bluesky, X, Tumblr, and LinkedIn adapters are installed in the v0.2 candidate. The public platform and publishing contracts live in `@syndroo/core`; adding another platform means adding one adapter package and wiring one explicit switch in the Worker. Requests for uninstalled or unconfigured platforms return `PLATFORM_NOT_CONFIGURED` instead of silently doing nothing. See the [SDK development roadmap](docs/platform-roadmap.md) for upcoming adapters.
 
-## Using v0.1
+## Release status
 
-Syndroo v0.1 is an HTTP API service. It does not include a web dashboard. Deploy it, then call the Worker URL from `curl`, an automation tool, or your own application.
+- Bluesky (official `@atproto/api` SDK) and Threads are exercised locally by the
+  Mock SNS end-to-end gate. Live-account acceptance is still pending, so neither
+  platform is claimed as validated.
+- X, Tumblr, and LinkedIn are experimental. They are implemented and covered by
+  unit tests, but they have not been validated against live accounts.
+- The Deploy to Cloudflare button still deploys this source repository. The thin
+  `syndroo-deploy-template` passed isolated local installation, migration,
+  build, and startup checks. Registry installation and live deployment remain
+  pending, and the button is not yet wired to it.
+
+This `0.2.0-rc.1` candidate has not been published to npm or tagged, and it has
+not been accepted as a release. See [docs/testing.md](docs/testing.md) for gate coverage and
+[docs/v0.2.0-todo.md](docs/v0.2.0-todo.md) for the outstanding release gates.
+
+## Using v0.2.0-rc.1 (candidate)
+
+The v0.2 candidate is an HTTP API service. It does not include a web dashboard. Deploy it, then call the Worker URL from `curl`, an automation tool, or your own application.
 
 ### 1. Deploy
 
@@ -92,7 +108,7 @@ Syndroo accepts the request before the Queue finishes publishing, so the respons
 
 Copy the returned `id`. `queued` means accepted for processing, not yet confirmed by either platform.
 
-All v0.1 adapters publish text only. Threads content is limited to 500 Unicode characters. Bluesky content is limited to 300 Unicode characters and 3,000 UTF-8 bytes; HTTP(S) URLs receive link facets. X supports standard posts of up to 280 weighted characters, validated with `twitter-text` before network access. Longer content can be accepted by the API but its platform publication later finishes as `failed` with `INVALID_CONTENT`.
+All adapters in this candidate publish text only. Threads content is limited to 500 Unicode characters. Bluesky content is limited to 300 Unicode characters and 3,000 UTF-8 bytes; HTTP(S) URLs receive link facets. X supports standard posts of up to 280 weighted characters, validated with `twitter-text` before network access. Longer content can be accepted by the API but its platform publication later finishes as `failed` with `INVALID_CONTENT`.
 
 `Idempotency-Key` is optional but recommended for deployment automation. Use a stable key for one logical post. Repeating the same request with the same key returns the original post with `replayed: true`; reusing it with different content returns HTTP `409`.
 
@@ -187,7 +203,7 @@ Syndroo and replace the secret.
 
 Use `"platforms": ["linkedin"]` and, optionally,
 `"overrides": { "linkedin": { "content": "LinkedIn text" } }`.
-v0.1 publishes public, text-only posts to the main feed under the configured
+The candidate publishes public, text-only posts to the main feed under the configured
 author. There is no per-request author, OAuth login UI, token refresh, media,
 reshare, or audience targeting. Scheduling stays in Syndroo.
 
@@ -325,7 +341,7 @@ Publication statuses:
 - `published`: platform confirmed success;
 - `failed`: stopped after a terminal or exhausted failure.
 
-`threads`, `bluesky`, `x`, `tumblr`, and `linkedin` can be selected in v0.1 when their credentials are configured. Other recognized platform names return HTTP `422` with `PLATFORM_NOT_CONFIGURED`.
+`threads`, `bluesky`, `x`, `tumblr`, and `linkedin` can be selected in the v0.2 candidate when their credentials are configured. Other recognized platform names return HTTP `422` with `PLATFORM_NOT_CONFIGURED`.
 
 ### Error responses
 
@@ -349,6 +365,38 @@ Common responses:
 - `413`: request body exceeds 64 KiB;
 - `415`: request body is not `application/json`;
 - `422`: requested platform adapter is not installed or its credentials are missing.
+
+### Maintenance mode
+
+`SYNDROO_MAINTENANCE` is an optional, non-secret Worker variable that rejects
+new posts during a migration cutover without taking the service offline. Only
+the exact string `true` enables it; `false` or an unset variable keeps normal
+operation. Change the value in the Worker's **Settings → Variables and Secrets**
+or in `wrangler.jsonc` and save it as a new Worker version.
+
+While maintenance is enabled, an authenticated `POST /v1/posts` returns HTTP `503`:
+
+```json
+{
+  "error": {
+    "code": "SERVICE_UNAVAILABLE",
+    "message": "Syndroo is in maintenance mode and is not accepting new posts; retry later with the same Idempotency-Key and request body"
+  }
+}
+```
+
+The rejection happens after Bearer authentication and before the request body,
+the idempotency key, or the database is read, so maintenance never creates a
+post and never records an `Idempotency-Key`. `GET /health` and the
+authenticated `GET /v1/posts` and `GET /v1/posts/<id>` queries keep working, and
+requests without a valid Bearer token still return `401`.
+
+Maintenance is admission control only. It does not pause Queue consumers or the
+Cron Trigger: publications accepted before the window, scheduled work, and
+stale-job recovery continue to run. Set the variable back to `false` or remove
+it to resume. Clients then retry with the original `Idempotency-Key` and body;
+stored keys replay their saved result under the existing rules, and new keys
+are accepted normally.
 
 ## Architecture
 
@@ -438,6 +486,10 @@ The local Worker defaults to `http://localhost:8787`.
 
 For the fastest setup, click the **Deploy to Cloudflare** button at the top of this README. Cloudflare creates an independent repository in your GitHub account; it is not a GitHub fork and does not retain an upstream relationship. Cloudflare prompts for the required API key, provisions D1 and Queue resources, applies D1 migrations, configures the Cron Trigger, and deploys the Worker. Add optional platform secrets after deployment. Future pushes to the generated repository are deployed by Workers Builds.
 
+The button deploys this source repository. The thin deployment template is
+prepared but not validated, so the button is not pointed at it yet; it moves only
+after the candidate is accepted.
+
 The API key is required. Configure the remaining secrets only for platforms you use:
 
 - `SYNDROO_API_KEY`: a long random secret used by clients as the Bearer token;
@@ -472,9 +524,16 @@ The deployment script checks the declared `syndroo` D1 database, repairs a missi
 ## Implementation notes
 
 - Queue delivery is at least once. A publication is claimed atomically before outbound work, so duplicate messages do not normally duplicate posts.
+- Publication state transitions and their Post aggregate updates commit together
+  in D1 transactions. Claiming also reads the publication within that transaction;
+  a database statement failure rolls back the claim and attempt increment.
+  If the transaction response is lost, its commit outcome can still be unknown:
+  Syndroo does not blindly reset a publication or resend it.
 - Client retries should provide `Idempotency-Key`; D1 stores a unique key so deployment retries cannot create another logical post.
 - A timeout or 5xx after the remote publish request can be ambiguous: the platform may have accepted the post. Ambiguous failures are stored and are not retried automatically.
 - Only rate-limit, provider-unavailable, and unambiguous network failures are retried, with a maximum of three application attempts.
+- Retryable failures persist the earliest retry time (`publications.retry_at`) in the same D1 transaction as the failure state. Claiming and Cron selection both require that deadline, so a duplicate Queue message cannot run the next attempt early. Minimum waits are 60 seconds after the first attempt and 120 seconds after the second; if a Queue retry is lost, recovery waits for the existing 15-minute enqueue lease to expire and a later Cron scan; Cron runs every 15 minutes, so the minimum retry wait is not a delivery-time guarantee.
+- Migration `0003_retry_timing.sql` adds the nullable `publications.retry_at` column, so apply migrations before deploying this Worker version. Rows written by older code keep `retry_at` null and stay eligible. Running older Worker code against the migrated database still publishes, but it cannot enforce the stored deadline.
 - If enqueue fails, or an acknowledged Queue lease becomes stale, the post stays pending. Cron acts as a small outbox recovery loop and enqueues it later.
 - A publication stuck in `publishing` for 15 minutes becomes an ambiguous failure instead of being blindly replayed.
 - The request body is capped at 64 KiB. Bluesky text is validated before network access.

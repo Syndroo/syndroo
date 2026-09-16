@@ -1,0 +1,14 @@
+{
+  "supplements": [
+    {
+      "package": "@xdevplatform/xdk",
+      "version": "0.6.6",
+      "declaredLicense": "MIT",
+      "author": "X API SDK Team",
+      "licenseFile": "mit.txt",
+      "sourceUrl": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt",
+      "sourceSha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "note": "Supplemental standard terms, not the upstream project's license file. The published npm tarball for this exact version contains only dist/, package.json, and README.md, and the upstream repository github.com/xdevplatform/xdk-typescript contains no LICENSE or COPYING file; the package therefore attaches no license or copyright notice. Its package.json declares \"license\": \"MIT\" and \"author\": \"X API SDK Team\". The file above is the canonical MIT text from the recorded source, with the copyright line left as the unmodified <year> <copyright holders> placeholder, because no copyright holder or year is asserted here. Remove this supplement once the upstream project publishes its own license file."
+    }
+  ]
+}

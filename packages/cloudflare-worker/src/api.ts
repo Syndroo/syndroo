@@ -4,6 +4,9 @@ import { ApiError, json, readJsonBody, requireBearer } from "./http.js";
 import { createPost, parseCreatePost } from "./posts.js";
 import { D1Repository } from "./repository.js";
 
+const MAINTENANCE_MESSAGE =
+  "Syndroo is in maintenance mode and is not accepting new posts; retry later with the same Idempotency-Key and request body";
+
 export async function routeApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
@@ -16,6 +19,15 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
   }
 
   await requireBearer(request, env.SYNDROO_API_KEY);
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/posts" &&
+    isMaintenanceEnabled(env.SYNDROO_MAINTENANCE)
+  ) {
+    throw new ApiError(MAINTENANCE_MESSAGE, 503, "SERVICE_UNAVAILABLE");
+  }
+
   const repository = new D1Repository(env.DB);
 
   if (request.method === "POST" && url.pathname === "/v1/posts") {
@@ -53,6 +65,13 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
   }
 
   return json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404);
+}
+
+// `SYNDROO_MAINTENANCE` is an optional, non-secret Worker variable. Only the
+// exact string "true" enables maintenance; an unset variable or any other
+// value keeps normal operation.
+function isMaintenanceEnabled(value: string | undefined): boolean {
+  return value === "true";
 }
 
 function parseIdempotencyKey(value: string | null): string | undefined {

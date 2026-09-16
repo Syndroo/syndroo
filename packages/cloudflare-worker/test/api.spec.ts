@@ -28,6 +28,7 @@ describe("Syndroo API", () => {
   it.each(["bluesky", "threads"] as const)("rejects missing %s credentials before persistence or enqueue", async platform => {
     const unconfigured: Env = {
       SYNDROO_API_KEY: "test-api-key",
+      SYNDROO_MAINTENANCE: "false",
       DB: { prepare() { throw new Error("Unexpected database access"); } } as unknown as D1Database,
       PUBLICATION_QUEUE: { sendBatch() { throw new Error("Unexpected queue access"); } } as unknown as Env["PUBLICATION_QUEUE"],
     };
