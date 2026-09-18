@@ -33,18 +33,17 @@ The v0.2 candidate is an HTTP API service. It does not include a web dashboard. 
 Click **Deploy to Cloudflare** at the top of this README. During setup, enter
 `SYNDROO_API_KEY`, a long random secret chosen by you. After deployment, add
 the credentials for the platforms you want to use in the Worker's **Settings →
-Variables and Secrets** as secrets:
+Variables and Secrets** as secrets. Bluesky is the platform used by the
+first-post walkthrough below:
 
 - `BLUESKY_IDENTIFIER`: your Bluesky handle, such as `alice.bsky.social`;
 - `BLUESKY_PASSWORD`: a Bluesky app password, not your account password;
-- `BLUESKY_HOST`: optional; defaults to `bsky.social`;
-- `THREADS_ACCESS_TOKEN`: a long-lived Threads user access token with `threads_basic` and `threads_content_publish`.
+- `BLUESKY_HOST`: optional; defaults to `bsky.social`.
 
 Wait for the Cloudflare build to succeed. Open the deployed Worker in Cloudflare and copy its `https://...workers.dev` URL.
 
-For X, see [X credentials](#x-credentials-and-publishing). For Tumblr, see
-[Tumblr credentials](#tumblr-credentials-and-publishing). For LinkedIn, see
-[LinkedIn credentials](#linkedin-credentials-and-publishing).
+Threads, X, Tumblr, and LinkedIn stay optional. Add their secrets the same way
+and follow [Additional platforms](#additional-platforms).
 
 Platforms are enabled independently: Bluesky needs both identifier and app
 password; Threads needs its access token; X needs all four OAuth credentials;
@@ -81,7 +80,7 @@ Expected response:
 {"status":"ok"}
 ```
 
-### 3. Publish to Threads and Bluesky
+### 3. Publish your first post
 
 ```bash
 curl -X POST "$SYNDROO_URL/v1/posts" \
@@ -89,11 +88,8 @@ curl -X POST "$SYNDROO_URL/v1/posts" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: example-post-001" \
   --data '{
-    "content": "Hello from Syndroo on Threads",
-    "platforms": ["threads", "bluesky"],
-    "overrides": {
-      "bluesky": { "content": "Hello from Syndroo on Bluesky" }
-    }
+    "content": "Hello from Syndroo",
+    "platforms": ["bluesky"]
   }'
 ```
 
@@ -106,11 +102,56 @@ Syndroo accepts the request before the Queue finishes publishing, so the respons
 }
 ```
 
-Copy the returned `id`. `queued` means accepted for processing, not yet confirmed by either platform.
+Copy the returned `id`. `queued` means accepted for processing, not yet confirmed by the platform.
 
-All adapters in this candidate publish text only. Threads content is limited to 500 Unicode characters. Bluesky content is limited to 300 Unicode characters and 3,000 UTF-8 bytes; HTTP(S) URLs receive link facets. X supports standard posts of up to 280 weighted characters, validated with `twitter-text` before network access. Longer content can be accepted by the API but its platform publication later finishes as `failed` with `INVALID_CONTENT`.
+Query the stored status with that `id`:
+
+```bash
+curl \
+  -H "Authorization: Bearer $SYNDROO_API_KEY" \
+  "$SYNDROO_URL/v1/posts/post_..."
+```
+
+At first the response reports `"status": "queued"` or `"publishing"`, and the
+Post becomes `"published"` after Bluesky confirms it; each publication reports
+its own `status` as well. [Step 4](#4-check-the-result) shows the completed
+response shape and how to read a `failed` result.
+
+All adapters in this candidate publish text only. Bluesky content is limited to 300 Unicode characters and 3,000 UTF-8 bytes; HTTP(S) URLs receive link facets. Threads content is limited to 500 Unicode characters. X supports standard posts of up to 280 weighted characters, validated with `twitter-text` before network access. Longer content can be accepted by the API but its platform publication later finishes as `failed` with `INVALID_CONTENT`.
 
 `Idempotency-Key` is optional but recommended for deployment automation. Use a stable key for one logical post. Repeating the same request with the same key returns the original post with `replayed: true`; reusing it with different content returns HTTP `409`.
+
+### Additional platforms
+
+Add a platform to `platforms` after configuring its secrets; the same request
+can target several platforms at once.
+
+```bash
+curl -X POST "$SYNDROO_URL/v1/posts" \
+  -H "Authorization: Bearer $SYNDROO_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "content": "Shared text",
+    "platforms": ["bluesky", "threads"],
+    "overrides": {
+      "threads": { "content": "Threads-specific text" }
+    }
+  }'
+```
+
+- [Threads access token](#threads-access-token);
+- [X credentials and publishing](#x-credentials-and-publishing);
+- [Tumblr credentials and publishing](#tumblr-credentials-and-publishing);
+- [LinkedIn credentials and publishing](#linkedin-credentials-and-publishing).
+
+Selecting a platform without its required credential configuration returns HTTP
+`422` with `PLATFORM_NOT_CONFIGURED`; the request is rejected before anything is
+stored or queued, so a partially configured deployment never accepts work it
+cannot dispatch. Configuration is checked for presence and shape only: an
+expired, revoked, or insufficiently authorized credential passes that check and
+surfaces later as a publication failure with `errorCode` `AUTH`. Live-account
+validation of every platform is still pending, as described in
+[Release status](#release-status).
 
 ### Threads access token
 
@@ -232,12 +273,7 @@ application approval still apply.
 
 ### 4. Check the result
 
-```bash
-curl \
-  -H "Authorization: Bearer $SYNDROO_API_KEY" \
-  "$SYNDROO_URL/v1/posts/post_..."
-```
-
+Poll the same URL until the Post and every publication reach a terminal status.
 A successful publication eventually looks like:
 
 ```json
@@ -398,6 +434,34 @@ it to resume. Clients then retry with the original `Idempotency-Key` and body;
 stored keys replay their saved result under the existing rules, and new keys
 are accepted normally.
 
+## Agent and API clients
+
+Syndroo is an HTTP API. An agent skill, script, or CI job can call it, but every
+step before the request belongs to that client: drafting the text, adapting it
+per platform, showing a preview, and asking the person to confirm.
+Confirmation is external to Syndroo. This candidate has no preview, approval,
+retry, or cancel endpoint, and none is added by the v0.3.0 architecture work.
+
+A workflow that stays safe:
+
+1. Prepare and confirm the text in the client. Neither the planned content nor
+   a confirmation state exists in Syndroo until a request is accepted.
+2. `POST /v1/posts` with the content, the selected platforms, and a stable
+   `Idempotency-Key`. HTTP `202` means the request was accepted for processing,
+   not that the outcome is known: `queued` is not `published`, and Queue
+   delivery can start the platform request immediately after acceptance.
+3. Poll `GET /v1/posts/<id>` until each publication is `published` or `failed`.
+   Status queries are read-only and safe to repeat.
+4. Read each publication's `status`, `attempts`, `errorCode`, `errorMessage`,
+   and `errorAmbiguous`. A `failed` publication with `errorAmbiguous: true` may
+   still have been accepted by the platform: check the platform account
+   manually. Do not resend that content automatically, and do not treat the
+   latest error message as an audit trail.
+5. Keep credentials in Worker secrets. Platform credentials belong to the
+   deployment, never to the client, a demo input, a chat log, an issue, or a
+   request body. The client holds only `SYNDROO_API_KEY`, which can publish and
+   must itself be treated as a secret.
+
 ## Architecture
 
     client
@@ -441,6 +505,7 @@ The abstraction is deliberately narrow:
 - one `Publisher.publish()` contract;
 - one concrete `D1Repository`, without an ORM or generic repository layer;
 - one explicit platform switch, without a registry or dependency-injection container;
+- one publishing executor (`src/publishing.ts`) that returns an ack/retry decision, with Queue acknowledgment and retry mechanics kept in `src/jobs.ts`;
 - Cloudflare bindings and lifecycle handlers stay inside the Worker app.
 
 ## Distribution and upgrades

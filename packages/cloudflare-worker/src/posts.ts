@@ -10,7 +10,7 @@ import {
 
 import { ApiError } from "./http.js";
 import { D1Repository } from "./repository.js";
-import { isPlatformConfigured } from "./publishers.js";
+import { isPlatformConfigured, providerFor } from "./publishers.js";
 
 const MAX_CONTENT_CODE_POINTS = 10_000;
 
@@ -246,28 +246,6 @@ function parseScheduledAt(value: unknown): string | undefined {
   }
 
   return new Date(timestamp).toISOString();
-}
-
-function providerFor(platform: Platform): string {
-  switch (platform) {
-    case "bluesky":
-      return "bluesky-native";
-    case "threads":
-      return "threads-native";
-    case "x":
-      return "x-sdk";
-    case "tumblr":
-      return "tumblr-native";
-    case "linkedin":
-      return "linkedin-native";
-    case "mastodon":
-    case "nostr":
-      throw new ApiError(
-        "Platform is not configured yet: " + platform,
-        422,
-        "PLATFORM_NOT_CONFIGURED",
-      );
-  }
 }
 
 function replayResult(post: Post, input: CreatePostInput): CreatePostResult {

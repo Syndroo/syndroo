@@ -16,6 +16,7 @@ import {
 
 import worker from "../src/index.js";
 import { D1Repository } from "../src/repository.js";
+import { retryAtFor, retryDelaySeconds } from "../src/retry.js";
 
 const createdAt = "2026-09-15T00:00:00.000Z";
 const firstRetryDue = "2026-09-15T00:01:00.000Z";
@@ -366,4 +367,66 @@ describe("strict retry timing through the Queue", () => {
     expect(terminal).toMatchObject({ status: "failed", attempts: 3, errorCode: "RATE_LIMIT" });
     expect(terminal?.retryAt).toBeUndefined();
   });
+});
+
+describe("SQL fallback retry delay parity", () => {
+  // `markFailed` may derive the earliest retry time inside D1 when no explicit
+  // retryAt is supplied, which duplicates the delay rule in `src/retry.ts`.
+  // Pin both sides against literal seconds so a change to either rule fails
+  // here instead of drifting silently. Attempts 5 and 6 cover the 15-minute
+  // clamp shared by both implementations.
+  const delays = [
+    [1, 60],
+    [2, 120],
+    [3, 240],
+    [4, 480],
+    [5, 900],
+    [6, 900],
+  ] as const;
+
+  it.each(delays)(
+    "derives the retryDelaySeconds delay for attempt %i from the failure transaction",
+    async (attempts, expectedSeconds) => {
+      expect(retryDelaySeconds(attempts)).toBe(expectedSeconds);
+      const expectedRetryAt = new Date(
+        Date.parse(createdAt) + expectedSeconds * 1000,
+      ).toISOString();
+      expect(retryAtFor(createdAt, attempts)).toBe(expectedRetryAt);
+
+      const postId = "post-parity-" + attempts;
+      const publicationId = "pub-parity-" + attempts;
+      await env.DB.prepare(
+        "INSERT INTO posts (id, content, platforms, overrides, scheduled_at, " +
+          "status, created_at, updated_at, idempotency_key) " +
+          "VALUES (?, ?, ?, NULL, NULL, 'publishing', ?, ?, NULL)",
+      )
+        .bind(postId, "Parity", JSON.stringify(["threads"]), createdAt, createdAt)
+        .run();
+      await env.DB.prepare(
+        "INSERT INTO publications (id, post_id, platform, provider, content, " +
+          "status, attempts, publishing_at, created_at, updated_at) " +
+          "VALUES (?, ?, 'threads', 'threads-native', ?, 'publishing', ?, ?, ?, ?)",
+      )
+        .bind(
+          publicationId,
+          postId,
+          "Parity",
+          attempts,
+          createdAt,
+          createdAt,
+          createdAt,
+        )
+        .run();
+
+      const repository = new D1Repository(env.DB);
+      // No explicit retryAt: the failure transaction must derive it in SQL.
+      await repository.markFailed(publicationId, rateLimited(), true, createdAt);
+
+      await expect(repository.getPublication(publicationId)).resolves.toMatchObject({
+        status: "pending",
+        attempts,
+        retryAt: expectedRetryAt,
+      });
+    },
+  );
 });

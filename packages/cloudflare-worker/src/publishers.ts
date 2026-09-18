@@ -9,6 +9,8 @@ import {
   type Publisher,
 } from "@syndroo/core";
 
+import { ApiError } from "./http.js";
+
 export function isPlatformConfigured(platform: Platform, env: Env): boolean {
   switch (platform) {
     case "linkedin":
@@ -63,6 +65,38 @@ export function publisherFor(platform: Platform, env: Env): Publisher {
       throw new PublishError(
         "No publisher configured for platform: " + platform,
         "PROVIDER_UNAVAILABLE",
+      );
+  }
+}
+
+/**
+ * Stored provider identifier for a platform. The value is written to
+ * `publications.provider`, so these strings are part of the stored-data
+ * contract and must not change silently.
+ *
+ * Provider naming and publisher construction stay separate switches on
+ * purpose: naming never depends on credentials, while construction validates
+ * them. Installed-platform configuration, publisher construction, and provider
+ * naming are maintained in this one file; the switches remain distinct.
+ */
+export function providerFor(platform: Platform): string {
+  switch (platform) {
+    case "bluesky":
+      return "bluesky-native";
+    case "threads":
+      return "threads-native";
+    case "x":
+      return "x-sdk";
+    case "tumblr":
+      return "tumblr-native";
+    case "linkedin":
+      return "linkedin-native";
+    case "mastodon":
+    case "nostr":
+      throw new ApiError(
+        "Platform is not configured yet: " + platform,
+        422,
+        "PLATFORM_NOT_CONFIGURED",
       );
   }
 }
