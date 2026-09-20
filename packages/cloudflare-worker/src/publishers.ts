@@ -10,6 +10,7 @@ import {
 } from "@syndroo/core";
 
 import { ApiError } from "./http.js";
+import type { D1Repository } from "./repository.js";
 
 export function isPlatformConfigured(platform: Platform, env: Env): boolean {
   switch (platform) {
@@ -70,6 +71,64 @@ export function publisherFor(platform: Platform, env: Env): Publisher {
 }
 
 /**
+ * Like `publisherFor`, but checks D1 credentials first before falling back to
+ * environment variables. Used by the publication executor so that credentials
+ * stored through the auth API take effect without a redeployment.
+ */
+export async function resolvePublisher(
+  platform: Platform,
+  env: Env,
+  repository: D1Repository,
+): Promise<Publisher> {
+  const credential = await repository.getCredential(platform);
+  if (credential) {
+    return buildPublisherFromCredential(platform, credential, env);
+  }
+  return publisherFor(platform, env);
+}
+
+function buildPublisherFromCredential(
+  platform: Platform,
+  cred: Record<string, string>,
+  env: Env,
+): Publisher {
+  switch (platform) {
+    case "bluesky":
+      return new BlueskyPublisher({
+        identifier: cred.identifier!,
+        password: cred.password!,
+        host: cred.host || env.BLUESKY_HOST?.trim() || "bsky.social",
+      });
+    case "threads":
+      return new ThreadsPublisher({ accessToken: cred.access_token! });
+    case "x":
+      // Access tokens come from D1; app key/secret stay in env.
+      return new XPublisher({
+        apiKey: env.X_API_KEY!,
+        apiSecret: env.X_API_SECRET!,
+        accessToken: cred.access_token!,
+        accessTokenSecret: cred.access_token_secret!,
+      });
+    case "tumblr":
+      return new TumblrPublisher({
+        consumerKey: env.TUMBLR_CONSUMER_KEY!,
+        consumerSecret: env.TUMBLR_CONSUMER_SECRET!,
+        token: cred.token!,
+        tokenSecret: cred.token_secret!,
+        blog: cred.blog || env.TUMBLR_BLOG!,
+      });
+    case "linkedin":
+      return new LinkedInPublisher({
+        accessToken: cred.access_token!,
+        author: cred.author || env.LINKEDIN_AUTHOR!,
+        apiVersion: cred.api_version || env.LINKEDIN_API_VERSION || "202604",
+      });
+    default:
+      throw new PublishError("No publisher for platform: " + platform, "PROVIDER_UNAVAILABLE");
+  }
+}
+
+/**
  * Stored provider identifier for a platform. The value is written to
  * `publications.provider`, so these strings are part of the stored-data
  * contract and must not change silently.
@@ -100,3 +159,4 @@ export function providerFor(platform: Platform): string {
       );
   }
 }
+

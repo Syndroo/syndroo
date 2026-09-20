@@ -144,6 +144,84 @@ curl -X POST "$SYNDROO_URL/v1/posts" \
 - [Tumblr credentials and publishing](#tumblr-credentials-and-publishing);
 - [LinkedIn credentials and publishing](#linkedin-credentials-and-publishing).
 
+### Platform authentication via the auth API
+
+As an alternative to setting environment variables or Worker secrets at deploy time,
+credentials for all platforms can be stored in D1 at runtime through the `/v1/auth`
+API. Credentials stored this way take precedence over environment variables when
+a publication runs. This is the path used by agent-guided flows.
+
+**Check which platforms are connected:**
+
+```bash
+curl -H "Authorization: Bearer $SYNDROO_API_KEY" "$SYNDROO_URL/v1/auth"
+```
+
+```json
+{
+  "platforms": {
+    "bluesky":  { "configured": true,  "source": "env",        "oauthSupported": false },
+    "threads":  { "configured": false, "source": null,         "oauthSupported": false },
+    "x":        { "configured": false, "source": null,         "oauthSupported": true  },
+    "tumblr":   { "configured": false, "source": null,         "oauthSupported": true  },
+    "linkedin": { "configured": false, "source": null,         "oauthSupported": true  }
+  }
+}
+```
+
+`source: "env"` means the platform is configured via an environment variable.
+`source: "credential"` means the platform credential is stored in D1.
+
+**Direct credential submission** (Bluesky, Threads, or any platform where you already have a token):
+
+```bash
+# Bluesky
+curl -X POST -H "Authorization: Bearer $SYNDROO_API_KEY" \
+  -H "Content-Type: application/json" \
+  "$SYNDROO_URL/v1/auth/bluesky" \
+  --data '{"identifier":"alice.bsky.social","password":"your-app-password"}'
+
+# Threads
+curl -X POST -H "Authorization: Bearer $SYNDROO_API_KEY" \
+  -H "Content-Type: application/json" \
+  "$SYNDROO_URL/v1/auth/threads" \
+  --data '{"access_token":"your-long-lived-threads-token"}'
+
+# X (if you already have OAuth 1.0a access tokens)
+curl -X POST -H "Authorization: Bearer $SYNDROO_API_KEY" \
+  -H "Content-Type: application/json" \
+  "$SYNDROO_URL/v1/auth/x" \
+  --data '{"access_token":"your-access-token","access_token_secret":"your-secret"}'
+```
+
+**OAuth browser flow** for X, Tumblr, and LinkedIn — guides the user through
+authorization in a browser. The Worker must have its app-level OAuth credentials
+configured as secrets first (X: `X_API_KEY` + `X_API_SECRET`; Tumblr:
+`TUMBLR_CONSUMER_KEY` + `TUMBLR_CONSUMER_SECRET`; LinkedIn: `LINKEDIN_CLIENT_ID`
++ `LINKEDIN_CLIENT_SECRET`). Register `https://<your-worker>/v1/auth/linkedin/callback`
+as an authorized redirect URL in the LinkedIn app settings.
+
+```bash
+# 1. Get the authorization URL
+curl -H "Authorization: Bearer $SYNDROO_API_KEY" "$SYNDROO_URL/v1/auth/x/connect"
+# Returns: {"platform":"x","url":"https://api.twitter.com/oauth/authorize?...","message":"..."}
+
+# 2. Open the returned URL in a browser → authorize → the Worker stores the token
+#    automatically at the /v1/auth/x/callback redirect
+
+# 3. Verify the credential was stored
+curl -H "Authorization: Bearer $SYNDROO_API_KEY" "$SYNDROO_URL/v1/auth/x"
+# Returns: {"platform":"x","configured":true,"source":"credential","oauthSupported":true}
+```
+
+**Remove a stored credential:**
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $SYNDROO_API_KEY" "$SYNDROO_URL/v1/auth/bluesky"
+```
+
+This removes the D1-stored credential. An environment-variable credential for the same platform remains active; to disable the platform entirely, also remove its secrets from the Worker.
+
 Selecting a platform without its required credential configuration returns HTTP
 `422` with `PLATFORM_NOT_CONFIGURED`; the request is rejected before anything is
 stored or queued, so a partially configured deployment never accepts work it
@@ -442,6 +520,11 @@ per platform, showing a preview, and asking the person to confirm.
 Confirmation is external to Syndroo. This candidate has no preview, approval,
 retry, or cancel endpoint, and none is added by the v0.3.0 architecture work.
 
+The repository ships a `skills/syndroo-connect.md` Skill file. An agent that
+loads it can guide a user through platform authentication (both direct token
+submission and OAuth browser flows) and publishing, without requiring the user to
+touch any configuration files or environment variables.
+
 A workflow that stays safe:
 
 1. Prepare and confirm the text in the client. Neither the planned content nor
@@ -468,10 +551,11 @@ A workflow that stays safe:
       │ Bearer-authenticated HTTP
       ▼
     packages/cloudflare-worker
-      ├── D1: posts + per-platform publications
+      ├── /v1/auth  credential storage (D1) + OAuth flows (X / Tumblr / LinkedIn)
+      ├── D1: posts + per-platform publications + credentials + OAuth state
       ├── Queue producer/consumer
       ├── Cron: due-post scan + stale-job recovery
-      └── explicit publisher selection
+      └── explicit publisher selection (D1 credentials take precedence over env)
               │
               ▼
     packages/threads ─────► Meta Threads API

@@ -1,6 +1,6 @@
 import { PublishError, type Publisher } from "@syndroo/core";
 
-import { publisherFor } from "./publishers.js";
+import { resolvePublisher } from "./publishers.js";
 import { D1Repository, type StoredPublication } from "./repository.js";
 import {
   retryAtFor,
@@ -53,7 +53,7 @@ export async function executePublication(
   let result: Awaited<ReturnType<Publisher["publish"]>>;
 
   try {
-    result = await publisherFor(publication.platform, env).publish({
+    result = await (await resolvePublisher(publication.platform, env, repository)).publish({
       publicationId: publication.id,
       platform: publication.platform,
       content: publication.content,

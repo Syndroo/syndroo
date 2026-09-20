@@ -61,6 +61,15 @@ interface PostIdRow {
   post_id: string;
 }
 
+interface CredentialRow {
+  data: string;
+}
+
+interface OAuthStateRow {
+  platform: string;
+  request_token: string | null;
+}
+
 const PUBLICATION_SELECT =
   "SELECT p.id, p.post_id, p.platform, p.provider, p.content, p.status, " +
   "p.attempts, p.external_id, p.external_url, p.error_code, p.error_message, " +
@@ -351,6 +360,59 @@ export class D1Repository {
     }
 
     return recovered;
+  }
+
+  async getCredential(platform: Platform): Promise<Record<string, string> | null> {
+    const row = await this.db
+      .prepare("SELECT data FROM credentials WHERE platform = ?")
+      .bind(platform)
+      .first<CredentialRow>();
+    return row ? (JSON.parse(row.data) as Record<string, string>) : null;
+  }
+
+  async setCredential(platform: Platform, data: Record<string, string>): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        "INSERT INTO credentials (platform, data, created_at, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT(platform) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+      )
+      .bind(platform, JSON.stringify(data), now, now)
+      .run();
+  }
+
+  async deleteCredential(platform: Platform): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM credentials WHERE platform = ?")
+      .bind(platform)
+      .run();
+  }
+
+  async getOAuthState(
+    state: string,
+  ): Promise<{ platform: string; requestToken: string | null } | null> {
+    const row = await this.db
+      .prepare("SELECT platform, request_token FROM oauth_state WHERE state = ?")
+      .bind(state)
+      .first<OAuthStateRow>();
+    return row ? { platform: row.platform, requestToken: row.request_token } : null;
+  }
+
+  async setOAuthState(state: string, platform: Platform, requestToken?: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        "INSERT INTO oauth_state (state, platform, request_token, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .bind(state, platform, requestToken ?? null, now)
+      .run();
+  }
+
+  async deleteOAuthState(state: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM oauth_state WHERE state = ?")
+      .bind(state)
+      .run();
   }
 
   private postStatusUpdateForPublication(id: string, now: string): D1PreparedStatement {
