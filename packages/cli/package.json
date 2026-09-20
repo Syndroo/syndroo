@@ -1,0 +1,50 @@
+{
+  "name": "@syndroo/cli",
+  "version": "0.4.0-rc.1",
+  "type": "module",
+  "description": "The `syndroo` command: validate, create, and track Syndroo posts from a terminal, script, or CI job.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syndroo/syndroo.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Syndroo/syndroo/issues"
+  },
+  "homepage": "https://github.com/Syndroo/syndroo#readme",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "syndroo": "./dist/bin.js"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "skills",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@syndroo/sdk": "0.4.0-rc.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x ./dist/bin.js",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "npm run build && vitest run",
+    "prepack": "npm run build"
+  }
+}
