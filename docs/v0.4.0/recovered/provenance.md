@@ -15,7 +15,7 @@
 | `README.md` | 对话中交接包生成脚本逐字恢复 |
 | `implementation-handoff.md` | 同上 |
 | `acceptance-results.template.json` | 同上，由脚本生成，全部 `NOT RUN` |
-| `syndroo-web-handoff.md` | 同上，原定放入 syndroo-web 仓库 `docs/v0.4.0/README.md` |
+| `syndroo-web-handoff.md` | 已迁入 Web 仓库：`Syndroo/syndroo-web` `docs/v0.4.0/README.md`（commit `74743e3`）。核心仓库不再保留副本。 |
 | `recovered/conversation-design-source.md` | 对话助手回复逐字引用 |
 
 ## 重建（非逐字）
@@ -46,3 +46,5 @@
 ## 状态
 
 本目录是设计与交接资料，不包含任何实现、测试通过、发布或部署记录。清单 63 项状态全部为 `NOT RUN`。
+
+Web 仓库的交接入口已推送到 `Syndroo/syndroo-web` `docs/v0.4.0/README.md`（`48471ac..74743e3`）；核心仓库只保留这一份来源与校验记录。
