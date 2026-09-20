@@ -73,14 +73,14 @@
     "experiments/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads && npm run build --workspace @syndroo/linkedin && npm run build --workspace @syndroo/tumblr && npm run build --workspace @syndroo/x",
+    "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads && npm run build --workspace @syndroo/linkedin && npm run build --workspace @syndroo/tumblr && npm run build --workspace @syndroo/x && npm run build --workspace @syndroo/sdk",
     "build:package": "npm run build && npm run build:package --workspace @syndroo/cloudflare-worker",
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "check": "npm run build && npm run check:scripts && npm run check:e2e && npm run check --workspaces --if-present",
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "check:e2e": "tsc -p e2e/tsconfig.json --noEmit",
     "dco:check": "npm run build:scripts && node .build/scripts/check-dco.js",
-    "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/linkedin && npm run test --workspace @syndroo/tumblr && npm run test --workspace @syndroo/x && npm run test --workspace @syndroo/cloudflare-worker && npm run test:scripts",
+    "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/linkedin && npm run test --workspace @syndroo/tumblr && npm run test --workspace @syndroo/x && npm run test --workspace @syndroo/cloudflare-worker && npm run test --workspace @syndroo/sdk && npm run test:scripts",
     "test:scripts": "npm run build:scripts && node --test --test-concurrency=1 .build/scripts/check-release.spec.js .build/scripts/bundle-worker.spec.js .build/scripts/package-licenses.spec.js .build/scripts/verify-package.spec.js",
     "dev": "npm run dev --workspace @syndroo/cloudflare-worker",
     "db:migrate:local": "npm run db:migrate:local --workspace @syndroo/cloudflare-worker",
