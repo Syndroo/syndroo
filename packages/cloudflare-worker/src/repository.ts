@@ -67,7 +67,7 @@ interface CredentialRow {
 
 interface OAuthStateRow {
   platform: string;
-  request_token: string | null;
+  data: string;
 }
 
 const PUBLICATION_SELECT =
@@ -370,14 +370,18 @@ export class D1Repository {
     return row ? (JSON.parse(row.data) as Record<string, string>) : null;
   }
 
-  async setCredential(platform: Platform, data: Record<string, string>): Promise<void> {
+  async setCredential(
+    platform: Platform,
+    data: Record<string, string>,
+    expiresAt?: string,
+  ): Promise<void> {
     const now = new Date().toISOString();
     await this.db
       .prepare(
-        "INSERT INTO credentials (platform, data, created_at, updated_at) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT(platform) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+        "INSERT INTO credentials (platform, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?) " +
+          "ON CONFLICT(platform) DO UPDATE SET data = excluded.data, expires_at = excluded.expires_at, updated_at = excluded.updated_at",
       )
-      .bind(platform, JSON.stringify(data), now, now)
+      .bind(platform, JSON.stringify(data), expiresAt ?? null, now, now)
       .run();
   }
 
@@ -388,23 +392,40 @@ export class D1Repository {
       .run();
   }
 
+  /**
+   * Look up a pending OAuth state by its random state token.
+   * Returns null when the state does not exist or has passed its expiry.
+   */
   async getOAuthState(
     state: string,
-  ): Promise<{ platform: string; requestToken: string | null } | null> {
+  ): Promise<{ platform: string; data: string } | null> {
+    const now = new Date().toISOString();
     const row = await this.db
-      .prepare("SELECT platform, request_token FROM oauth_state WHERE state = ?")
-      .bind(state)
-      .first<OAuthStateRow>();
-    return row ? { platform: row.platform, requestToken: row.request_token } : null;
+      .prepare(
+        "SELECT platform, data FROM oauth_state WHERE state = ? AND expires_at > ?",
+      )
+      .bind(state, now)
+      .first<{ platform: string; data: string }>();
+    return row ?? null;
   }
 
-  async setOAuthState(state: string, platform: Platform, requestToken?: string): Promise<void> {
+  /**
+   * Persist an OAuth state token with a 30-minute TTL.
+   * `data` is a JSON string; OAuth 1.0a flows include the request-token secret
+   * here so the access-token exchange can sign correctly.
+   */
+  async setOAuthState(
+    state: string,
+    platform: Platform,
+    data: string = "{}",
+  ): Promise<void> {
     const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     await this.db
       .prepare(
-        "INSERT INTO oauth_state (state, platform, request_token, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO oauth_state (state, platform, data, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
       )
-      .bind(state, platform, requestToken ?? null, now)
+      .bind(state, platform, data, expiresAt, now)
       .run();
   }
 
