@@ -5,17 +5,20 @@
  * GET    /v1/auth/:platform               Single platform status.
  * POST   /v1/auth/:platform               Store credentials directly.
  * DELETE /v1/auth/:platform               Remove stored credentials.
- * GET    /v1/auth/:platform/connect       Start an OAuth flow; returns the URL.
- * GET    /v1/auth/:platform/callback      OAuth redirect target (no Bearer needed).
+ * GET    /v1/auth/:platform/connect       Start OAuth flow; returns the URL to open.
+ * GET    /v1/auth/:platform/callback      OAuth redirect (no Bearer required).
  * POST   /v1/auth/:platform/refresh       Refresh an expired OAuth 2.0 token.
  *
- * OAuth logic is driven by the OAuthConfig attached to each PlatformDescriptor,
- * so no switch statements are needed here — adding a new OAuth platform means
- * adding a descriptor entry, not touching this file.
+ * All platform-specific behaviour comes from the platform descriptor's
+ * OAuthConfig.  No platform names appear in the OAuth logic below.
  */
 
 import { isPlatform, PLATFORMS, type Platform } from "@syndroo/core";
-import { DESCRIPTORS, type OAuth1Config, type OAuth2Config } from "./platform-descriptors.js";
+import {
+  DESCRIPTORS,
+  type WorkerOAuth1Config,
+  type WorkerOAuth2Config,
+} from "./platform-descriptors.js";
 import { isPlatformConfigured } from "./publishers.js";
 import { ApiError, json, readJsonBody } from "./http.js";
 import type { D1Repository } from "./repository.js";
@@ -31,7 +34,6 @@ export async function routeAuth(
 ): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.split("/").filter(Boolean);
-  // ["v1","auth"] | ["v1","auth",platform] | ["v1","auth",platform,action]
 
   if (parts.length === 2) {
     if (request.method === "GET") return listCredentialStatus(env, repository);
@@ -43,7 +45,7 @@ export async function routeAuth(
     throw new ApiError(`Unknown platform: ${rawPlatform}`, 404, "NOT_FOUND");
   }
   const platform = rawPlatform;
-  const action = parts[3]; // "connect" | "callback" | "refresh" | undefined
+  const action = parts[3];
 
   if (!action) {
     if (request.method === "GET") return getCredentialStatus(platform, env, repository);
@@ -75,16 +77,14 @@ export async function routeAuth(
 // ---------------------------------------------------------------------------
 
 async function listCredentialStatus(env: Env, repository: D1Repository): Promise<Response> {
-  const installedPlatforms = PLATFORMS.filter(
-    (p) => DESCRIPTORS[p].installed,
-  ) as Platform[];
+  const installedPlatforms = PLATFORMS.filter((p) => DESCRIPTORS[p].installed) as Platform[];
 
   const items = await Promise.all(
     installedPlatforms.map(async (platform) => {
       const desc = DESCRIPTORS[platform];
-      const credential = await repository.getCredential(platform);
+      const cred = await repository.getCredential(platform);
       const fromEnv = isPlatformConfigured(platform, env);
-      const fromCred = credential !== null && desc.isConfiguredWithCredential(credential, env);
+      const fromCred = cred !== null && desc.isConfiguredWithCredential(cred, env);
       return {
         platform,
         configured: fromCred || fromEnv,
@@ -103,9 +103,9 @@ async function getCredentialStatus(
   repository: D1Repository,
 ): Promise<Response> {
   const desc = DESCRIPTORS[platform];
-  const credential = await repository.getCredential(platform);
+  const cred = await repository.getCredential(platform);
   const fromEnv = isPlatformConfigured(platform, env);
-  const fromCred = credential !== null && desc.isConfiguredWithCredential(credential, env);
+  const fromCred = cred !== null && desc.isConfiguredWithCredential(cred, env);
   return json({
     platform,
     configured: fromCred || fromEnv,
@@ -166,16 +166,18 @@ export async function handleOAuthCallback(
 ): Promise<Response> {
   const desc = DESCRIPTORS[platform];
   if (!desc.oauth) return htmlPage("Not supported", `${desc.label} does not use OAuth callbacks.`);
-  if (desc.oauth.type === "oauth1") return callbackOAuth1(desc.oauth, platform, request, env, repository);
+  if (desc.oauth.type === "oauth1") {
+    return callbackOAuth1(desc.oauth, platform, request, env, repository);
+  }
   return callbackOAuth2(desc.oauth, platform, request, env, repository);
 }
 
 // ---------------------------------------------------------------------------
-// OAuth 1.0a flow
+// OAuth 1.0a
 // ---------------------------------------------------------------------------
 
 async function connectOAuth1(
-  config: OAuth1Config,
+  config: WorkerOAuth1Config,
   platform: Platform,
   callbackUrl: string,
   env: Env,
@@ -183,6 +185,7 @@ async function connectOAuth1(
 ): Promise<Response> {
   const consumerKey = (env[config.consumerKeyEnv] as string | undefined)?.trim();
   const consumerSecret = (env[config.consumerSecretEnv] as string | undefined)?.trim();
+
   if (!consumerKey || !consumerSecret) {
     throw new ApiError(
       `OAuth app credentials for ${platform} (${String(config.consumerKeyEnv)}, ${String(config.consumerSecretEnv)}) are not configured`,
@@ -192,10 +195,8 @@ async function connectOAuth1(
   }
 
   const state = crypto.randomUUID();
-  const callbackWithState = `${callbackUrl}?state=${state}`;
-
   const oauthParams: Record<string, string> = {
-    oauth_callback: callbackWithState,
+    oauth_callback: `${callbackUrl}?state=${state}`,
     oauth_consumer_key: consumerKey,
     oauth_nonce: oauthNonce(),
     oauth_signature_method: "HMAC-SHA1",
@@ -217,15 +218,13 @@ async function connectOAuth1(
 
   const params = new URLSearchParams(await response.text());
   const requestToken = params.get("oauth_token");
-  const requestTokenSecret = params.get("oauth_token_secret"); // needed for access-token signing
+  const requestTokenSecret = params.get("oauth_token_secret");
   const confirmed = params.get("oauth_callback_confirmed");
 
   if (!requestToken || !requestTokenSecret || confirmed !== "true") {
     throw new ApiError(`${platform} returned an invalid request token response`, 502, "PROVIDER_ERROR");
   }
 
-  // Store both token and token secret; the secret is required to sign the
-  // access-token exchange in the callback step.
   await repository.setOAuthState(
     state,
     platform,
@@ -235,12 +234,12 @@ async function connectOAuth1(
   return json({
     platform,
     url: `${config.authorizeUrl}?oauth_token=${encodeURIComponent(requestToken)}`,
-    message: `Open the URL in your browser to authorize ${platform}. After authorizing, return here.`,
+    message: `Open the URL in your browser to authorize ${DESCRIPTORS[platform].label}. After authorizing, return here.`,
   });
 }
 
 async function callbackOAuth1(
-  config: OAuth1Config,
+  config: WorkerOAuth1Config,
   platform: Platform,
   request: Request,
   env: Env,
@@ -259,10 +258,9 @@ async function callbackOAuth1(
   if (!storedState || storedState.platform !== platform) {
     return htmlPage("Authorization failed", "Invalid or expired authorization session. Please start over.");
   }
-
   await repository.deleteOAuthState(state);
 
-  const stateData = JSON.parse(storedState.data) as { request_token?: string; request_token_secret?: string };
+  const stateData = JSON.parse(storedState.data) as { request_token_secret?: string };
   const requestTokenSecret = stateData.request_token_secret ?? "";
 
   const consumerKey = (env[config.consumerKeyEnv] as string | undefined)?.trim() ?? "";
@@ -278,7 +276,6 @@ async function callbackOAuth1(
     oauth_version: "1.0",
   };
 
-  // Signing key = consumerSecret & requestTokenSecret (not the request token itself).
   const signature = await oauthSign(
     "POST",
     config.accessTokenUrl,
@@ -310,14 +307,16 @@ async function callbackOAuth1(
     access_token_secret: accessTokenSecret,
   };
 
-  // Let the descriptor parse any extra fields (e.g. Tumblr blog_name).
+  // Let the platform adapter parse any extra fields from the response.
   const extra = config.parseExtraCredentials?.(resultParams) ?? {};
   Object.assign(credentialData, extra);
 
-  // Normalize the key names to match what parseDirectCredential and
-  // buildPublisher expect (Tumblr uses token/token_secret, not access_token).
-  const normalizedData = normalizeOAuth1Credential(platform, credentialData);
-  await repository.setCredential(platform, normalizedData);
+  // Normalize the keys to what this platform's descriptor and adapter expect.
+  // (The descriptor's parseDirectCredential uses platform-native keys; we match those.)
+  const storedData = DESCRIPTORS[platform].parseDirectCredential(
+    normalizeOAuth1ResponseToDirectFormat(platform, credentialData),
+  );
+  await repository.setCredential(platform, storedData);
 
   return htmlPage(
     `${DESCRIPTORS[platform].label} connected`,
@@ -326,28 +325,29 @@ async function callbackOAuth1(
 }
 
 /**
- * Rename access_token / access_token_secret to the field names each platform's
- * descriptor and publisher expect (Tumblr uses token / token_secret).
+ * Map OAuth 1.0a access token response keys to the shape that each platform's
+ * parseDirectCredential expects, so the stored credential is consistent whether
+ * it came from OAuth or was submitted directly.
  */
-function normalizeOAuth1Credential(
+function normalizeOAuth1ResponseToDirectFormat(
   platform: Platform,
   raw: Record<string, string>,
 ): Record<string, string> {
+  // Tumblr stores token/token_secret (matching TumblrPublisher); other OAuth 1.0a platforms
+  // use access_token/access_token_secret already.
   if (platform === "tumblr") {
     const { access_token, access_token_secret, ...rest } = raw;
-    const token = access_token ?? "";
-    const tokenSecret = access_token_secret ?? "";
-    return { token, token_secret: tokenSecret, ...rest };
+    return { token: access_token ?? "", token_secret: access_token_secret ?? "", ...rest };
   }
   return raw;
 }
 
 // ---------------------------------------------------------------------------
-// OAuth 2.0 flow
+// OAuth 2.0
 // ---------------------------------------------------------------------------
 
 async function connectOAuth2(
-  config: OAuth2Config,
+  config: WorkerOAuth2Config,
   platform: Platform,
   callbackUrl: string,
   env: Env,
@@ -355,11 +355,7 @@ async function connectOAuth2(
 ): Promise<Response> {
   const clientId = (env[config.clientIdEnv] as string | undefined)?.trim();
   if (!clientId) {
-    throw new ApiError(
-      `${String(config.clientIdEnv)} is not configured`,
-      422,
-      "PLATFORM_NOT_CONFIGURED",
-    );
+    throw new ApiError(`${String(config.clientIdEnv)} is not configured`, 422, "PLATFORM_NOT_CONFIGURED");
   }
 
   const state = crypto.randomUUID();
@@ -375,12 +371,12 @@ async function connectOAuth2(
   return json({
     platform,
     url: authUrl.toString(),
-    message: `Open the URL in your browser to authorize ${platform}. After authorizing, return here.`,
+    message: `Open the URL in your browser to authorize ${DESCRIPTORS[platform].label}. After authorizing, return here.`,
   });
 }
 
 async function callbackOAuth2(
-  config: OAuth2Config,
+  config: WorkerOAuth2Config,
   platform: Platform,
   request: Request,
   env: Env,
@@ -392,11 +388,12 @@ async function callbackOAuth2(
   const error = url.searchParams.get("error");
 
   if (error) {
-    return htmlPage("Authorization failed", `${DESCRIPTORS[platform].label} denied the authorization: ${url.searchParams.get("error_description") ?? error}`);
+    return htmlPage(
+      "Authorization failed",
+      `${DESCRIPTORS[platform].label} denied the authorization: ${url.searchParams.get("error_description") ?? error}`,
+    );
   }
-  if (!state || !code) {
-    return htmlPage("Authorization failed", "Missing OAuth parameters.");
-  }
+  if (!state || !code) return htmlPage("Authorization failed", "Missing OAuth parameters.");
 
   const storedState = await repository.getOAuthState(state);
   if (!storedState || storedState.platform !== platform) {
@@ -406,13 +403,12 @@ async function callbackOAuth2(
 
   const callbackUrl = `${url.protocol}//${url.host}${url.pathname}`;
   const tokenData = await exchangeOAuth2Code(config, code, callbackUrl, env);
-  if (!tokenData) return htmlPage("Authorization failed", "Failed to exchange authorization code. Please try again.");
+  if (!tokenData) {
+    return htmlPage("Authorization failed", "Failed to exchange authorization code. Please try again.");
+  }
 
   const credentialData: Record<string, string> = { access_token: tokenData.access_token };
   if (tokenData.refresh_token) credentialData.refresh_token = tokenData.refresh_token;
-  if (tokenData.expires_in) {
-    credentialData.token_type = "oauth2";
-  }
 
   const expiresAt = tokenData.expires_in
     ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
@@ -444,13 +440,11 @@ async function refreshCredential(
     );
   }
 
-  const credential = await repository.getCredential(platform);
-  if (!credential) {
-    throw new ApiError(`No stored credential found for ${platform}`, 404, "NOT_FOUND");
-  }
-  if (!credential.refresh_token) {
+  const cred = await repository.getCredential(platform);
+  if (!cred) throw new ApiError(`No stored credential for ${platform}`, 404, "NOT_FOUND");
+  if (!cred.refresh_token) {
     throw new ApiError(
-      `No refresh token stored for ${platform}. Re-authorize via GET /v1/auth/${platform}/connect`,
+      `No refresh token for ${platform}. Re-authorize via GET /v1/auth/${platform}/connect`,
       422,
       "INVALID_REQUEST",
     );
@@ -460,11 +454,7 @@ async function refreshCredential(
   const clientId = (env[config.clientIdEnv] as string | undefined)?.trim();
   const clientSecret = (env[config.clientSecretEnv] as string | undefined)?.trim();
   if (!clientId || !clientSecret) {
-    throw new ApiError(
-      `OAuth app credentials for ${platform} are not configured`,
-      422,
-      "PLATFORM_NOT_CONFIGURED",
-    );
+    throw new ApiError(`OAuth app credentials for ${platform} are not configured`, 422, "PLATFORM_NOT_CONFIGURED");
   }
 
   const response = await fetch(config.tokenUrl, {
@@ -472,18 +462,14 @@ async function refreshCredential(
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
-      refresh_token: credential.refresh_token,
+      refresh_token: cred.refresh_token,
       client_id: clientId,
       client_secret: clientSecret,
     }),
   });
 
   if (!response.ok) {
-    throw new ApiError(
-      `${desc.label} token refresh failed (HTTP ${response.status})`,
-      502,
-      "PROVIDER_ERROR",
-    );
+    throw new ApiError(`${desc.label} token refresh failed (HTTP ${response.status})`, 502, "PROVIDER_ERROR");
   }
 
   const tokenData = await response.json() as { access_token?: string; expires_in?: number; refresh_token?: string };
@@ -491,7 +477,7 @@ async function refreshCredential(
     throw new ApiError(`${desc.label} returned an invalid token refresh response`, 502, "PROVIDER_ERROR");
   }
 
-  const updated: Record<string, string> = { ...credential, access_token: tokenData.access_token };
+  const updated: Record<string, string> = { ...cred, access_token: tokenData.access_token };
   if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
 
   const expiresAt = tokenData.expires_in
@@ -499,16 +485,15 @@ async function refreshCredential(
     : undefined;
 
   await repository.setCredential(platform, updated, expiresAt);
-
   return json({ platform, refreshed: true, expiresAt: expiresAt ?? null });
 }
 
 // ---------------------------------------------------------------------------
-// OAuth 2.0 code exchange helper
+// OAuth 2.0 code exchange
 // ---------------------------------------------------------------------------
 
 async function exchangeOAuth2Code(
-  config: OAuth2Config,
+  config: WorkerOAuth2Config,
   code: string,
   redirectUri: string,
   env: Env,
@@ -530,7 +515,9 @@ async function exchangeOAuth2Code(
 
   if (!response.ok) return null;
   const data = await response.json() as { access_token?: string; expires_in?: number; refresh_token?: string };
-  return data.access_token ? data as { access_token: string; expires_in?: number; refresh_token?: string } : null;
+  return data.access_token
+    ? (data as { access_token: string; expires_in?: number; refresh_token?: string })
+    : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,11 +553,10 @@ async function oauthSign(
 }
 
 function oauthAuthHeader(params: Record<string, string>): string {
-  const parts = Object.entries(params)
+  return `OAuth ${Object.entries(params)
     .filter(([k]) => k.startsWith("oauth_"))
     .map(([k, v]) => `${enc(k)}="${enc(v)}"`)
-    .join(", ");
-  return `OAuth ${parts}`;
+    .join(", ")}`;
 }
 
 function oauthNonce(): string {
@@ -586,7 +572,7 @@ function enc(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 function oauthCallbackUrl(request: Request, platform: Platform): string {
@@ -595,13 +581,13 @@ function oauthCallbackUrl(request: Request, platform: Platform): string {
 }
 
 function htmlPage(title: string, message: string): Response {
-  const isError = /fail|error|unsupported/i.test(title);
+  const isError = /fail|error|not supported/i.test(title);
   const html = `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>${escapeHtml(title)} – Syndroo</title>
+<head><meta charset="utf-8"><title>${escHtml(title)} – Syndroo</title>
 <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;color:#1a1a1a}h1{font-size:1.4rem;margin-bottom:.5rem}p{color:#555;line-height:1.6}</style>
 </head>
-<body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body>
+<body><h1>${escHtml(title)}</h1><p>${escHtml(message)}</p></body>
 </html>`;
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -609,6 +595,6 @@ function htmlPage(title: string, message: string): Response {
   });
 }
 
-function escapeHtml(s: string): string {
+function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

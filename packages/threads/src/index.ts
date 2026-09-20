@@ -1,5 +1,6 @@
 import {
   PublishError,
+  type PlatformAdapter,
   type Publisher,
   type PublishRequest,
   type PublishResult,
@@ -244,3 +245,19 @@ function normalizeError(error: unknown): PublishError {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+// ---------------------------------------------------------------------------
+// Platform adapter
+// ---------------------------------------------------------------------------
+
+
+export const threadsAdapter: PlatformAdapter = {
+  providerName: "threads-native",
+
+  buildPublisher: (cred) => {
+    if (!cred.access_token?.trim()) {
+      throw new PublishError("Threads credential is incomplete (access_token)", "AUTH");
+    }
+    return new ThreadsPublisher({ accessToken: cred.access_token });
+  },
+};

@@ -1,98 +1,83 @@
 /**
- * Per-platform descriptor objects — the single authoritative place for all
- * platform-specific behaviour.  Adding a new platform means adding one entry
- * here; no other file needs a new switch branch.
+ * Worker-level platform registry.
  *
- * Design notes:
- * - Each descriptor is a plain object (no class hierarchy).
- * - `buildPublisher(cred, env)` handles both the env-only path (cred = null)
- *   and the D1-credential path (cred = stored data), with env falling back to
- *   fill app-level keys where needed.
- * - `oauth` is present only for platforms that support the OAuth browser flow.
- *   OAuth 1.0a and OAuth 2.0 are represented as a discriminated union so the
- *   generic connect/callback helpers in auth.ts can pick the right path without
- *   another switch.
+ * Each entry wraps the platform package's PlatformAdapter with the
+ * Cloudflare-Worker-specific concerns: Env var names, credential resolution,
+ * HTTP body validation, and OAuth app-key env mappings.
+ *
+ * Platform packages own: provider name, publisher construction, OAuth URLs.
+ * This file owns: env var names, credential merging, ApiError handling.
  */
 
-import { BlueskyPublisher } from "@syndroo/bluesky";
-import { ThreadsPublisher } from "@syndroo/threads";
-import { XPublisher } from "@syndroo/x";
-import { TumblrPublisher, normalizeTumblrBlog } from "@syndroo/tumblr";
-import { LinkedInPublisher, isLinkedInConfigurationValid } from "@syndroo/linkedin";
-import { PublishError, type Platform, type Publisher } from "@syndroo/core";
+import { blueskyAdapter } from "@syndroo/bluesky";
+import { threadsAdapter } from "@syndroo/threads";
+import { xAdapter } from "@syndroo/x";
+import { tumblrAdapter, normalizeTumblrBlog } from "@syndroo/tumblr";
+import { linkedinAdapter, isLinkedInConfigurationValid } from "@syndroo/linkedin";
+import {
+  PublishError,
+  type Platform,
+  type PlatformAdapter,
+  type Publisher,
+  type OAuth1Endpoints,
+  type OAuth2Endpoints,
+  type OAuthEndpoints,
+} from "@syndroo/core";
 
 import { ApiError } from "./http.js";
 
-export type CredentialData = Record<string, string>;
+export type { OAuthEndpoints, OAuth1Endpoints, OAuth2Endpoints };
 
-/** OAuth 1.0a connect configuration (X, Tumblr). */
-export interface OAuth1Config {
-  readonly type: "oauth1";
-  /** Env-var name for the OAuth app consumer key. */
+// ---------------------------------------------------------------------------
+// Worker-level OAuth config (extends platform's endpoint URLs with env keys)
+// ---------------------------------------------------------------------------
+
+export interface WorkerOAuth1Config extends OAuth1Endpoints {
   readonly consumerKeyEnv: keyof Env;
-  /** Env-var name for the OAuth app consumer secret. */
   readonly consumerSecretEnv: keyof Env;
-  readonly requestTokenUrl: string;
-  readonly authorizeUrl: string;
-  readonly accessTokenUrl: string;
-  /**
-   * Optional: map additional fields from the access-token response body into
-   * the stored credential (e.g. `blog_name` for Tumblr).
-   */
-  parseExtraCredentials?(params: URLSearchParams): CredentialData;
 }
 
-/** OAuth 2.0 authorization-code configuration (LinkedIn). */
-export interface OAuth2Config {
-  readonly type: "oauth2";
-  /** Env-var name for the OAuth app client ID. */
+export interface WorkerOAuth2Config extends OAuth2Endpoints {
   readonly clientIdEnv: keyof Env;
-  /** Env-var name for the OAuth app client secret. */
   readonly clientSecretEnv: keyof Env;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly scopes: string;
 }
 
-export type OAuthConfig = OAuth1Config | OAuth2Config;
+export type WorkerOAuthConfig = WorkerOAuth1Config | WorkerOAuth2Config;
 
-export interface PlatformDescriptor {
+// ---------------------------------------------------------------------------
+// Worker platform descriptor
+// ---------------------------------------------------------------------------
+
+export interface WorkerPlatformDescriptor {
   readonly id: Platform;
   readonly label: string;
-  readonly providerName: string;
-  /**
-   * False for platforms recognized by core but not yet installed in this
-   * Worker (mastodon, nostr).  All methods on an uninstalled descriptor
-   * throw immediately.
-   */
   readonly installed: boolean;
+  readonly adapter: PlatformAdapter;
 
-  /** True when all required env vars alone are present and valid. */
+  /** True when all required env vars are present without D1 credentials. */
   isConfiguredFromEnv(env: Env): boolean;
 
-  /**
-   * True when a stored credential, together with env vars for any app-level
-   * keys, is sufficient to publish.  X and Tumblr need app keys from env
-   * even when the user token comes from D1.
-   */
-  isConfiguredWithCredential(cred: CredentialData, env: Env): boolean;
+  /** True when a D1 credential combined with env app keys is sufficient. */
+  isConfiguredWithCredential(cred: Record<string, string>, env: Env): boolean;
 
   /**
-   * Build a Publisher.
-   * - `cred = null`: use env vars only.
-   * - `cred` present: prefer credential fields, fall back to env for app keys.
-   * Throws `PublishError("AUTH")` if the combination is insufficient.
+   * Merge the stored D1 credential with env var fallbacks into the unified
+   * record that `adapter.buildPublisher()` expects.
+   * Returns null when the combination is insufficient to publish.
    */
-  buildPublisher(cred: CredentialData | null, env: Env): Publisher;
+  resolveCredential(
+    cred: Record<string, string> | null,
+    env: Env,
+  ): Record<string, string> | null;
 
   /**
-   * Validate and normalise the JSON body sent to `POST /v1/auth/:platform`.
-   * Throws `ApiError(400)` on missing or malformed fields.
+   * Validate and normalise the JSON body from `POST /v1/auth/:platform`.
+   * Throws `ApiError(400)` on malformed input.
    */
-  parseDirectCredential(body: Record<string, unknown>): CredentialData;
+  parseDirectCredential(body: Record<string, unknown>): Record<string, string>;
 
-  /** Present only for platforms that support the OAuth browser-flow. */
-  readonly oauth?: OAuthConfig;
+  /** OAuth worker config: endpoint URLs + env var key names. */
+  readonly oauth?: WorkerOAuthConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,19 +97,15 @@ function optStr(obj: Record<string, unknown>, key: string): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
-function notConfigured(platform: Platform): never {
-  throw new PublishError("Platform credentials are not configured: " + platform, "AUTH");
-}
-
 // ---------------------------------------------------------------------------
 // Bluesky
 // ---------------------------------------------------------------------------
 
-const bluesky: PlatformDescriptor = {
+const bluesky: WorkerPlatformDescriptor = {
   id: "bluesky",
   label: "Bluesky",
-  providerName: "bluesky-native",
   installed: true,
+  adapter: blueskyAdapter,
 
   isConfiguredFromEnv: (env) =>
     Boolean(env.BLUESKY_IDENTIFIER?.trim() && env.BLUESKY_PASSWORD?.trim()),
@@ -132,24 +113,23 @@ const bluesky: PlatformDescriptor = {
   isConfiguredWithCredential: (cred) =>
     Boolean(cred.identifier?.trim() && cred.password?.trim()),
 
-  buildPublisher: (cred, env) => {
+  resolveCredential: (cred, env) => {
     const identifier = cred?.identifier?.trim() ?? env.BLUESKY_IDENTIFIER?.trim();
     const password = cred?.password?.trim() ?? env.BLUESKY_PASSWORD?.trim();
-    if (!identifier || !password) notConfigured("bluesky");
-    return new BlueskyPublisher({
+    if (!identifier || !password) return null;
+    return {
       identifier,
       password,
       host: cred?.host?.trim() ?? env.BLUESKY_HOST?.trim() ?? "bsky.social",
-    });
+    };
   },
 
   parseDirectCredential: (body) => {
-    const b = body as Record<string, unknown>;
-    const data: CredentialData = {
-      identifier: requireStr(b, "identifier"),
-      password: requireStr(b, "password"),
+    const data: Record<string, string> = {
+      identifier: requireStr(body, "identifier"),
+      password: requireStr(body, "password"),
     };
-    const host = optStr(b, "host");
+    const host = optStr(body, "host");
     if (host) data.host = host;
     return data;
   },
@@ -159,37 +139,35 @@ const bluesky: PlatformDescriptor = {
 // Threads
 // ---------------------------------------------------------------------------
 
-const threads: PlatformDescriptor = {
+const threads: WorkerPlatformDescriptor = {
   id: "threads",
   label: "Threads",
-  providerName: "threads-native",
   installed: true,
+  adapter: threadsAdapter,
 
   isConfiguredFromEnv: (env) => Boolean(env.THREADS_ACCESS_TOKEN?.trim()),
 
   isConfiguredWithCredential: (cred) => Boolean(cred.access_token?.trim()),
 
-  buildPublisher: (cred, env) => {
+  resolveCredential: (cred, env) => {
     const token = cred?.access_token?.trim() ?? env.THREADS_ACCESS_TOKEN?.trim();
-    if (!token) notConfigured("threads");
-    return new ThreadsPublisher({ accessToken: token });
+    return token ? { access_token: token } : null;
   },
 
-  parseDirectCredential: (body) => {
-    const b = body as Record<string, unknown>;
-    return { access_token: requireStr(b, "access_token") };
-  },
+  parseDirectCredential: (body) => ({
+    access_token: requireStr(body, "access_token"),
+  }),
 };
 
 // ---------------------------------------------------------------------------
-// X (formerly Twitter) – OAuth 1.0a
+// X (OAuth 1.0a) — app key/secret from env, user token from cred or env
 // ---------------------------------------------------------------------------
 
-const x: PlatformDescriptor = {
+const x: WorkerPlatformDescriptor = {
   id: "x",
   label: "X",
-  providerName: "x-sdk",
   installed: true,
+  adapter: xAdapter,
 
   isConfiguredFromEnv: (env) =>
     [env.X_API_KEY, env.X_API_SECRET, env.X_ACCESS_TOKEN, env.X_ACCESS_TOKEN_SECRET].every(
@@ -204,45 +182,37 @@ const x: PlatformDescriptor = {
         env.X_API_SECRET?.trim(),
     ),
 
-  buildPublisher: (cred, env) => {
+  resolveCredential: (cred, env) => {
     const apiKey = env.X_API_KEY?.trim();
     const apiSecret = env.X_API_SECRET?.trim();
-    if (!apiKey || !apiSecret) {
-      throw new PublishError("X app credentials (X_API_KEY, X_API_SECRET) are not configured", "AUTH");
-    }
+    if (!apiKey || !apiSecret) return null;
     const accessToken = cred?.access_token?.trim() ?? env.X_ACCESS_TOKEN?.trim();
     const accessTokenSecret = cred?.access_token_secret?.trim() ?? env.X_ACCESS_TOKEN_SECRET?.trim();
-    if (!accessToken || !accessTokenSecret) notConfigured("x");
-    return new XPublisher({ apiKey, apiSecret, accessToken, accessTokenSecret });
+    if (!accessToken || !accessTokenSecret) return null;
+    return { api_key: apiKey, api_secret: apiSecret, access_token: accessToken, access_token_secret: accessTokenSecret };
   },
 
-  parseDirectCredential: (body) => {
-    const b = body as Record<string, unknown>;
-    return {
-      access_token: requireStr(b, "access_token"),
-      access_token_secret: requireStr(b, "access_token_secret"),
-    };
-  },
+  parseDirectCredential: (body) => ({
+    access_token: requireStr(body, "access_token"),
+    access_token_secret: requireStr(body, "access_token_secret"),
+  }),
 
   oauth: {
-    type: "oauth1",
+    ...xAdapter.oauth as OAuth1Endpoints,
     consumerKeyEnv: "X_API_KEY",
     consumerSecretEnv: "X_API_SECRET",
-    requestTokenUrl: "https://api.twitter.com/oauth/request_token",
-    authorizeUrl: "https://api.twitter.com/oauth/authorize",
-    accessTokenUrl: "https://api.twitter.com/oauth/access_token",
   },
 };
 
 // ---------------------------------------------------------------------------
-// Tumblr – OAuth 1.0a
+// Tumblr (OAuth 1.0a) — consumer key/secret from env, token from cred or env
 // ---------------------------------------------------------------------------
 
-const tumblr: PlatformDescriptor = {
+const tumblr: WorkerPlatformDescriptor = {
   id: "tumblr",
   label: "Tumblr",
-  providerName: "tumblr-native",
   installed: true,
+  adapter: tumblrAdapter,
 
   isConfiguredFromEnv: (env) => {
     if (
@@ -253,9 +223,8 @@ const tumblr: PlatformDescriptor = {
         env.TUMBLR_TOKEN_SECRET,
         env.TUMBLR_BLOG,
       ].every((v) => Boolean(v?.trim()))
-    ) {
+    )
       return false;
-    }
     try {
       normalizeTumblrBlog(env.TUMBLR_BLOG!);
       return true;
@@ -273,88 +242,71 @@ const tumblr: PlatformDescriptor = {
         (cred.blog?.trim() || env.TUMBLR_BLOG?.trim()),
     ),
 
-  buildPublisher: (cred, env) => {
+  resolveCredential: (cred, env) => {
     const consumerKey = env.TUMBLR_CONSUMER_KEY?.trim();
     const consumerSecret = env.TUMBLR_CONSUMER_SECRET?.trim();
-    if (!consumerKey || !consumerSecret) {
-      throw new PublishError("Tumblr app credentials are not configured", "AUTH");
-    }
+    if (!consumerKey || !consumerSecret) return null;
     const token = cred?.token?.trim() ?? env.TUMBLR_TOKEN?.trim();
     const tokenSecret = cred?.token_secret?.trim() ?? env.TUMBLR_TOKEN_SECRET?.trim();
     const blog = cred?.blog?.trim() ?? env.TUMBLR_BLOG?.trim();
-    if (!token || !tokenSecret || !blog) notConfigured("tumblr");
-    return new TumblrPublisher({ consumerKey, consumerSecret, token, tokenSecret, blog });
+    if (!token || !tokenSecret || !blog) return null;
+    return { consumer_key: consumerKey, consumer_secret: consumerSecret, token, token_secret: tokenSecret, blog };
   },
 
   parseDirectCredential: (body) => {
-    const b = body as Record<string, unknown>;
-    const data: CredentialData = {
-      token: requireStr(b, "token"),
-      token_secret: requireStr(b, "token_secret"),
+    const data: Record<string, string> = {
+      token: requireStr(body, "token"),
+      token_secret: requireStr(body, "token_secret"),
     };
-    const blog = optStr(b, "blog");
+    const blog = optStr(body, "blog");
     if (blog) data.blog = blog;
     return data;
   },
 
   oauth: {
-    type: "oauth1",
+    ...tumblrAdapter.oauth as OAuth1Endpoints,
     consumerKeyEnv: "TUMBLR_CONSUMER_KEY",
     consumerSecretEnv: "TUMBLR_CONSUMER_SECRET",
-    requestTokenUrl: "https://www.tumblr.com/oauth/request_token",
-    authorizeUrl: "https://www.tumblr.com/oauth/authorize",
-    accessTokenUrl: "https://www.tumblr.com/oauth/access_token",
-    parseExtraCredentials: (params) => {
-      const blog = params.get("blog_name");
-      return blog ? { blog } : {};
-    },
   },
 };
 
 // ---------------------------------------------------------------------------
-// LinkedIn – OAuth 2.0
+// LinkedIn (OAuth 2.0)
 // ---------------------------------------------------------------------------
 
-const linkedin: PlatformDescriptor = {
+const linkedin: WorkerPlatformDescriptor = {
   id: "linkedin",
   label: "LinkedIn",
-  providerName: "linkedin-native",
   installed: true,
+  adapter: linkedinAdapter,
 
   isConfiguredFromEnv: (env) =>
     isLinkedInConfigurationValid(env.LINKEDIN_ACCESS_TOKEN, env.LINKEDIN_AUTHOR, env.LINKEDIN_API_VERSION),
 
   isConfiguredWithCredential: (cred, env) =>
-    Boolean(
-      cred.access_token?.trim() &&
-        (cred.author?.trim() || env.LINKEDIN_AUTHOR?.trim()),
-    ),
+    Boolean(cred.access_token?.trim() && (cred.author?.trim() || env.LINKEDIN_AUTHOR?.trim())),
 
-  buildPublisher: (cred, env) => {
+  resolveCredential: (cred, env) => {
     const accessToken = cred?.access_token?.trim() ?? env.LINKEDIN_ACCESS_TOKEN?.trim();
     const author = cred?.author?.trim() ?? env.LINKEDIN_AUTHOR?.trim();
     const apiVersion = cred?.api_version?.trim() ?? env.LINKEDIN_API_VERSION?.trim() ?? "202604";
-    if (!isLinkedInConfigurationValid(accessToken, author, apiVersion)) notConfigured("linkedin");
-    return new LinkedInPublisher({ accessToken: accessToken!, author: author!, apiVersion: apiVersion! });
+    if (!isLinkedInConfigurationValid(accessToken, author, apiVersion)) return null;
+    return { access_token: accessToken!, author: author!, api_version: apiVersion! };
   },
 
   parseDirectCredential: (body) => {
-    const b = body as Record<string, unknown>;
-    const data: CredentialData = { access_token: requireStr(b, "access_token") };
-    const author = optStr(b, "author");
-    const apiVersion = optStr(b, "api_version");
+    const data: Record<string, string> = { access_token: requireStr(body, "access_token") };
+    const author = optStr(body, "author");
+    const apiVersion = optStr(body, "api_version");
     if (author) data.author = author;
     if (apiVersion) data.api_version = apiVersion;
     return data;
   },
 
   oauth: {
-    type: "oauth2",
+    ...linkedinAdapter.oauth as OAuth2Endpoints,
     clientIdEnv: "LINKEDIN_CLIENT_ID",
     clientSecretEnv: "LINKEDIN_CLIENT_SECRET",
-    authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
-    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
-    scopes: "w_member_social openid profile",
   },
 };
 
@@ -362,20 +314,17 @@ const linkedin: PlatformDescriptor = {
 // Not-installed stubs (mastodon, nostr)
 // ---------------------------------------------------------------------------
 
-function notInstalledDescriptor(id: Platform): PlatformDescriptor {
+function notInstalled(id: Platform): WorkerPlatformDescriptor {
+  const fail = () => { throw new PublishError("No publisher configured for platform: " + id, "PROVIDER_UNAVAILABLE"); };
   return {
     id,
     label: id,
-    providerName: id,
     installed: false,
+    adapter: { providerName: id, buildPublisher: fail },
     isConfiguredFromEnv: () => false,
     isConfiguredWithCredential: () => false,
-    buildPublisher: () => {
-      throw new PublishError("No publisher configured for platform: " + id, "PROVIDER_UNAVAILABLE");
-    },
-    parseDirectCredential: () => {
-      throw new ApiError("Platform is not installed: " + id, 422, "PLATFORM_NOT_CONFIGURED");
-    },
+    resolveCredential: () => null,
+    parseDirectCredential: () => { throw new ApiError("Platform is not installed: " + id, 422, "PLATFORM_NOT_CONFIGURED"); },
   };
 }
 
@@ -383,12 +332,20 @@ function notInstalledDescriptor(id: Platform): PlatformDescriptor {
 // Registry
 // ---------------------------------------------------------------------------
 
-export const DESCRIPTORS: Readonly<Record<Platform, PlatformDescriptor>> = {
+export const DESCRIPTORS: Readonly<Record<Platform, WorkerPlatformDescriptor>> = {
   bluesky,
   threads,
   x,
   tumblr,
   linkedin,
-  mastodon: notInstalledDescriptor("mastodon"),
-  nostr: notInstalledDescriptor("nostr"),
+  mastodon: notInstalled("mastodon"),
+  nostr: notInstalled("nostr"),
 };
+
+/** Build a Publisher from a stored credential + env vars.  Throws `PublishError("AUTH")` when insufficient. */
+export function buildPublisher(platform: Platform, cred: Record<string, string> | null, env: Env): Publisher {
+  const desc = DESCRIPTORS[platform];
+  const resolved = desc.resolveCredential(cred, env);
+  if (!resolved) throw new PublishError("Platform credentials are not configured: " + platform, "AUTH");
+  return desc.adapter.buildPublisher(resolved);
+}

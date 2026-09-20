@@ -1,4 +1,4 @@
-import { PublishError, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
+import { PublishError, type PlatformAdapter, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
 
 export interface TumblrPublisherOptions {
   consumerKey: string;
@@ -145,3 +145,40 @@ async function readJson(response: Response, signal: AbortSignal): Promise<unknow
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+// ---------------------------------------------------------------------------
+// Platform adapter
+// ---------------------------------------------------------------------------
+
+
+export const tumblrAdapter: PlatformAdapter = {
+  providerName: "tumblr-native",
+
+  buildPublisher: (cred) => {
+    if (!cred.consumer_key?.trim() || !cred.consumer_secret?.trim() ||
+        !cred.token?.trim() || !cred.token_secret?.trim() || !cred.blog?.trim()) {
+      throw new PublishError(
+        "Tumblr credential is incomplete (consumer_key, consumer_secret, token, token_secret, blog)",
+        "AUTH",
+      );
+    }
+    return new TumblrPublisher({
+      consumerKey: cred.consumer_key,
+      consumerSecret: cred.consumer_secret,
+      token: cred.token,
+      tokenSecret: cred.token_secret,
+      blog: cred.blog,
+    });
+  },
+
+  oauth: {
+    type: "oauth1",
+    requestTokenUrl: "https://www.tumblr.com/oauth/request_token",
+    authorizeUrl: "https://www.tumblr.com/oauth/authorize",
+    accessTokenUrl: "https://www.tumblr.com/oauth/access_token",
+    parseExtraCredentials: (params) => {
+      const blog = params.get("blog_name");
+      return blog ? { blog } : {};
+    },
+  },
+};
