@@ -1,48 +1,92 @@
 # Releasing Syndroo
 
-`packages/cloudflare-worker/package.json` is the only version source for public
-releases. The release checker reads that manifest and nothing else declares a
-release version.
+One release is three public packages published as one train, in this order:
 
-| Package version | npm dist-tag | Git tag | GitHub Release |
+| Order | Package | Manifest |
+| --- | --- | --- |
+| 1 | `@syndroo/sdk` | `packages/sdk/package.json` |
+| 2 | `@syndroo/cli` | `packages/cli/package.json` |
+| 3 | `@syndroo/cloudflare-worker` | `packages/cloudflare-worker/package.json` |
+
+The CLI cannot install without the SDK it ships with, so the SDK is published
+first and the CLI depends on the *exact* SDK version rather than a range. The
+Worker is the deployable artifact and ships last. Core and the platform adapter
+workspaces remain private implementation details bundled into the Worker.
+
+All three manifests declare the same version. `scripts/release-train.ts` reads
+all three and refuses to describe the checkout as a releasable train when they
+disagree:
+
+| Train version | npm dist-tag | Git tag | GitHub Release |
 | --- | --- | --- | --- |
 | `<major>.<minor>.<patch>` | `latest` | `v<version>` | non-prerelease |
 | `<major>.<minor>.<patch>-rc.<n>` | `next` | `v<version>` | prerelease |
 
-Only `@syndroo/cloudflare-worker` is public. Core and platform adapter
-workspaces remain private implementation details and are bundled into the
-Worker artifact.
+Two hard rules, both enforced by the checker rather than by memory:
+
+1. **A release candidate cannot be retagged as a stable release.** The dist-tag
+   is derived from the version and nothing else, and a publish step that asks
+   for any other tag is refused. Moving the `latest` tag does not change the
+   version inside a published tarball, and npm refuses to publish a prerelease
+   without an explicit tag even if that guard were removed.
+2. **A published version is never republished and never overwritten.** The
+   checker reports an existing version as already published and plans no action
+   for it. Fixes ship as a new `-rc.<n>` or a new patch version.
+
+## Current blocker
+
+`npm run release:train` fails on this checkout today:
+
+```text
+@syndroo/cloudflare-worker declares version "0.2.0-rc.1" but the train version is "0.4.0-rc.1".
+```
+
+The SDK and CLI are `0.4.0-rc.1` candidates while the Worker still declares
+`0.2.0-rc.1`. Unifying the three manifests and the CLI's SDK dependency is
+required before any package in the train can be published. This is a version
+decision for the maintainer, so the code change is deliberately not made here.
 
 ## Release checks
 
 Before creating a release:
 
-1. Update `packages/cloudflare-worker/package.json` and synchronize the
-   lockfile.
+1. Set the same version in `packages/sdk/package.json`,
+   `packages/cli/package.json`, `packages/cloudflare-worker/package.json`, and
+   the CLI's exact `@syndroo/sdk` dependency, then synchronize the lockfile.
 2. Update `CHANGELOG.md` and release notes, including new D1 migrations, secrets,
    bindings, compatibility changes, and breaking changes.
 3. Run:
 
    ```bash
+   npm run release:train
    npm test
    npm run check
-   npm run check:e2e
    npm run bundle
    npm run startup
    npm run build:package
-   npm run test:e2e
+   npm run e2e:local
+   npm run e2e:consumer -- --source tarball
    npm run verify:package
+   npm pack --workspace @syndroo/sdk --dry-run
+   npm pack --workspace @syndroo/cli --dry-run
    npm pack --workspace @syndroo/cloudflare-worker --dry-run
    git diff --check
    ```
 
    `npm test` already runs `npm run test:scripts`, which compiles the repository
-   scripts and executes the release-checker suite.
+   scripts and executes the release-checker suites, including the release-train
+   fixtures.
 
-   `npm run test:e2e` is the local Mock SNS gate. It drives the bundled Worker,
-   D1, Queue, the scheduled handler, and the real adapters against loopback Mock
-   SNS servers with fake credentials, and it proves internal integration only.
-   Live platform acceptance stays a separate gate.
+   `npm run e2e:local` is the local Mock SNS gate. It drives the bundled Worker,
+   D1, Queue, the scheduled handler, the real adapters, and the built SDK and
+   CLI against loopback Mock SNS servers with fake credentials, and it proves
+   internal integration only. Live platform acceptance stays a separate gate.
+
+   `npm run e2e:consumer -- --source tarball` installs the packed artifacts in a
+   directory outside this repository and runs the installed SDK and CLI there.
+   `--source registry --version <v>` only reports whether the exact version is
+   published; installing from a real registry needs
+   `SYNDROO_CONSUMER_ALLOW_REGISTRY_INSTALL=true` on an approved host.
 
    `npm run verify:package` checks the packed artifact, including the bundled
    third-party license text.
@@ -59,67 +103,127 @@ Before creating a release:
 
 - `workflow_dispatch` validates the repository and never publishes. The publish
   step requires a release event.
-- `npm run release:check` (`scripts/check-release.ts`) validates the package
-  name, version form, license, and repository URL. On a release event it also
-  requires the tag to be exactly `v<package version>` and the GitHub prerelease
-  boolean to agree with the version: `-rc.<n>` must be a prerelease, stable
-  versions must not be.
-- The checker emits `version`, `published`, and `dist_tag`, where `dist_tag` is
-  `latest` for stable versions and `next` for release candidates. The publish
-  step branches on that value: `next` publishes with `--tag next`, because npm
-  requires an explicit tag when publishing a prerelease version; `latest`
-  publishes without `--tag`, so npm's own guard still refuses to move `latest`
-  backwards to an older version; any other value aborts the run.
+- `npm run release:train` (`scripts/release-train.ts`) is the train gate. It
+  validates all three manifests together, refuses any version disagreement, and
+  reports which packages the train still needs. On a release event it also
+  requires the tag to be exactly `v<train version>`, and the GitHub prerelease
+  boolean to agree with the version shape.
+
+  With `SYNDROO_CHECK_REGISTRY=true` it reads one packument per package and
+  decides each package as `publish`, `already-published`, or `blocked`. Only
+  HTTP `404` counts as "not published"; a `401`, `403`, `429`, `5xx`, an
+  unreadable packument, or a transport failure fails the run and blocks the rest
+  of the train instead of being read as a missing package.
+- `npm run release:check` (`scripts/check-release.ts`) still validates the
+  Worker package on its own, and emits the `version`, `published`, and
+  `dist_tag` outputs the Worker publish step uses.
+- `npm run e2e:consumer -- --source tarball` runs in the same job, so a release
+  cannot be published from a checkout whose packed artifacts do not install and
+  run outside the repository.
+- The workflow asserts that the dist-tag it is about to use matches the version
+  shape: `-rc.<n>` must use `next`, a stable version must use `latest`, and any
+  other value aborts the run. `next` publishes with `--tag next`, because npm
+  requires an explicit tag for a prerelease; `latest` publishes without
+  `--tag`, so npm's own guard still refuses to move `latest` backwards.
 - A release event without complete release metadata, a registry HTTP error, or a
   registry network failure fails the run. Only HTTP `404` counts as an
   unpublished version.
-- When the exact version already exists on npm, the workflow reports that and
-  skips the publish step.
+- When an exact version already exists on npm, the workflow reports that and
+  skips that package.
+
+### Outstanding workflow work
+
+The publish step still publishes only `@syndroo/cloudflare-worker`. Extending it
+to the three-step train changes what the workflow does in production, so it
+needs an explicit maintainer decision and is not made here. The change is
+mechanical once the train versions are unified:
+
+1. Publish `@syndroo/sdk` when `steps.train.outputs.publish_sdk == 'true'`.
+2. Publish `@syndroo/cli` when `steps.train.outputs.publish_cli == 'true'`.
+3. Publish `@syndroo/cloudflare-worker` when
+   `steps.train.outputs.publish_worker == 'true'`.
+
+Each step passes `--tag next` for the `next` dist-tag and no `--tag` for
+`latest`, exactly as the Worker step does today. Until that lands, a release can
+publish only the Worker, and the SDK and CLI have to be published by hand in the
+order above.
+
+### Partial publication recovery
+
+The three publications are not atomic. When a publish fails partway through,
+for example with the SDK published and the CLI step failing:
+
+1. `npm run release:train` reports the SDK as `already-published`, the failed
+   package as `blocked`, and the package that was never attempted as `blocked`
+   with `not attempted`. It exits non-zero and announces no success.
+2. Do not republish, delete, or retag the published version. npm cannot
+   overwrite it, and the tarball that is already published is the reviewed
+   artifact.
+3. Fix the cause and re-run the same check. It plans work only for the packages
+   that are still missing, and the publish steps skip the rest.
+
+`scripts/release-train.spec.ts` exercises that exact sequence against a fake
+registry: SDK published with the CLI returning `500`, then a resumed run where
+the SDK is skipped and only the CLI and Worker remain publishable. No failure
+injection touches a real registry.
 
 ## Release sequence
 
 The candidate ships first under `next`; the stable version ships under `latest`
 only after candidate acceptance. Each publication is a separate maintainer
 approval, and the release checklist in
-[v0.2.0-todo.md](v0.2.0-todo.md) tracks the surrounding release gates.
+[v0.4.0/syndroo-v0.4.0-local-e2e-checklist.md](v0.4.0/syndroo-v0.4.0-local-e2e-checklist.md)
+tracks the surrounding release gates.
 
 ### 1. Release candidate (`next`)
 
-1. Set `packages/cloudflare-worker/package.json` to `0.2.0-rc.1` and synchronize
-   the lockfile.
+1. Set the same `0.4.0-rc.1` version in `packages/sdk/package.json`,
+   `packages/cli/package.json`, `packages/cloudflare-worker/package.json`, and
+   the CLI's exact `@syndroo/sdk` dependency, then synchronize the lockfile. Run
+   `npm run release:train` and require it to pass before anything else.
 2. Run every release check above from the reviewed commit.
-3. Publish under `next`:
-   - If `@syndroo/cloudflare-worker` has no published version yet, npm cannot
-     hold a trusted publisher for it. Bootstrap the candidate manually with
-     two-factor authentication:
+3. Publish under `next`, in order, stopping at the first failure:
+   - A package with no published version cannot hold a trusted publisher yet,
+     so bootstrap it manually with two-factor authentication:
 
      ```bash
+     npm publish --workspace @syndroo/sdk --tag next
+     npm publish --workspace @syndroo/cli --tag next
      npm publish --workspace @syndroo/cloudflare-worker --tag next
      ```
 
-   - If the trusted publisher is already configured, create the
-     `v0.2.0-rc.1` tag and the prerelease GitHub Release, and let the workflow
-     publish with `--tag next`.
+   - Once the trusted publishers are configured, create the `v0.4.0-rc.1` tag
+     and the prerelease GitHub Release. The workflow publishes what is still
+     missing and skips any version that already exists.
+   - If a step fails, follow [Partial publication
+     recovery](#partial-publication-recovery) instead of republishing what
+     succeeded.
 4. Validate the candidate before promoting anything: install the exact
-   `@syndroo/cloudflare-worker@0.2.0-rc.1` in a throwaway project and in
-   `Syndroo/syndroo-deploy-template`, apply migrations, and exercise the Worker.
-   The template pins the exact candidate version and never a range or the moving
-   `next` tag, so a later candidate cannot silently change what a template
-   install resolves. Record the verified version in the template's lockfile
-   after the registry install succeeds.
+   `0.4.0-rc.1` versions in a throwaway project, including
+   `@syndroo/cloudflare-worker@0.4.0-rc.1` in
+   `Syndroo/syndroo-deploy-template`, apply migrations, and exercise the Worker
+   and the CLI. `npm run e2e:consumer -- --source registry --version 0.4.0-rc.1`
+   reports whether the versions are installable; the install itself is a
+   maintainer action on an approved host. The template pins the exact candidate
+   version and never a range or the moving `next` tag, so a later candidate
+   cannot silently change what a template install resolves.
 5. Publish a new candidate number for any fix. Never publish over an existing
    version.
 
 ### 2. Stable release (`latest`)
 
-1. Set `packages/cloudflare-worker/package.json` to `0.2.0` and synchronize the
-   lockfile.
+1. Set the same `0.4.0` version in all three manifests and the CLI's SDK
+   dependency, synchronize the lockfile, and confirm `npm run release:train`
+   passes. Bumping only the tag is not a release: the version inside the
+   published tarball is what a consumer installs.
 2. Run every release check again from the final release commit.
-3. Create tag `v0.2.0` and a non-prerelease GitHub Release, and let the workflow
+3. Create tag `v0.4.0` and a non-prerelease GitHub Release, and let the workflow
    publish under `latest`. If trusted publishing is unavailable, publish
-   manually with two-factor authentication:
+   manually with two-factor authentication, in order:
 
    ```bash
+   npm publish --workspace @syndroo/sdk
+   npm publish --workspace @syndroo/cli
    npm publish --workspace @syndroo/cloudflare-worker
    ```
 
@@ -148,8 +252,9 @@ strict retry deadline for publications.
 ## npm trusted publishing
 
 The release workflow uses npm trusted publishing. It does not use an npm token.
-Configure `@syndroo/cloudflare-worker` on npm with:
+Configure each of the three packages on npm with:
 
+- package: `@syndroo/sdk`, `@syndroo/cli`, or `@syndroo/cloudflare-worker`;
 - provider: GitHub Actions;
 - organization: `Syndroo`;
 - repository: `syndroo`;
@@ -167,8 +272,10 @@ the trusted publisher before the next release. If a bootstrap version already
 exists when its GitHub Release runs, the workflow detects it and exits without
 publishing a duplicate.
 
-Never store an npm publish token in repository secrets after trusted publishing
-is configured.
+Configure all three separately. A working publisher for one package proves
+nothing about the others, and a local `npm whoami` does not prove that the CI
+OIDC identity is authorized. Never store an npm publish token in repository
+secrets after trusted publishing is configured.
 
 ## Bundled third-party licenses
 
@@ -200,7 +307,13 @@ legal obligation in this distribution has been reviewed.
   compatibility, or rate limits.
 - Live platform credentials and API behavior; those remain separate release
   gates.
-- Registry state beyond a single exact-version existence probe.
+- Registry state beyond the packument reads described above. The train checker
+  sees which versions exist and where the dist-tags point; it cannot verify an
+  artifact's integrity, and it does not download a published tarball.
+- Installing the published versions. `e2e:consumer --source tarball` proves the
+  packed artifacts work, and `--source registry` only reports whether the
+  versions exist. A real registry install runs on an approved host with
+  `SYNDROO_CONSUMER_ALLOW_REGISTRY_INSTALL=true`.
 
 ## Release compatibility policy
 

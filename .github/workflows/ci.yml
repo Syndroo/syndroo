@@ -62,6 +62,13 @@ jobs:
       - name: Run Mock SNS end-to-end suite
         run: npm run test:e2e
 
+      # Layer 2: pack the artifacts, install them outside the monorepo, and run
+      # the real SDK and CLI against the local harness. It installs only local
+      # tarballs and contacts no registry for the Syndroo packages.
+      - name: Run installed-package consumer gate
+        if: matrix.node-version == '24'
+        run: npm run e2e:consumer -- --source tarball
+
       - name: Inspect publish package
         if: matrix.node-version == '24'
         run: npm pack --workspace @syndroo/cloudflare-worker --dry-run

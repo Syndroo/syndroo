@@ -1,6 +1,12 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import {
+  classifyVersion,
+  type DistTag,
+  type ReleaseChannel,
+} from "./release-version.js";
+
 const PACKAGE_NAME = "@syndroo/cloudflare-worker";
 const PACKAGE_PATH = resolve(
   process.cwd(),
@@ -8,17 +14,6 @@ const PACKAGE_PATH = resolve(
 );
 const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
 const REGISTRY_URL = "https://registry.npmjs.org";
-
-const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const CANDIDATE_VERSION =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-rc\.([1-9]\d*)$/;
-
-type DistTag = "latest" | "next";
-
-type ReleaseChannel = {
-  readonly distTag: DistTag;
-  readonly prerelease: boolean;
-};
 
 type ReleaseEvent =
   | { readonly kind: "absent" }
@@ -78,23 +73,6 @@ async function main(): Promise<void> {
       releaseTag: release.kind === "release" ? release.tag : null,
       published,
     }),
-  );
-}
-
-// Stable versions publish under `latest`; `-rc.<n>` candidates publish under
-// `next`. The release workflow always passes this value through as an explicit
-// `npm publish --tag`, because npm requires one for prerelease versions.
-function classifyVersion(version: string): ReleaseChannel {
-  if (STABLE_VERSION.test(version)) {
-    return { distTag: "latest", prerelease: false };
-  }
-
-  if (CANDIDATE_VERSION.test(version)) {
-    return { distTag: "next", prerelease: true };
-  }
-
-  throw new Error(
-    `Package version ${JSON.stringify(version)} must be <major>.<minor>.<patch> or <major>.<minor>.<patch>-rc.<n>.`,
   );
 }
 

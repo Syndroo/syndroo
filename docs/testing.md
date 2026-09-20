@@ -23,6 +23,62 @@ Threads. It proves wiring, persistence, idempotency, ambiguity handling, and
 scheduling; it cannot prove provider permissions, API compatibility, or rate
 limits.
 
+## Gate layers and entry points
+
+The local gate is the first of three layers. A pass at one layer never stands in
+for another:
+
+| Layer | Chain | Proves | Entry point |
+| --- | --- | --- | --- |
+| L1 local Mock | bundled Worker -> local D1/Queue/Cron -> real adapters -> Mock SNS | Internal delivery, idempotency, failure, and concurrency behaviour | `npm run e2e:local` |
+| L2 installed artifact | install packed tarballs (or a registry RC) outside the repository -> real SDK and CLI -> L1 | The packages a user installs actually work, without workspace resolution | `npm run e2e:consumer -- --source tarball` |
+| L3 real accounts | local SDK/CLI/Agent -> staging Worker -> real accounts | Real credentials, platform APIs, and the final remote post | `npm run e2e:live -- --plan <file>` |
+
+`npm run e2e:local` is the same command as `npm run test:e2e`. It builds every
+workspace, bundles the Worker, and then runs the Node-side Vitest project.
+
+The L1 project also drives the two published client artifacts, not only the
+Worker: `e2e/test/sdk-cli.spec.ts` starts the built SDK and the built `syndroo`
+binary as a real child process against the same in-process Worker, through a
+loopback proxy (`e2e/src/loopback-proxy.ts`) that forwards HTTP into
+`Harness.fetch`. The CLI child is spawned asynchronously on purpose: the Worker
+lives in the test process, so a blocking spawn would deadlock the loop that has
+to answer the child's requests.
+
+`npm run e2e:consumer -- --source tarball` packs `@syndroo/sdk`, `@syndroo/cli`,
+and `@syndroo/cloudflare-worker` with `npm pack`, installs the tarballs into a
+temporary directory outside this repository, and runs
+`e2e/test/consumer.e2e.ts` there with the consumer's own `node_modules`. The
+install uses `--ignore-scripts --offline` (falling back to `--prefer-offline`),
+an `overrides` entry pins the CLI's SDK dependency at the tarball under test,
+and the spec asserts that `import.meta.resolve("@syndroo/sdk")` stays inside the
+consumer directory instead of resolving back into this checkout. The Syndroo
+packages themselves are never fetched from a registry.
+
+The same entry point with `--source registry --version <v>` only inspects the
+published versions: a `404` is reported as `not published`, any other registry
+answer fails closed, and an existing version is refused unless
+`SYNDROO_CONSUMER_ALLOW_REGISTRY_INSTALL=true` is set on an approved host. It
+does not install from a real registry by default.
+
+`npm run e2e:web -- --project=chrome` delegates to the website checkout next to
+this repository (`--root` or `SYNDROO_WEB_ROOT` override the location). It runs
+that repository's own `build`, `check`, and `test` scripts in order and then
+Playwright with the named project. A missing checkout, a missing `node_modules`,
+or a missing Playwright install is a failure with the command to fix it, never a
+silent pass.
+
+`npm run e2e:live -- --plan <absolute path>` is the only entry point that may
+contact a real instance, and it is not part of `npm test` or `e2e:local`. It
+validates the plan (instance, accounts, content, platforms, an absolute time
+with an explicit timezone, an operation count, stop conditions, an approver, and
+`"approved": true`) and then stops: a valid plan exits `3` without contacting
+anything unless `--execute` is passed. Execution also requires
+`SYNDROO_LIVE_CONFIRM` to equal the plan's `planId` and `SYNDROO_API_KEY` in the
+environment. `--execute` alone is read-only (`doctor`); only `--write` reaches a
+create, and it stops at the first failure instead of minting a new idempotency
+key.
+
 ## Command
 
 ```bash
@@ -125,6 +181,23 @@ that a redirect target server receives zero requests.
 Status checks use bounded polling with useful diagnostics (`Mock SNS` receipts,
 outbound decisions, and recent Worker logs) and never fixed sleeps.
 
+`e2e/test/sdk-cli.spec.ts` covers the shipped client artifacts through the
+loopback proxy:
+
+- The built SDK performs `health`, `create`, `get`, and `wait` over real HTTP
+  against the bundled Worker, and one logical post produces exactly one Mock SNS
+  receipt.
+- An identical `create` with the same idempotency key returns the same post id
+  and still produces exactly one remote write.
+- The built CLI binary runs `doctor`, `posts validate`, `posts create`, `posts
+  list`, `posts get`, `posts wait`, and `skill path` as a real child process;
+  `posts validate` creates nothing, and a create without `--yes` and a stable
+  `--idempotency-key` exits `2` with zero posts and zero platform calls.
+
+`e2e/test/consumer.e2e.ts` (run only by `npm run e2e:consumer`) repeats the SDK
+and CLI paths from an install outside this repository and asserts that the
+resolved SDK path stays inside the consumer directory.
+
 ## Isolation and cleanup
 
 Every test starts a fresh Miniflare instance with a unique D1 database id, a
@@ -136,8 +209,10 @@ previous test's instance.
 ## CI
 
 CI runs `npm run test:e2e` after the existing build and unit test steps, with no
-secrets configured. The suite fails closed on any outbound attempt outside the
-allowlist, so no live SNS traffic is possible from CI.
+secrets configured. On Node.js 24 it also runs
+`npm run e2e:consumer -- --source tarball`, which installs only local tarballs.
+The suites fail closed on any outbound attempt outside the allowlist, so no live
+SNS traffic is possible from CI.
 
 ## Interpreting failures
 

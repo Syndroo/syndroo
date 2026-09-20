@@ -44,6 +44,27 @@ jobs:
       - name: Check Worker startup
         run: npm run startup
 
+      # Read-only gate. It validates the three-package train, the release event,
+      # and the dist-tag the version implies, and reports which packages are
+      # still missing. It publishes nothing.
+      - name: Validate release train
+        id: train
+        run: npm run release:train
+        env:
+          SYNDROO_CHECK_REGISTRY: "true"
+          SYNDROO_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          SYNDROO_RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+      - name: Run installed-package consumer gate
+        run: npm run e2e:consumer -- --source tarball
+
+      - name: Report which packages the train still needs
+        run: |
+          echo "Release train ${{ steps.train.outputs.version }} (${{ steps.train.outputs.dist_tag }}):"
+          echo "  sdk    ${{ steps.train.outputs.sdk_status }}"
+          echo "  cli    ${{ steps.train.outputs.cli_status }}"
+          echo "  worker ${{ steps.train.outputs.worker_status }}"
+
       - name: Validate release metadata
         id: package
         run: npm run release:check

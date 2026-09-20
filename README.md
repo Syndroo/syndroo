@@ -487,6 +487,8 @@ Repository layout:
     .
     ├── packages/
     │   ├── core/                     # domain types, Publisher, normalized errors
+    │   ├── sdk/                      # public HTTP client for one instance
+    │   ├── cli/                      # public `syndroo` command + Agent Skill
     │   ├── bluesky/                  # native text-only Bluesky adapter
     │   ├── threads/                  # native text-only Threads adapter
     │   ├── x/                        # official X SDK text adapter
@@ -510,9 +512,24 @@ The abstraction is deliberately narrow:
 
 ## Distribution and upgrades
 
-`@syndroo/cloudflare-worker` is the only public npm package. It contains the
-Worker plus the core, Bluesky, Threads, X, Tumblr, and LinkedIn implementation; those internal
-workspace packages are not separate public APIs.
+Three packages are public:
+
+| Package | What it is |
+| --- | --- |
+| `@syndroo/sdk` | The HTTP client for one deployed Syndroo instance, with no runtime dependencies |
+| `@syndroo/cli` | The `syndroo` command, which ships the bundled Agent Skill |
+| `@syndroo/cloudflare-worker` | The deployable Worker, bundling core and every platform adapter |
+
+The core and adapter workspaces stay private: they are bundled into the Worker
+artifact and are not separate public APIs. The CLI depends on the exact SDK
+version it ships with, so the three packages are published as one train in the
+order SDK, CLI, Worker.
+
+`@syndroo/sdk` and `@syndroo/cli` are new `0.4.0-rc.1` candidates for the
+v0.4.0 train. Neither is published yet, and the Worker is still `0.2.0-rc.1`, so
+the three packages do not currently share a single version. `npm run
+release:train` reports exactly that mismatch and refuses to describe the
+checkout as a releasable train until it is resolved.
 
 The long-term deployment entry point is the separate
 `Syndroo/syndroo-deploy-template` repository. That repository stays small: it
@@ -546,6 +563,36 @@ secrets are loaded. Warnings for unused platform secrets are expected. Productio
 requires only `SYNDROO_API_KEY`; never deploy using `--env local`.
 
 The local Worker defaults to `http://localhost:8787`.
+
+## Verification gates
+
+Each layer proves a different thing, and a pass at one layer does not stand in
+for another:
+
+```bash
+npm test                          # unit and contract suites, every workspace
+npm run check                     # types, generated bindings, script and e2e types
+npm run e2e:local                 # L1: bundle -> D1/Queue/Cron -> adapters -> Mock SNS
+npm run e2e:consumer -- --source tarball
+                                  # L2: install the packed artifacts outside the
+                                  # repository, then run the real SDK and CLI
+npm run e2e:consumer -- --source registry --version 0.4.0-rc.1
+                                  # L2: reports whether the version is published;
+                                  # a real registry install needs explicit approval
+npm run e2e:web -- --project=chrome
+                                  # Web: delegates to the website checkout
+npm run e2e:live -- --plan /absolute/path/to/approved-live-plan.json
+                                  # L3: the only entry that may touch a real
+                                  # instance; validates unless --execute is given
+npm run verify:package            # packed Worker artifact, licenses, isolated install
+npm run release:train             # the three-package release train
+```
+
+`e2e:local` and `npm test` never contact a real platform or registry.
+`e2e:live` is deliberately excluded from both: it requires an approved plan file
+and a separate confirmation before it contacts anything. See
+[docs/testing.md](docs/testing.md) for what each layer proves and
+[docs/releasing.md](docs/releasing.md) for the release stages.
 
 ## Cloudflare deployment
 
