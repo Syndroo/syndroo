@@ -1,8 +1,10 @@
 import type { PublicationJob } from "@syndroo/core";
+import { isPlatform } from "@syndroo/core";
 
 import { ApiError, json, readJsonBody, requireBearer } from "./http.js";
 import { createPost, parseCreatePost } from "./posts.js";
 import { D1Repository } from "./repository.js";
+import { routeAuth, handleOAuthCallback } from "./auth.js";
 
 const MAINTENANCE_MESSAGE =
   "Syndroo is in maintenance mode and is not accepting new posts; retry later with the same Idempotency-Key and request body";
@@ -18,6 +20,16 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
     return json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404);
   }
 
+  // OAuth callbacks must be reachable by the browser without a Bearer token.
+  const callbackMatch = /^\/v1\/auth\/([^/]+)\/callback$/.exec(url.pathname);
+  if (callbackMatch?.[1] && request.method === "GET") {
+    const rawPlatform = callbackMatch[1];
+    if (isPlatform(rawPlatform)) {
+      const repository = new D1Repository(env.DB);
+      return handleOAuthCallback(rawPlatform, request, env, repository);
+    }
+  }
+
   await requireBearer(request, env.SYNDROO_API_KEY);
 
   if (
@@ -29,6 +41,10 @@ export async function routeApi(request: Request, env: Env): Promise<Response> {
   }
 
   const repository = new D1Repository(env.DB);
+
+  if (url.pathname.startsWith("/v1/auth")) {
+    return routeAuth(request, env, repository);
+  }
 
   if (request.method === "POST" && url.pathname === "/v1/posts") {
     const input = parseCreatePost(await readJsonBody(request), env);

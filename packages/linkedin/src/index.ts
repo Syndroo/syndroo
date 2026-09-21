@@ -1,4 +1,4 @@
-import { PublishError, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
+import { PublishError, type PlatformAdapter, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
 
 export interface LinkedInPublisherOptions {
   accessToken: string;
@@ -89,3 +89,33 @@ export class LinkedInPublisher implements Publisher {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Platform adapter
+// ---------------------------------------------------------------------------
+
+
+export const linkedinAdapter: PlatformAdapter = {
+  providerName: "linkedin-native",
+
+  buildPublisher: (cred) => {
+    if (!isLinkedInConfigurationValid(cred.access_token, cred.author, cred.api_version)) {
+      throw new PublishError(
+        "LinkedIn credential is incomplete (access_token, author)",
+        "AUTH",
+      );
+    }
+    return new LinkedInPublisher({
+      accessToken: cred.access_token!,
+      author: cred.author!,
+      apiVersion: cred.api_version ?? "202604",
+    });
+  },
+
+  oauth: {
+    type: "oauth2",
+    authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
+    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
+    scopes: "w_member_social openid profile",
+  },
+};

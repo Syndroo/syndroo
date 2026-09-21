@@ -1,6 +1,6 @@
 import { Client, HttpClient, OAuth1, type HttpClientRequestOptions } from "@xdevplatform/xdk";
 import twitterText from "twitter-text";
-import { PublishError, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
+import { PublishError, type PlatformAdapter, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
 
 export interface XPublisherOptions {
   apiKey: string;
@@ -137,3 +137,35 @@ export class XPublisher implements Publisher {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Platform adapter
+// ---------------------------------------------------------------------------
+
+
+export const xAdapter: PlatformAdapter = {
+  providerName: "x-sdk",
+
+  buildPublisher: (cred) => {
+    if (!cred.api_key?.trim() || !cred.api_secret?.trim() ||
+        !cred.access_token?.trim() || !cred.access_token_secret?.trim()) {
+      throw new PublishError(
+        "X credential is incomplete (api_key, api_secret, access_token, access_token_secret)",
+        "AUTH",
+      );
+    }
+    return new XPublisher({
+      apiKey: cred.api_key,
+      apiSecret: cred.api_secret,
+      accessToken: cred.access_token,
+      accessTokenSecret: cred.access_token_secret,
+    });
+  },
+
+  oauth: {
+    type: "oauth1",
+    requestTokenUrl: "https://api.twitter.com/oauth/request_token",
+    authorizeUrl: "https://api.twitter.com/oauth/authorize",
+    accessTokenUrl: "https://api.twitter.com/oauth/access_token",
+  },
+};

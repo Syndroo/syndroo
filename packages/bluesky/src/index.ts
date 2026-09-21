@@ -2,6 +2,7 @@ import { Agent } from "@atproto/api";
 
 import {
   PublishError,
+  type PlatformAdapter,
   type Publisher,
   type PublishRequest,
   type PublishResult,
@@ -331,3 +332,23 @@ function normalizeError(error: unknown, stage: "session" | "publish"): PublishEr
     cause: error,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Platform adapter
+// ---------------------------------------------------------------------------
+
+
+export const blueskyAdapter: PlatformAdapter = {
+  providerName: "bluesky-native",
+
+  buildPublisher: (cred) => {
+    if (!cred.identifier?.trim() || !cred.password?.trim()) {
+      throw new PublishError("Bluesky credential is incomplete (identifier, password)", "AUTH");
+    }
+    return new BlueskyPublisher({
+      identifier: cred.identifier,
+      password: cred.password,
+      host: cred.host?.trim() || "bsky.social",
+    });
+  },
+};

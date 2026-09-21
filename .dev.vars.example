@@ -27,3 +27,19 @@ LINKEDIN_ACCESS_TOKEN=your-linkedin-user-access-token
 LINKEDIN_AUTHOR=urn:li:person:your-member-id
 # Explicitly select a supported version; update before LinkedIn retires it.
 LINKEDIN_API_VERSION=202604
+
+# ---------------------------------------------------------------------------
+# Agent-guided OAuth (optional – only needed for the /v1/auth/:platform/connect
+# flow; direct credential submission via POST /v1/auth/:platform works without
+# these).
+# ---------------------------------------------------------------------------
+
+# X and Tumblr: consumer key/secret stay here; user access tokens are stored
+# in D1 after the OAuth flow completes (X_API_KEY / TUMBLR_CONSUMER_KEY above
+# already serve as the app credentials – no extra keys needed).
+
+# LinkedIn OAuth 2.0 app credentials (required for /v1/auth/linkedin/connect).
+# Register a LinkedIn app at https://developer.linkedin.com and add
+# https://<your-worker-domain>/v1/auth/linkedin/callback as a redirect URL.
+LINKEDIN_CLIENT_ID=your-linkedin-oauth-client-id
+LINKEDIN_CLIENT_SECRET=your-linkedin-oauth-client-secret
