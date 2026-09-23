@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/composition/scheduled-maintenance.ts",
+    "./scheduled-maintenance-v050-worker.ts",
+    "../scheduled-maintenance-v050.native.ts",
+    "../scheduled-maintenance-v050.vitest.config.ts"
+  ]
+}

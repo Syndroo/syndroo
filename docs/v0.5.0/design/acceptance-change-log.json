@@ -1,0 +1,149 @@
+{
+  "document_version": "2.0",
+  "original_count": 66,
+  "retained_count": 66,
+  "revised_existing_count": 20,
+  "new_count": 54,
+  "changes": [
+    {
+      "id": "ARC-01",
+      "previous_criterion": "core 不依赖 Worker/Cloudflare/平台/transport；SDK 不依赖私有包；依赖图无环。",
+      "revised_criterion": "core与application零Cloudflare/Env/D1/R2/Queue runtime依赖；application只依赖ports/core和注入策略；SDK零私有包依赖，依赖图无环。",
+      "reason": "将原core约束扩展至application；检查type-only、ambient与传递依赖，不只grep import。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "ARC-04",
+      "previous_criterion": "只有 retry.ts 决定业务 retry_at，SQL 落实 guard；新增抽象均有真实消费者。",
+      "revised_criterion": "业务retry时间只由application policy决定；安全业务retry与future outbox原子保存；SQL仅落实guard，Queue retry只负责基础设施。",
+      "reason": "独立outbox取代旧publication-outbox；保留单一retry策略和有用抽象要求。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CFG-01",
+      "previous_criterion": "env-only、D1-only、mixed 三条链路均能受理已配置的平台；D1-only指用户凭据仅存D1，必要app secret仍按规则由Env提供；可走到隔离平台成功。",
+      "revised_criterion": "env-only、D1-only、mixed均可完成准入及隔离发布；D1中的用户凭据经CredentialCipher解密，必要app secret由外层普通配置提供。",
+      "reason": "application不接触Env，D1-only不表示app secret也应入D1。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CFG-02",
+      "previous_criterion": "不混用不同来源的一组 user token；D1 损坏/缺字段/过期不静默回退 Env。",
+      "revised_criterion": "不混用不同来源的一组user token；D1解密失败、损坏、缺字段或过期不静默回退Env或旧明文。",
+      "reason": "加入encrypted envelope和fail-closed要求，不弱化原来源优先级。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CRT-02",
+      "previous_criterion": "并发同key请求仅保存一个完整Post及其平台publication集合。",
+      "revised_criterion": "并发同key只保存一个完整Post、Publication集合及各自初始OutboxJobs；无孤儿job或部分聚合。",
+      "reason": "创建原子边界扩展至独立outbox，原key和公共语义保留。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CRT-03",
+      "previous_criterion": "结构与平台配置失败均不产生部分写入；准入读取到的凭据被换号时事务不得接受旧快照。",
+      "revised_criterion": "结构/配置失败无部分写入；credential revision或slot状态竞争令创建事务全部不写；0-row guard不能留下Post或OutboxJob。",
+      "reason": "明确D1 batch的SQL回滚不等同业务CAS失败回滚。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CRT-04",
+      "previous_criterion": "保持64KiB上限、授权和维护模式；排队失败保留可恢复pending。",
+      "revised_criterion": "保留64KiB、Bearer和maintenance语义；commit后Queue失败仍返回受理，持久pending outbox可恢复。",
+      "reason": "把publication pending恢复升级为显式outbox，不能rollback已提交聚合。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PUB-02",
+      "previous_criterion": "并发重复投递只有一个claim winner；任何SNS请求都在claim之后。",
+      "revised_criterion": "重复投递最多一个claim winner；job/entity/current_job_id/attempt_no/credential revision均满足条件后，才开始任何SNS调用。",
+      "reason": "增加job身份围栏，避免旧消息触发新的业务重试。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PUB-03",
+      "previous_criterion": "真正可重试失败受retry_at和三次执行上限约束；Queue与Cron不绕过。",
+      "revised_criterion": "真正安全的provider失败受retry_at及三次Publisher执行上限约束；失败状态与下一OutboxJob一起提交，然后ACK旧消息。",
+      "reason": "业务重试不使用Cloudflare-specific delay；60/120秒基线不改为源示例五次。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PUB-05",
+      "previous_criterion": "平台成功或失败后D1落库失败，不导致第二次平台调用；父Post与Publication不部分更新。",
+      "revised_criterion": "provider成功/失败后D1落库故障不触发第二次provider调用；父Post、Publication和必要future outbox无部分更新；同attempt提交可幂等重放。",
+      "reason": "将重试intent纳入原子提交，未落库的远程结果仍按保守恢复处理。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PUB-06",
+      "previous_criterion": "stale recovery、旧claim token、迟到provider结果不会覆盖较新/终态数据。",
+      "revised_criterion": "stale recovery、旧claim token、迟到provider结果、旧job/DLQ不得覆盖较新或已终结的业务结果。",
+      "reason": "保留已有fencing并扩展到queue/outbox/DLQ竞争。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "NET-05",
+      "previous_criterion": "provider原始错误/凭据不经日志、异常cause序列化或API返回泄露。",
+      "revised_criterion": "provider原始错误/凭据不经日志、cause序列化、API或R2泄露；仅有限allowlist脱敏diagnostic可进入ArchiveStore，OAuth原始token响应从不归档。",
+      "reason": "不是禁止新增合法ArchiveStore，而是明确归档也受相同秘密边界约束。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "SDK-05",
+      "previous_criterion": "auth status/set/connect/operation/complete/refresh/remove都使用薄门面，写不自动重试。",
+      "revised_criterion": "auth完整门面与新增只读diagnostics是薄HTTP客户端；公开包不依赖私有application，post/auth写均不自动重试。",
+      "reason": "增加必要运维投影；保留所有auth操作，不弱化写入语义。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "CLI-04",
+      "previous_criterion": "SDK修复后移除保活workaround仍可wait；每个JSON命令stdout恰好一个对象。",
+      "revised_criterion": "SDK修复后移除保活workaround仍可wait；包括diagnostics在内每个JSON命令stdout恰好一个对象。",
+      "reason": "扩展新命令覆盖，用户原有未提交修改仍需隔离验证。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "MIG-01",
+      "previous_criterion": "只新增migration，不改已应用0001–0005；fresh和upgrade两个路径均成功。",
+      "revised_criterion": "只追加migration、不重写0001–0005；fresh与旧版本升级路径均通过，原记录、ID和幂等结果可追溯。",
+      "reason": "新增outbox/cipher schema必须纳入相同增量迁移门槛。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "MIG-04",
+      "previous_criterion": "升级/回退runbook明确停止Queue/Cron、等待in-flight，不把maintenance当消费者暂停。",
+      "revised_criterion": "升级/回退明确停止旧Queue/Cron、处理in-flight和旧协议消息；新旧consumer不能同时执行同一域任务，maintenance不冒充消费者暂停。",
+      "reason": "新增versioned queue cutover，不自动purge或假定旧worker可直接读新密文。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "MIG-05",
+      "previous_criterion": "secret/vars/migration变化同步例子、bindings、generated types、deploy helper与文档。",
+      "revised_criterion": "新key/vars/R2/主Queue/DLQ及migration同步例子、bindings、generated types、deploy/package说明；安全校验失败不接受新写。",
+      "reason": "包括独立cipher key、key id、private archive及版本化队列；不触发真实部署。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PKG-01",
+      "previous_criterion": "三个公共包统一0.5.0-rc.1及CLI精确SDK依赖；private包保持private。",
+      "revised_criterion": "三个公共包统一0.5.0-rc.1及CLI精确SDK依赖；新增application/transport保持private且正确bundle，不制造安装时的私有registry依赖。",
+      "reason": "覆盖新增私有package和既有多包发布列车。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PKG-04",
+      "previous_criterion": "monorepo外安装tarball后的SDK/CLI/Worker功能和授权链路通过。",
+      "revised_criterion": "monorepo外安装tarball后的SDK/CLI/Worker完成授权、Post→D1→Outbox→Queue→隔离SNS→状态回读与归档故障验证。",
+      "reason": "安装产物必须覆盖新端口wiring，不仅单元假依赖。",
+      "safety_goal_preserved": true
+    },
+    {
+      "id": "PKG-06",
+      "previous_criterion": "README/AGENTS/Skill/CHANGELOG与代码一致，清楚写明新secret、callback变更、legacy限制。",
+      "revised_criterion": "README/AGENTS/Skill/CHANGELOG和设计一致，明确ports/outbox、密钥、callback、legacy、DLQ、归档隐私及Free profile限制。",
+      "reason": "删除旧“不加ports/outbox/加密”规范，不能留下两套当前设计。",
+      "safety_goal_preserved": true
+    }
+  ]
+}

@@ -35,16 +35,47 @@ Two hard rules, both enforced by the checker rather than by memory:
 
 ## Current blocker
 
-`npm run release:train` fails on this checkout today:
+The version mismatch is resolved: all three manifests and the CLI's exact
+`@syndroo/sdk` dependency now declare the same `0.5.0-rc.1` candidate, and the
+offline `npm run release:train` check passes against the actual manifests,
+alongside the 92 release-check fixtures. That alignment is metadata only: this
+work has not created a tag or a GitHub Release, and it has not published any npm
+version. The checkout is not releasable yet.
 
-```text
-@syndroo/cloudflare-worker declares version "0.2.0-rc.1" but the train version is "0.4.0-rc.1".
-```
+The train stays blocked by product readiness rather than version drift:
 
-The SDK and CLI are `0.4.0-rc.1` candidates while the Worker still declares
-`0.2.0-rc.1`. Unifying the three manifests and the CLI's SDK dependency is
-required before any package in the train can be published. This is a version
-decision for the maintainer, so the code change is deliberately not made here.
+- the Worker aggregate test run hangs after an `EnvironmentTeardownError` and is
+  terminated at its 60-second deadline with exit code 124, so no complete main
+  test count is recorded;
+- a direct `tsc` over the Worker test tree still reports four known type errors;
+  `npm run check` was not run in this pass because it invokes Wrangler type
+  generation;
+- the tarball consumer gate, the Worker bundle, and the full gate have not run on
+  this commit;
+- the final HTTP/Queue/Cron runtime cutover, the D1 fences and public read
+  projection, the fresh/legacy migration rehearsal, crypto/R2 interop, and the
+  CLI boundary evidence remain unaccepted;
+- the corrections those scopes need are not yet authorized.
+
+Do not publish, tag, or deploy from this checkout, and do not treat the existing
+`scripts/deploy.ts` as a ready 0.5 deployment path: it still applies remote
+migrations and deploys without an upgrade/cutover preflight. See
+[v0.5.0/deployment-release-handoff.md](v0.5.0/deployment-release-handoff.md) for
+the blocked gates, the checks that are runnable now, and the future deployment
+and publication order.
+
+Two things below are historical context rather than current instructions:
+
+- the version-specific sequences further down this file (the `0.4.0-rc.1` and
+  `0.4.0` steps, and the `0.2.0` migration notes) describe earlier trains. They
+  are examples, not the execution path for the current 0.5 work;
+- the "each publication is a separate maintainer approval" wording predates the
+  current authorization. Deployment and publication for 0.5.0 are already
+  conditionally authorized by the user, so the open item is readiness, not a
+  fresh approval for every step.
+
+The current route for 0.5.0 is
+[v0.5.0/deployment-release-handoff.md](v0.5.0/deployment-release-handoff.md).
 
 ## Release checks
 

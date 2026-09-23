@@ -36,8 +36,11 @@ export function canPrompt(context: PromptContext): boolean {
  * Anything that is not `y` or `yes` is a refusal, including an empty answer and
  * a closed terminal, so a dropped connection cannot be read as consent.
  */
-export function confirm(context: PromptContext): boolean {
-  context.reporter.prompt("Create this post? [y/N] ");
+export function confirm(
+  context: PromptContext,
+  prompt = "Create this post? [y/N] ",
+): boolean {
+  context.reporter.prompt(prompt);
 
   const answer = context.io.readTtyLine(TTY_PROMPT_LIMIT_MS);
   context.reporter.diagnostic("");

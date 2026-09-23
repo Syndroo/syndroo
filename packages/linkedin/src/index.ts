@@ -1,4 +1,19 @@
-import { PublishError, type PlatformAdapter, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
+import {
+  PublishError,
+  type PlatformAdapter,
+  type Publisher,
+  type PublishRequest,
+  type PublishResult,
+} from "@syndroo/core";
+import {
+  TransportError,
+  boundedRequest,
+  parseRetryAfter,
+} from "@syndroo/transport";
+
+const POSTS_URL = "https://api.linkedin.com/rest/posts";
+const MAX_ESCAPED_UTF16_UNITS = 3000;
+const MAX_CONFIRMATION_BYTES = 8 * 1024;
 
 export interface LinkedInPublisherOptions {
   accessToken: string;
@@ -7,11 +22,61 @@ export interface LinkedInPublisherOptions {
   timeoutMs?: number;
 }
 
-export function isLinkedInConfigurationValid(accessToken: string | undefined, author: string | undefined,
-  apiVersion: string | undefined): boolean {
-  return Boolean(accessToken && /^[\x21-\x7e]+$/.test(accessToken) && author &&
-    /^(?:urn:li:person:[A-Za-z0-9_-]+|urn:li:organization:[1-9][0-9]*)$/.test(author) &&
-    apiVersion && /^20\d{2}(?:0[1-9]|1[0-2])$/.test(apiVersion));
+/** Exact typed credential the LinkedIn publisher needs. */
+export interface LinkedInCredential {
+  readonly accessToken: string;
+  readonly author: string;
+  readonly apiVersion: string;
+}
+
+export function isLinkedInConfigurationValid(
+  accessToken: string | undefined,
+  author: string | undefined,
+  apiVersion: string | undefined,
+): boolean {
+  return Boolean(
+    accessToken &&
+      /^[\x21-\x7e]+$/.test(accessToken) &&
+      author &&
+      /^(?:urn:li:person:[A-Za-z0-9_-]+|urn:li:organization:[1-9][0-9]*)$/.test(author) &&
+      apiVersion &&
+      /^20\d{2}(?:0[1-9]|1[0-2])$/.test(apiVersion),
+  );
+}
+
+/**
+ * Typed decoder for a LinkedIn credential record.
+ *
+ * The API version is required rather than defaulted here: design §7.2 forbids a
+ * magic version hidden in a factory. It validates only the supplied record and
+ * never borrows a token, author, or version from another source.
+ */
+export function decodeLinkedInCredential(input: unknown): LinkedInCredential {
+  const record = asRecord(input);
+  const accessToken = readString(record, "access_token");
+  const author = readString(record, "author");
+  const apiVersion = readString(record, "api_version");
+
+  if (!isLinkedInConfigurationValid(accessToken, author, apiVersion)) {
+    throw new PublishError(
+      "LinkedIn credential is incomplete (access_token, author, api_version)",
+      "AUTH",
+    );
+  }
+
+  return {
+    accessToken: accessToken as string,
+    author: author as string,
+    apiVersion: apiVersion as string,
+  };
+}
+
+/** Pure construction: no network, no credential resolution, no side effects. */
+export function buildLinkedInPublisher(
+  credential: LinkedInCredential,
+  config: Omit<LinkedInPublisherOptions, "accessToken" | "author" | "apiVersion"> = {},
+): LinkedInPublisher {
+  return new LinkedInPublisher({ ...config, ...credential });
 }
 
 // Posts commentary uses LinkedIn's "little" grammar, not raw plain text.
@@ -23,94 +88,189 @@ function plainCommentary(text: string): string {
 
 export class LinkedInPublisher implements Publisher {
   readonly name = "linkedin-native";
+
+  private readonly accessToken: string;
+  private readonly author: string;
+  private readonly apiVersion: string;
   private readonly timeoutMs: number;
 
-  constructor(private readonly options: LinkedInPublisherOptions) {
+  constructor(options: LinkedInPublisherOptions) {
     if (!isLinkedInConfigurationValid(options.accessToken, options.author, options.apiVersion)) {
       throw new TypeError("LinkedIn requires an access token, author URN, and YYYYMM API version");
     }
+
+    this.accessToken = options.accessToken;
+    this.author = options.author;
+    this.apiVersion = options.apiVersion;
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) throw new TypeError("LinkedIn timeout must be positive");
+
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
+      throw new TypeError("LinkedIn timeout must be positive");
+    }
   }
 
   async publish(request: PublishRequest): Promise<PublishResult> {
     // Conservative UTF-16 limit includes the little-text escape characters.
     // Do not truncate user text or rely on a provider-side validation request.
     const commentary = plainCommentary(request.content);
-    if (request.platform !== "linkedin" || !request.content.trim() || commentary.length > 3000 ||
-      /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(request.content)) {
-      throw new PublishError("LinkedIn requires plain text within 3000 escaped UTF-16 units", "INVALID_CONTENT");
+
+    if (
+      request.platform !== "linkedin" ||
+      !request.content.trim() ||
+      commentary.length > MAX_ESCAPED_UTF16_UNITS ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(request.content)
+    ) {
+      throw new PublishError(
+        "LinkedIn requires plain text within 3000 escaped UTF-16 units",
+        "INVALID_CONTENT",
+      );
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response;
+
     try {
-      const response = await fetch("https://api.linkedin.com/rest/posts", {
-        method: "POST", redirect: "error", signal: controller.signal,
+      response = await boundedRequest({
+        url: POSTS_URL,
+        method: "POST",
         headers: {
-          authorization: `Bearer ${this.options.accessToken}`,
-          "content-type": "application/json", accept: "application/json",
-          "LinkedIn-Version": this.options.apiVersion, "X-Restli-Protocol-Version": "2.0.0",
+          authorization: `Bearer ${this.accessToken}`,
+          "content-type": "application/json",
+          accept: "application/json",
+          "LinkedIn-Version": this.apiVersion,
+          "X-Restli-Protocol-Version": "2.0.0",
         },
         body: JSON.stringify({
-          author: this.options.author, commentary, visibility: "PUBLIC",
-          distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
-          lifecycleState: "PUBLISHED", isReshareDisabledByAuthor: false,
+          author: this.author,
+          commentary,
+          visibility: "PUBLIC",
+          distribution: {
+            feedDistribution: "MAIN_FEED",
+            targetEntities: [],
+            thirdPartyDistributionChannels: [],
+          },
+          lifecycleState: "PUBLISHED",
+          isReshareDisabledByAuthor: false,
         }),
+        timeoutMs: this.timeoutMs,
+        maxResponseBytes: MAX_CONFIRMATION_BYTES,
+        // Creation is confirmed by status plus `x-restli-id`; the body is never
+        // buffered and a stalled stream is released without being awaited.
+        bodyPolicy: "discard",
       });
-      // Creation is confirmed by status + x-restli-id, not a JSON body.
-      // Never buffer provider response bodies (including error details). Cancel
-      // without waiting for a possibly stalled stream; abort again in finally.
-      void response.body?.cancel().catch(() => undefined);
-      if (response.status !== 201) {
-        const status = response.status;
-        const code = status === 401 || status === 403 ? "AUTH"
-          : status === 429 ? "RATE_LIMIT"
-          : [400, 413, 422].includes(status) ? "INVALID_CONTENT"
-          : status >= 500 ? "PROVIDER_UNAVAILABLE" : "UNKNOWN";
-        throw new PublishError(`LinkedIn request failed (HTTP ${status})`, code,
-          status >= 500 || code === "UNKNOWN");
-      }
-      const header = response.headers.get("x-restli-id");
-      let id = "";
-      if (header && header.length <= 256) {
-        try { id = decodeURIComponent(header); } catch { /* Invalid header remains unconfirmed. */ }
-      }
-      if (!/^urn:li:(?:share|ugcPost):[1-9][0-9]*$/.test(id)) {
-        throw new PublishError("LinkedIn response did not confirm a valid post ID", "UNKNOWN", true);
-      }
-      return { externalId: id, externalUrl: `https://www.linkedin.com/feed/update/${encodeURIComponent(id)}/` };
     } catch (error) {
-      if (error instanceof PublishError) throw error;
-      // A lost response does not prove that LinkedIn rejected the write.
-      throw new PublishError("LinkedIn request was interrupted", "NETWORK", true);
-    } finally {
-      clearTimeout(timer);
-      controller.abort();
+      throw toPublishError(error);
     }
+
+    if (response.status !== 201) {
+      throw classifyStatus(
+        response.status,
+        response.headers.get("retry-after"),
+        new Date(),
+      );
+    }
+
+    const header = response.headers.get("x-restli-id");
+    let id = "";
+
+    if (header !== null && header.length <= 256) {
+      try {
+        id = decodeURIComponent(header);
+      } catch {
+        // An undecodable header stays unconfirmed.
+      }
+    }
+
+    if (!/^urn:li:(?:share|ugcPost):[1-9][0-9]*$/.test(id)) {
+      throw new PublishError(
+        "LinkedIn response did not confirm a valid post ID",
+        "UNKNOWN",
+        true,
+      );
+    }
+
+    return {
+      externalId: id,
+      externalUrl: `https://www.linkedin.com/feed/update/${encodeURIComponent(id)}/`,
+    };
   }
+}
+
+function classifyStatus(
+  status: number,
+  retryAfter: string | null,
+  now: Date,
+): PublishError {
+  const message = `LinkedIn request failed (HTTP ${status})`;
+
+  if (status === 401 || status === 403) {
+    return new PublishError(message, "AUTH", false);
+  }
+
+  if (status === 429) {
+    const retryAfterAt = parseRetryAfter(retryAfter, { now });
+    return new PublishError(
+      message,
+      "RATE_LIMIT",
+      false,
+      retryAfterAt === undefined ? undefined : { retryAfterAt },
+    );
+  }
+
+  if (status === 400 || status === 413 || status === 422) {
+    return new PublishError(message, "INVALID_CONTENT", false);
+  }
+
+  if (status >= 500) {
+    return new PublishError(message, "PROVIDER_UNAVAILABLE", true);
+  }
+
+  return new PublishError(message, "UNKNOWN", true);
+}
+
+function toPublishError(error: unknown): PublishError {
+  if (error instanceof TransportError) {
+    // The single POST is the write: once `fetch` started, an unknown outcome is
+    // never retried automatically and is reported as ambiguous.
+    if (error.code === "network" || error.code === "timeout" || error.code === "aborted") {
+      return new PublishError(
+        "LinkedIn request was interrupted",
+        "NETWORK",
+        error.requestDispatched,
+      );
+    }
+
+    return new PublishError(
+      "LinkedIn request was not completed",
+      "UNKNOWN",
+      error.requestDispatched,
+    );
+  }
+
+  return new PublishError("LinkedIn publishing failed", "UNKNOWN", true);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Platform adapter
 // ---------------------------------------------------------------------------
 
-
 export const linkedinAdapter: PlatformAdapter = {
   providerName: "linkedin-native",
 
-  buildPublisher: (cred) => {
-    if (!isLinkedInConfigurationValid(cred.access_token, cred.author, cred.api_version)) {
-      throw new PublishError(
-        "LinkedIn credential is incomplete (access_token, author)",
-        "AUTH",
-      );
-    }
-    return new LinkedInPublisher({
-      accessToken: cred.access_token!,
-      author: cred.author!,
-      apiVersion: cred.api_version ?? "202604",
-    });
-  },
+  buildPublisher: (cred) => buildLinkedInPublisher(decodeLinkedInCredential(cred)),
 
   oauth: {
     type: "oauth2",

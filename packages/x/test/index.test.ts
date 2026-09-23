@@ -1,6 +1,11 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { XPublisher } from "../src/index.js";
+import {
+  XPublisher,
+  buildXPublisher,
+  decodeXCredential,
+  decodeXUserCredential,
+} from "../src/index.js";
 
 const credentials = {
   apiKey: "test-key", apiSecret: "test-secret",
@@ -68,5 +73,131 @@ describe("X publisher", () => {
     })));
     await expect(new XPublisher({ ...credentials, timeoutMs: 10 }).publish(request())).rejects.toMatchObject({ code: "NETWORK", ambiguous: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("X transport policy", () => {
+  it("asks for manual redirects and refuses a 3xx instead of following it", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: "https://attacker.example/collect" } }),
+    );
+
+    await expect(new XPublisher(credentials).publish(request())).rejects.toMatchObject({
+      code: "UNKNOWN",
+      ambiguous: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBe("manual");
+  });
+
+  it("performs exactly one write attempt when the SDK would retry a 503", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({}, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ data: { id: "999" } }, { status: 201 }));
+
+    await expect(new XPublisher(credentials).publish(request())).rejects.toMatchObject({
+      code: "PROVIDER_UNAVAILABLE",
+      ambiguous: true,
+    });
+    // The queued success must never be consumed: the SDK retry path stays off.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries a trustworthy Retry-After from an explicit 429 rejection", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({}, { status: 429, headers: { "retry-after": "300" } }),
+    );
+
+    const error = await new XPublisher(credentials)
+      .publish(request())
+      .catch((failure: unknown) => failure);
+
+    expect(error).toMatchObject({ code: "RATE_LIMIT", ambiguous: false });
+    const delayMs = Date.parse((error as { retryAfterAt?: string }).retryAfterAt ?? "") - Date.now();
+    expect(delayMs).toBeGreaterThan(240_000);
+    expect(delayMs).toBeLessThanOrEqual(300_500);
+  });
+});
+
+describe("X typed credential decoding", () => {
+  it("separates the direct user credential from the resolved credential", () => {
+    expect(
+      decodeXUserCredential({ access_token: "user", access_token_secret: "user-secret" }),
+    ).toEqual({ accessToken: "user", accessTokenSecret: "user-secret" });
+
+    expect(
+      decodeXCredential({
+        api_key: "app",
+        api_secret: "app-secret",
+        access_token: "user",
+        access_token_secret: "user-secret",
+      }),
+    ).toEqual({
+      apiKey: "app",
+      apiSecret: "app-secret",
+      accessToken: "user",
+      accessTokenSecret: "user-secret",
+    });
+  });
+
+  it.each([
+    [{}],
+    [{ api_key: "app", api_secret: "app-secret" }],
+    [{ access_token: "user" }],
+    [{ access_token: "user", access_token_secret: "" }],
+    [null],
+    ["token"],
+  ])("rejects %j as a user credential", input => {
+    expect(() => decodeXUserCredential(input)).toThrowError(
+      expect.objectContaining({ code: "AUTH" }),
+    );
+  });
+
+  it("rejects a user token pair that is missing the app credentials", () => {
+    expect(() =>
+      decodeXCredential({ access_token: "user", access_token_secret: "user-secret" }),
+    ).toThrowError(expect.objectContaining({ code: "AUTH" }));
+  });
+
+  it("builds a publisher without any network activity", () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const publisher = buildXPublisher(
+      decodeXCredential({
+        api_key: "app",
+        api_secret: "app-secret",
+        access_token: "user",
+        access_token_secret: "user-secret",
+      }),
+    );
+
+    expect(publisher.name).toBe("x-sdk");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not follow later mutations of the caller's options object", async () => {
+    const mutable = {
+      apiKey: "app",
+      apiSecret: "app-secret",
+      accessToken: "original-user",
+      accessTokenSecret: "original-user-secret",
+    };
+    const publisher = new XPublisher(mutable);
+
+    // A caller that reuses and mutates its own object must not be able to swap
+    // the account an existing publisher signs with.
+    mutable.accessToken = "attacker-user";
+    mutable.accessTokenSecret = "attacker-secret";
+    mutable.apiKey = "attacker-app";
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: { id: "123" } }, { status: 201 }));
+
+    await expect(publisher.publish(request())).resolves.toHaveProperty("externalId", "123");
+
+    const header = new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization") ?? "";
+    expect(decodeURIComponent(header)).not.toContain("attacker");
   });
 });

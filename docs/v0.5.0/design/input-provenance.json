@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "document_version": "2.0",
+  "captured_on": "2026-09-21",
+  "inputs": [
+    {
+      "kind": "base_design",
+      "package_path": "sources/v1-original-design-package.zip",
+      "original_filename": "syndroo-v0.5.0-design-package.zip",
+      "sha256": "787ab87f697a92be9131ae9c0f31e34c32971b02b6226086635266bbfbe1c9c6",
+      "bytes": 62207,
+      "verbatim_preserved": true
+    },
+    {
+      "kind": "user_addendum",
+      "package_path": "sources/portable-storage-queue.original.txt",
+      "original_filename": "粘贴的文本 (1).txt",
+      "sha256": "276dae1e29738dfc0a8f9e2dbdc054cd50f4134ad57eedcfa6e0a743b15f2a4a",
+      "bytes": 36843,
+      "verbatim_preserved": true
+    }
+  ],
+  "repository_observed_this_revision": false,
+  "model_delegation_invoked": false
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@syndroo/transport",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bounded outbound request lifecycle and strict OAuth 1.0a signing (RFC 5849) for Syndroo platform adapters.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "npm run build && vitest run"
+  }
+}

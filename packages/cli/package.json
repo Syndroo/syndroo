@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cli",
-  "version": "0.4.0-rc.1",
+  "version": "0.5.0-rc.1",
   "type": "module",
   "description": "The `syndroo` command: validate, create, and track Syndroo posts from a terminal, script, or CI job.",
   "license": "Apache-2.0",
@@ -39,7 +39,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@syndroo/sdk": "0.4.0-rc.1"
+    "@syndroo/sdk": "0.5.0-rc.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x ./dist/bin.js",

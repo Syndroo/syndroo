@@ -117,7 +117,11 @@ describe("typed HTTP errors", () => {
 
       expect(error.status).toBe(testCase.status);
       expect(error.code).toBe(testCase.code);
-      expect(error.message).toBe(testCase.message);
+      // The server's own message may carry provider or storage text, so the SDK
+      // reports a fixed message naming the status and the allowlisted code.
+      expect(error.message).toContain(`HTTP ${testCase.status}`);
+      expect(error.message).toContain(testCase.code);
+      expect(error.message).not.toContain(testCase.message);
       expect(error.requestMayHaveBeenApplied).toBe(testCase.applied);
       expect(error.retryable).toBe(testCase.status === 429 || testCase.status >= 500);
       expect(error.message).not.toContain(API_KEY);
@@ -173,8 +177,11 @@ describe("malformed responses", () => {
 
     expect(error.status).toBe(202);
     expect(error.requestMayHaveBeenApplied).toBe(true);
-    expect(error.preview).toBe("<html>not json</html>");
+    // `preview` stays available for compatibility but is never filled from an
+    // untrusted body.
+    expect(error.preview).toBeUndefined();
     expect(error.message).toContain("not JSON");
+    expect(error.message).not.toContain("not json");
   });
 
   it("bounds the preview of an oversized non-JSON body", async () => {
@@ -186,8 +193,9 @@ describe("malformed responses", () => {
       await captured(client(server).posts.get("post_1")),
     );
 
-    expect(error.preview?.length ?? 0).toBeLessThan(260);
+    expect(error.preview).toBeUndefined();
     expect(error.message.length).toBeLessThan(400);
+    expect(error.message).not.toContain("xxxx");
   });
 
   it("fails loudly when a success response is missing required fields", async () => {
@@ -248,7 +256,8 @@ describe("malformed responses", () => {
 
     expect(error.code).toBe("HTTP_500");
     expect(error.status).toBe(500);
-    expect(error.message).toContain("bad gateway");
+    expect(error.message).toContain("HTTP 500");
+    expect(error.message).not.toContain("bad gateway");
   });
 });
 

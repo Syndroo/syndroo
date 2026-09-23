@@ -90,15 +90,39 @@ export type PublishErrorCode =
   | "NETWORK"
   | "UNKNOWN";
 
+/**
+ * Error options for `PublishError`.
+ *
+ * `retryAfterAt` carries an already normalized UTC instant derived from a
+ * trustworthy provider response (currently only an explicit `Retry-After` on a
+ * 429 the adapter proved safe). It is a hint for the application's single retry
+ * policy: it never adds a second policy, never shortens the application default,
+ * and is absent whenever the header was missing, invalid, or already past.
+ */
+export interface PublishErrorOptions extends ErrorOptions {
+  readonly retryAfterAt?: string;
+}
+
 export class PublishError extends Error {
+  /**
+   * Earliest UTC instant the provider asked us to wait until, or absent when no
+   * trustworthy header was present. Adapters must not attach raw response
+   * bodies, headers, or provider messages.
+   */
+  readonly retryAfterAt?: string;
+
   constructor(
     message: string,
     public readonly code: PublishErrorCode,
     public readonly ambiguous = false,
-    options?: ErrorOptions,
+    options?: PublishErrorOptions,
   ) {
     super(message, options);
     this.name = "PublishError";
+
+    if (options?.retryAfterAt !== undefined) {
+      this.retryAfterAt = options.retryAfterAt;
+    }
   }
 }
 

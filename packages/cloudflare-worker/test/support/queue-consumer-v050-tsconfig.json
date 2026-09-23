@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/composition/queue-consumer.ts",
+    "./queue-consumer-v050-worker.ts",
+    "../queue-consumer-v050.native.ts",
+    "../queue-consumer-v050.vitest.config.ts"
+  ]
+}

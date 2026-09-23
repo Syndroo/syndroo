@@ -74,6 +74,24 @@ export const COMMAND_FLAGS: readonly FlagDefinition[] = [
     kind: "boolean",
     description: "Validate and preview the document without sending anything.",
   },
+  {
+    name: "author",
+    kind: "value",
+    description: "Public LinkedIn author URN for `auth complete`.",
+    placeholder: "<urn>",
+  },
+  {
+    name: "api-version",
+    kind: "value",
+    description: "Public LinkedIn API version (YYYYMM) for `auth complete`.",
+    placeholder: "<YYYYMM>",
+  },
+  {
+    name: "blog",
+    kind: "value",
+    description: "Public Tumblr blog name for `auth complete`.",
+    placeholder: "<blog>",
+  },
 ];
 
 export const COMMAND_SPECS: readonly CommandSpec[] = [
@@ -131,6 +149,79 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     minPositionals: 1,
     maxPositionals: 1,
     flags: ["timeout"],
+  },
+  {
+    name: "auth.status",
+    words: ["auth", "status"],
+    summary: "Read platform and instance readiness. Read-only.",
+    usage: "syndroo auth status [platform] [--base-url <url>] [--json]",
+    minPositionals: 0,
+    maxPositionals: 1,
+    flags: ["base-url"],
+  },
+  {
+    name: "auth.set",
+    words: ["auth", "set"],
+    summary: "Store one platform's direct credential from bounded secret JSON.",
+    usage: "syndroo auth set <platform> [--file <path|->] [--yes] [--json]",
+    minPositionals: 1,
+    maxPositionals: 1,
+    flags: ["file", "yes", "base-url"],
+  },
+  {
+    name: "auth.connect",
+    words: ["auth", "connect"],
+    summary: "Start one guarded OAuth operation and print its authorization URL.",
+    usage: "syndroo auth connect <platform> [--json]",
+    minPositionals: 1,
+    maxPositionals: 1,
+    flags: ["base-url"],
+  },
+  {
+    name: "auth.operation",
+    words: ["auth", "operation"],
+    summary: "Read one authorization operation. Read-only.",
+    usage: "syndroo auth operation <platform> <operation-id> [--json]",
+    minPositionals: 2,
+    maxPositionals: 2,
+    flags: ["base-url"],
+  },
+  {
+    name: "auth.complete",
+    words: ["auth", "complete"],
+    summary: "Confirm one authorization operation with public target fields.",
+    usage:
+      "syndroo auth complete <platform> <operation-id> [--author <urn>] [--api-version <YYYYMM>] [--blog <blog>] [--yes] [--json]",
+    minPositionals: 2,
+    maxPositionals: 2,
+    flags: ["author", "api-version", "blog", "yes", "base-url"],
+  },
+  {
+    name: "auth.refresh",
+    words: ["auth", "refresh"],
+    summary: "Refresh one platform's stored token under its current revision.",
+    usage: "syndroo auth refresh <platform> [--json]",
+    minPositionals: 1,
+    maxPositionals: 1,
+    flags: ["base-url"],
+  },
+  {
+    name: "auth.remove",
+    words: ["auth", "remove"],
+    summary: "Remove one platform's stored credential.",
+    usage: "syndroo auth remove <platform> [--yes] [--json]",
+    minPositionals: 1,
+    maxPositionals: 1,
+    flags: ["yes", "base-url"],
+  },
+  {
+    name: "diagnostics",
+    words: ["diagnostics"],
+    summary: "Read outbox and storage diagnostics. Read-only.",
+    usage: "syndroo diagnostics [--json]",
+    minPositionals: 0,
+    maxPositionals: 0,
+    flags: ["base-url"],
   },
   {
     name: "skill.path",
@@ -208,7 +299,9 @@ export function parseArgs(argv: readonly string[]): ParsedCommand {
     const definition = ALL_FLAGS.find(flag => flag.name === name);
 
     if (definition === undefined) {
-      throw usageError(`Unknown flag "${token}".`, { flag: name });
+      // Report the flag name only: an unsupported `--token=secret` must not
+      // echo the value it carried.
+      throw usageError(`Unknown flag "--${name}".`, { flag: name });
     }
 
     if (definition.kind === "boolean") {

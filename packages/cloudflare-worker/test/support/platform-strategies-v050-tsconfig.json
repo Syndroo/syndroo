@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@cloudflare/vitest-plugin/types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/composition/**/*.ts",
+    "../platform-strategies-v050.spec.ts"
+  ]
+}

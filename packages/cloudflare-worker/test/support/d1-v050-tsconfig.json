@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/infrastructure/d1/**/*.ts",
+    "../../worker-configuration.d.ts",
+    "./d1-v050-support.ts",
+    "../d1-v050-contracts.spec.ts",
+    "../d1-v050-faults.spec.ts",
+    "../d1-v050-regressions.spec.ts"
+  ]
+}

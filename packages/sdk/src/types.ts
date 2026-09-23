@@ -8,7 +8,11 @@
  * what users depend on.
  */
 
-import { SyndrooResponseError, truncate } from "./errors.js";
+import {
+  SyndrooResponseError,
+  type ErrorSink,
+  type SdkOperation,
+} from "./errors.js";
 
 /** Platforms the docs describe today. The SDK accepts any string the server accepts. */
 export type KnownPlatform =
@@ -99,6 +103,7 @@ export interface Publication {
   externalUrl?: string;
   errorCode?: SupportsFutureValues<PublishErrorCode>;
   errorMessage?: string;
+  terminalReason?: string;
   createdAt?: string;
   scheduledAt?: string;
   enqueuedAt?: string;
@@ -118,6 +123,9 @@ export interface HealthStatus {
 export interface ParseContext {
   status?: number | undefined;
   requestMayHaveBeenApplied?: boolean | undefined;
+  operation?: SdkOperation | undefined;
+  /** The per-call identity marker, when the caller needs to recognize this error. */
+  errors?: ErrorSink | undefined;
 }
 
 const TERMINAL_POST_STATUSES: ReadonlySet<string> = new Set([
@@ -140,7 +148,7 @@ export function parsePostReceipt(
   value: unknown,
   context: ParseContext = {},
 ): PostReceipt {
-  const record = requireRecord(value, "the create response");
+  const record = requireRecord(value, "the create response", context);
   const receipt: PostReceipt = {
     id: requireString(record["id"], "create response id", context),
     status: requireString(record["status"], "create response status", context),
@@ -221,6 +229,7 @@ function parsePublication(
   assignOptional(publication, "externalUrl", optionalString(record["externalUrl"], `${label} externalUrl`, context));
   assignOptional(publication, "errorCode", optionalString(record["errorCode"], `${label} errorCode`, context));
   assignOptional(publication, "errorMessage", optionalString(record["errorMessage"], `${label} errorMessage`, context));
+  assignOptional(publication, "terminalReason", optionalString(record["terminalReason"], `${label} terminalReason`, context));
   assignOptional(publication, "createdAt", optionalString(record["createdAt"], `${label} createdAt`, context));
   assignOptional(publication, "scheduledAt", optionalString(record["scheduledAt"], `${label} scheduledAt`, context));
   assignOptional(publication, "enqueuedAt", optionalString(record["enqueuedAt"], `${label} enqueuedAt`, context));
@@ -241,9 +250,10 @@ function optionalOverrides(
   const record = requireRecord(value, label, context);
   const overrides: Record<string, PostOverride> = {};
 
+  // The property names come from the response, so they stay out of the labels.
   for (const [platform, override] of Object.entries(record)) {
-    const entry = requireRecord(override, `${label}.${platform}`, context);
-    const content = optionalString(entry["content"], `${label}.${platform}.content`, context);
+    const entry = requireRecord(override, `${label} entry`, context);
+    const content = optionalString(entry["content"], `${label} entry content`, context);
     overrides[platform] = content === undefined ? {} : { content };
   }
 
@@ -260,7 +270,7 @@ function assignOptional<T extends object, K extends keyof T>(
   }
 }
 
-function requireRecord(
+export function requireRecord(
   value: unknown,
   label: string,
   context: ParseContext = {},
@@ -272,7 +282,7 @@ function requireRecord(
   return value as Record<string, unknown>;
 }
 
-function requireArray(
+export function requireArray(
   value: unknown,
   label: string,
   context: ParseContext = {},
@@ -284,7 +294,7 @@ function requireArray(
   return value;
 }
 
-function requireString(
+export function requireString(
   value: unknown,
   label: string,
   context: ParseContext = {},
@@ -294,6 +304,135 @@ function requireString(
   }
 
   return value;
+}
+
+export function requireBoolean(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): boolean {
+  if (typeof value !== "boolean") {
+    throw invalid(`${label} must be a boolean, received ${describe(value)}`, context);
+  }
+
+  return value;
+}
+
+/** Revisions are nonnegative safe integers everywhere in the public contract. */
+export function requireRevision(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw invalid(
+      `${label} must be a nonnegative safe integer, received ${describe(value)}`,
+      context,
+    );
+  }
+
+  return value as number;
+}
+
+export function requireStringArray(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): string[] {
+  return requireArray(value, label, context).map((entry, index) =>
+    requireString(entry, `${label}[${index}]`, context),
+  );
+}
+
+export function requireNullableString(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  return requireString(value, label, context);
+}
+
+/**
+ * The only date shape the 0.5.0 API emits: a normalized UTC ISO-8601 instant.
+ * The round trip rejects both loose input (`"1"`) and impossible calendar dates
+ * (`2026-02-30…`), which `Date.parse` silently rolls forward.
+ */
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+export function requireInstant(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): string {
+  const text = requireString(value, label, context);
+
+  if (!INSTANT_PATTERN.test(text)) {
+    throw invalid(`${label} must be a normalized UTC ISO 8601 instant`, context);
+  }
+
+  try {
+    if (new Date(text).toISOString() !== text) {
+      throw invalid(`${label} must be a normalized UTC ISO 8601 instant`, context);
+    }
+  } catch {
+    throw invalid(`${label} must be a normalized UTC ISO 8601 instant`, context);
+  }
+
+  return text;
+}
+
+export function requireNullableInstant(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): string | null {
+  return value === null ? null : requireInstant(value, label, context);
+}
+
+export function requireNullableNumber(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  return requireNumber(value, label, context);
+}
+
+/** Counts and byte totals: whole, nonnegative, and finite. */
+export function requireNonNegativeInteger(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): number {
+  const count = requireNumber(value, label, context);
+
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw invalid(
+      `${label} must be a nonnegative safe integer, received ${describe(value)}`,
+      context,
+    );
+  }
+
+  return count;
+}
+
+export function optionalRecord(
+  value: unknown,
+  label: string,
+  context: ParseContext = {},
+): Record<string, unknown> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return requireRecord(value, label, context);
 }
 
 function requireNumber(
@@ -308,7 +447,7 @@ function requireNumber(
   return value;
 }
 
-function optionalString(
+export function optionalString(
   value: unknown,
   label: string,
   context: ParseContext = {},
@@ -320,7 +459,7 @@ function optionalString(
   return requireString(value, label, context);
 }
 
-function optionalBoolean(
+export function optionalBoolean(
   value: unknown,
   label: string,
   context: ParseContext = {},
@@ -336,28 +475,35 @@ function optionalBoolean(
   return value;
 }
 
-function invalid(message: string, context: ParseContext): SyndrooResponseError {
-  return new SyndrooResponseError(
+export function invalid(message: string, context: ParseContext): SyndrooResponseError {
+  const error = new SyndrooResponseError(
     `Syndroo returned a response that does not match the documented contract: ${message}.`,
     {
       status: context.status,
       requestMayHaveBeenApplied: context.requestMayHaveBeenApplied,
+      operation: context.operation,
     },
   );
+
+  return context.errors === undefined ? error : context.errors.mark(error);
 }
 
+/**
+ * Shape words only. A rejected value, and the keys of a rejected object, are
+ * untrusted response data and are never echoed into an error message.
+ */
 function describe(value: unknown): string {
   if (value === null) {
     return "null";
   }
 
   if (Array.isArray(value)) {
-    return `an array of ${value.length} item(s)`;
+    return "an array";
   }
 
-  if (typeof value === "object") {
-    return `an object with keys ${truncate(Object.keys(value).join(", "), 80)}`;
+  if (value === undefined) {
+    return "undefined";
   }
 
-  return `${typeof value} (${truncate(String(value), 80)})`;
+  return `a ${typeof value}`;
 }

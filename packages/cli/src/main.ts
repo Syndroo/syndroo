@@ -9,6 +9,16 @@ import {
   runValidate,
   runWait,
 } from "./commands/posts.js";
+import {
+  runAuthComplete,
+  runAuthConnect,
+  runAuthOperation,
+  runAuthRefresh,
+  runAuthRemove,
+  runAuthSet,
+  runAuthStatus,
+  runDiagnostics,
+} from "./commands/auth.js";
 import { runSkillPath } from "./commands/skill.js";
 import { API_KEY_ENV } from "./config.js";
 import { EXIT_CODE } from "./exit-codes.js";
@@ -21,6 +31,14 @@ type Handler = (context: CommandContext) => Promise<CommandResult>;
 
 const HANDLERS: Readonly<Record<string, Handler>> = {
   doctor: runDoctor,
+  "auth.status": runAuthStatus,
+  "auth.set": runAuthSet,
+  "auth.connect": runAuthConnect,
+  "auth.operation": runAuthOperation,
+  "auth.complete": runAuthComplete,
+  "auth.refresh": runAuthRefresh,
+  "auth.remove": runAuthRemove,
+  diagnostics: runDiagnostics,
   "posts.validate": runValidate,
   "posts.create": runCreate,
   "posts.list": runList,
@@ -39,15 +57,6 @@ export async function run(
 ): Promise<number> {
   const reporter = new Reporter(io, wantsJson(argv));
   reporter.addSecret(io.env[API_KEY_ENV]);
-
-  /**
-   * The SDK unrefs the timers it sleeps on while polling, so that an SDK
-   * consumer running inside a server is never pinned open by a wait. A CLI has
-   * the opposite duty: `syndroo posts wait` must stay alive until its own
-   * deadline. This referenced timer keeps the event loop alive for the duration
-   * of the command and is cleared before the process exits.
-   */
-  const keepAlive = setInterval(() => {}, 1_000);
 
   let parsed: ParsedCommand | undefined;
 
@@ -101,9 +110,15 @@ export async function run(
         : undefined;
 
     if (failure.code === "ABORTED") {
-      // A signal stops this process, never the post: waiting only reads.
+      // A signal stops this process, never the server-side work. The advice
+      // follows the command that ran, so an interrupted auth write never sends
+      // the operator to a post key.
       reporter.diagnostic(
-        "Stopped locally. The server-side post is unchanged; resume with `syndroo posts get` or `syndroo posts wait`.",
+        parsed?.command?.startsWith("auth") === true
+          ? "Stopped locally. Nothing was retried; inspect `syndroo auth status`, and `syndroo auth operation` for an operation you had already started, before trying again."
+          : parsed?.command === "diagnostics" || parsed?.command === "doctor"
+            ? "Stopped locally. This command only reads, so nothing changed on the instance."
+            : "Stopped locally. The server-side post is unchanged; resume with `syndroo posts get` or `syndroo posts wait`.",
       );
     }
 
@@ -116,7 +131,5 @@ export async function run(
     });
 
     return failure.exitCode;
-  } finally {
-    clearInterval(keepAlive);
   }
 }

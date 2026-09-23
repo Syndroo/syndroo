@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cloudflare-worker",
-  "version": "0.2.0-rc.1",
+  "version": "0.5.0-rc.1",
   "type": "module",
   "description": "Self-hosted Syndroo publishing Worker for Cloudflare.",
   "license": "Apache-2.0",
@@ -48,7 +48,10 @@
     "licenses": "node ../../.build/scripts/generate-package-licenses.js",
     "types": "wrangler types worker-configuration.d.ts --config ../../wrangler.jsonc",
     "check": "npm run types && tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "node test/support/run-worker-tests.ts",
+    "test:worker:main": "vitest run",
+    "test:worker:canary": "vitest run --config test/canary-v050.vitest.config.ts",
+    "test:worker:watchdog": "vitest run --config test/host-v050.vitest.config.ts",
     "dev": "wrangler dev --env local --config ../../wrangler.jsonc",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config ../../wrangler.jsonc",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config ../../wrangler.jsonc",
@@ -58,11 +61,13 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.10",
+    "@syndroo/application": "0.1.0",
     "@syndroo/bluesky": "0.1.0",
     "@syndroo/core": "0.1.0",
     "@syndroo/threads": "0.1.0",
     "@syndroo/x": "0.1.0",
     "@syndroo/tumblr": "0.1.0",
-    "@syndroo/linkedin": "0.1.0"
+    "@syndroo/linkedin": "0.1.0",
+    "@syndroo/transport": "0.1.0"
   }
 }

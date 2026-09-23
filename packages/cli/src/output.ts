@@ -20,6 +20,7 @@ export class Reporter {
   readonly #io: CliIo;
   readonly #json: boolean;
   readonly #secrets: string[] = [];
+  #requestCounts: Record<string, unknown> | undefined;
 
   constructor(io: CliIo, json: boolean) {
     this.#io = io;
@@ -30,35 +31,44 @@ export class Reporter {
     return this.#json;
   }
 
+  /**
+   * Records what this command actually sent, so a failure payload carries the
+   * same truthful counts a success payload would. Nothing that failed before
+   * dispatch can therefore look like a sent request.
+   */
+  setRequestCounts(counts: Record<string, unknown>): void {
+    this.#requestCounts = counts;
+  }
+
   /** Register a value that must never appear in output. */
   addSecret(value: string | undefined): void {
-    if (value !== undefined && value.length >= 8) {
+    if (value !== undefined && value.length > 0) {
       this.#secrets.push(value);
     }
   }
 
   /** Human-facing context: previews, progress, hints. Always stderr. */
   diagnostic(message: string): void {
-    this.#io.stderr.write(this.#redact(message) + "\n");
+    this.#io.stderr.write(this.#redactText(message) + "\n");
   }
 
   /** Human-facing prompt text without a trailing newline. Always stderr. */
   prompt(message: string): void {
-    this.#io.stderr.write(this.#redact(message));
+    this.#io.stderr.write(this.#redactText(message));
   }
 
   finish(result: CommandResult): void {
     if (this.#json) {
       this.#io.stdout.write(
-        this.#redact(
-          JSON.stringify({ ...result.payload, exitCode: result.exitCode }) + "\n",
-        ),
+        JSON.stringify(
+          this.#redactValue({ ...result.payload, exitCode: result.exitCode }),
+        ) + "\n",
       );
       return;
     }
 
     if (result.human.length > 0) {
-      this.#io.stdout.write(this.#redact(result.human.join("\n")) + "\n");
+      this.#io.stdout.write(this.#redactText(result.human.join("\n")) + "\n");
     }
   }
 
@@ -70,15 +80,20 @@ export class Reporter {
     details?: Record<string, unknown> | undefined;
     exitCode: ExitCode;
   }): void {
-    const message = this.#redact(error.message);
+    const message = this.#redactText(error.message);
 
     if (this.#json) {
       const payload: Record<string, unknown> = {
         ok: false,
+        ...(this.#requestCounts === undefined
+          ? {}
+          : { authRequests: this.#requestCounts }),
         error: {
           code: error.code,
           message,
-          ...(error.details === undefined ? {} : { details: error.details }),
+          ...(error.details === undefined
+            ? {}
+            : { details: this.#redactValue(error.details) }),
         },
         exitCode: error.exitCode,
       };
@@ -87,14 +102,14 @@ export class Reporter {
         payload["command"] = error.command;
       }
 
-      this.#io.stdout.write(this.#redact(JSON.stringify(payload) + "\n"));
+      this.#io.stdout.write(JSON.stringify(this.#redactValue(payload)) + "\n");
       return;
     }
 
     this.#io.stderr.write(`syndroo: ${message}\n`);
   }
 
-  #redact(text: string): string {
+  #redactText(text: string): string {
     let output = text;
 
     for (const secret of this.#secrets) {
@@ -102,5 +117,35 @@ export class Reporter {
     }
 
     return output;
+  }
+
+  /**
+   * Redacts structured values before serialization.
+   *
+   * Replacing bytes in already-serialized JSON cannot see an escaped secret and
+   * can corrupt the document. Redacting values first keeps exactly one valid
+   * JSON object and never rewrites a key, so short secrets are covered without
+   * turning field names into "[redacted]".
+   */
+  #redactValue(value: unknown): unknown {
+    if (typeof value === "string") {
+      return this.#redactText(value);
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(entry => this.#redactValue(entry));
+    }
+
+    if (typeof value === "object" && value !== null) {
+      const copy = Object.create(null) as Record<string, unknown>;
+
+      for (const key of Object.keys(value)) {
+        copy[key] = this.#redactValue((value as Record<string, unknown>)[key]);
+      }
+
+      return copy;
+    }
+
+    return value;
   }
 }

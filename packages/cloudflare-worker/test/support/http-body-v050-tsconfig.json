@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/http.ts",
+    "./http-body-v050-worker.ts",
+    "../http-body-v050.native.ts",
+    "../http-body-v050.vitest.config.ts"
+  ]
+}

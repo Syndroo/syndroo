@@ -1,0 +1,2323 @@
+# Syndroo 0.5.0 — Portable Storage & Queue Architecture Spec
+
+**Status:** Proposed  
+**Target:** v0.5.0  
+**Type:** Architecture Addendum  
+**Scope:** D1 / R2 / Cloudflare Queues / Scheduling / Portability
+
+---
+
+# 1. Purpose
+
+Syndroo 当前以 Cloudflare 作为 reference deployment：
+
+```text
+Runtime      Cloudflare Workers
+Database     Cloudflare D1
+Object Store Cloudflare R2
+Queue        Cloudflare Queues
+Scheduler    Cloudflare Cron Triggers
+```
+
+但 Syndroo 的长期目标不是成为 Cloudflare-only 软件。
+
+未来应能够支持：
+
+```text
+Cloudflare
+Docker
+Railway
+Fly.io
+Heroku
+Kubernetes
+Local / self-hosted
+```
+
+因此 v0.5.0 必须建立以下原则：
+
+> Cloudflare is the reference deployment, not the Syndroo execution model.
+
+D1、R2、Queues 都只能作为 infrastructure adapters。
+
+Core/Application 层不得依赖 Cloudflare API。
+
+---
+
+# 2. Goals
+
+v0.5.0 MUST：
+
+1. 使用 D1 保存 transactional / queryable application state。
+2. 使用 R2 保存大体积、低查询频率、archive-oriented 数据。
+3. 使用 Cloudflare Queues 执行异步 Delivery。
+4. 支持 scheduled publishing。
+5. 对 Queue 的 at-least-once delivery 做完整 idempotency 设计。
+6. 避免 D1 → Queue dual-write inconsistency。
+7. 避免 Core 直接依赖 D1/R2/Queues bindings。
+8. 保证未来 PostgreSQL / S3 / Redis 等 adapter 可以加入。
+9. 防止 logs、raw response、webhook payload 无限增长 D1。
+10. 保持 Cloudflare Free Plan 下较低的 D1 rows-read / rows-write。
+
+Cloudflare D1 当前通过 Worker binding 暴露数据库 API；R2 同样通过 bucket binding 暴露对象存储 API。它们都不应该泄漏到 Domain/Application 层。
+
+---
+
+# 3. Non-goals
+
+v0.5.0 不要求：
+
+- 实现 PostgreSQL adapter
+- 实现 Redis/BullMQ adapter
+- 实现 S3/MinIO adapter
+- 实现 Docker deployment
+- 实现 Railway/Fly.io deployment
+- 同时维护两套 production persistence
+- 建立完整 observability platform
+- 实现跨数据库 migration CLI
+
+v0.5.0 只需要：
+
+```text
+定义 portable ports
+        +
+实现 Cloudflare adapters
+        +
+通过 contract tests 保证 abstraction 没有 Cloudflare 泄漏
+```
+
+---
+
+# 4. Architecture
+
+目标结构：
+
+```text
+                     Syndroo Core
+                         │
+                Application Services
+                         │
+              ┌──────────┼───────────┐
+              │          │           │
+        Repository     JobQueue    ArchiveStore
+              │          │           │
+          BlobStore    Logger    CredentialCipher
+              │          │           │
+              └──────────┼───────────┘
+                         │
+                       Ports
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+  Cloudflare Adapter              Future Adapters
+          │                             │
+       D1 / R2                    PostgreSQL
+       Queues                     S3 / MinIO
+       Cron                       Redis / BullMQ
+                                  Filesystem
+```
+
+Dependency direction MUST always be：
+
+```text
+Domain
+   ↑
+Application
+   ↑
+Ports
+   ↑
+Infrastructure adapters
+   ↑
+Cloudflare runtime
+```
+
+以下依赖方向禁止：
+
+```text
+Domain → D1
+Domain → R2
+Domain → Queue
+Application → env.DB
+Application → env.BUCKET
+Application → env.QUEUE
+```
+
+---
+
+# 5. Data ownership
+
+## 5.1 D1
+
+D1 是 Syndroo application state 的 authoritative source。
+
+保存：
+
+```text
+D1
+├── posts
+├── publications
+├── deliveries
+├── connections
+├── idempotency_keys
+├── outbox_jobs
+├── webhook_events       # metadata only
+└── audit metadata       # optional compact metadata
+```
+
+D1 SHOULD 保存：
+
+- canonical content
+- publishing intent
+- current state
+- timestamps
+- target/provider identifiers
+- retry metadata
+- compact error metadata
+- external SNS ID
+- external SNS URL
+- R2 logical storage key
+- idempotency state
+- outbox state
+
+D1 MUST NOT 保存：
+
+- 图片 binary
+- 视频 binary
+- 大型 provider response
+- 完整 HTTP response body
+- 完整 HTTP request body
+- 完整 webhook payload
+- debug logs
+- 无限增长的 audit payload
+
+---
+
+# 6. Domain semantics
+
+如果现有 0.5.0 使用了不同命名，可以保留现有名称。
+
+重要的是下面的 semantic boundary。
+
+## Post
+
+Canonical content。
+
+例如：
+
+```text
+Post
+├── text
+├── title
+├── media references
+├── metadata
+└── content version
+```
+
+Post 不代表某个平台上的实际发送。
+
+---
+
+## Publication
+
+一次用户 publishing intent。
+
+例如：
+
+```text
+Post #123
+
+Publish to:
+├── X
+├── Threads
+├── Bluesky
+└── Mastodon
+```
+
+形成：
+
+```text
+Publication
+```
+
+Publication 管理：
+
+```text
+draft
+scheduled
+dispatching
+completed
+partially_failed
+failed
+cancelled
+```
+
+---
+
+## Delivery
+
+一个 Publication × 一个 Destination。
+
+例如：
+
+```text
+Publication P1
+
+Delivery D1 → X/account-A
+Delivery D2 → Threads/account-B
+Delivery D3 → Bluesky/account-C
+Delivery D4 → Mastodon/account-D
+```
+
+Delivery 是 provider execution 的最小状态单元。
+
+---
+
+# 7. Delivery state machine
+
+推荐：
+
+```text
+pending
+   │
+   ├── scheduled
+   │
+   ▼
+queued
+   │
+   ▼
+processing
+   │
+   ├──────→ published
+   │
+   ├──────→ retry_scheduled
+   │              │
+   │              └────→ queued
+   │
+   ├──────→ failed
+   │
+   ├──────→ dead_lettered
+   │
+   └──────→ unknown
+```
+
+`unknown` 很重要。
+
+例如：
+
+```text
+Syndroo → X API
+              ↓
+          X 已发布成功
+              ↓
+      network connection reset
+              ↓
+Syndroo 不知道发送是否成功
+```
+
+如果 Provider 不支持 idempotency 或 reconciliation：
+
+不能简单 retry。
+
+否则可能产生重复 SNS 内容。
+
+因此：
+
+```text
+ambiguous remote result
+        ↓
+     unknown
+```
+
+而不是：
+
+```text
+ambiguous result
+        ↓
+blind retry
+```
+
+---
+
+# 8. Repository Ports
+
+Core/Application MUST only depend on interfaces。
+
+Conceptual API：
+
+```ts
+interface PostRepository {
+  get(id: PostId): Promise<Post | null>;
+  create(post: Post): Promise<void>;
+  update(post: Post): Promise<void>;
+}
+
+interface PublicationRepository {
+  get(id: PublicationId): Promise<Publication | null>;
+
+  create(
+    publication: Publication,
+    deliveries: Delivery[],
+    outboxJobs: OutboxJob[],
+  ): Promise<void>;
+
+  update(publication: Publication): Promise<void>;
+}
+
+interface DeliveryRepository {
+  get(id: DeliveryId): Promise<Delivery | null>;
+
+  markProcessing(...): Promise<void>;
+
+  markPublished(...): Promise<void>;
+
+  scheduleRetry(...): Promise<void>;
+
+  markFailed(...): Promise<void>;
+
+  markUnknown(...): Promise<void>;
+
+  markDeadLettered(...): Promise<void>;
+}
+
+interface ConnectionRepository {
+  get(id: ConnectionId): Promise<Connection | null>;
+}
+
+interface IdempotencyRepository {
+  find(scope: string, key: string): Promise<IdempotencyRecord | null>;
+  create(record: IdempotencyRecord): Promise<void>;
+}
+```
+
+这些接口里 MUST NOT 出现：
+
+```ts
+D1Database
+D1PreparedStatement
+R2Bucket
+MessageBatch
+Queue
+ExecutionContext
+Env
+```
+
+---
+
+# 9. Transaction boundary
+
+创建 Publication 时通常需要同时创建：
+
+```text
+Publication
+Deliveries
+Outbox jobs
+```
+
+它们 MUST 是一个 logical transaction。
+
+Cloudflare D1 `batch()` 当前具有事务语义：其中一个 statement 失败时整个 batch 会 rollback。
+
+Cloudflare adapter 应利用这一能力完成：
+
+```text
+BEGIN logical transaction
+
+INSERT publication
+INSERT delivery A
+INSERT delivery B
+INSERT delivery C
+INSERT outbox job A
+INSERT outbox job B
+INSERT outbox job C
+
+COMMIT
+```
+
+禁止：
+
+```text
+INSERT publication
+COMMIT
+
+INSERT delivery
+COMMIT
+
+QUEUE.send()
+```
+
+因为会产生 partial state。
+
+---
+
+# 10. Transactional Outbox
+
+## Decision
+
+v0.5.0 SHOULD 引入：
+
+```text
+outbox_jobs
+```
+
+这是 D1 → Queues 之间的一致性边界。
+
+Queue 本身不能成为 source of truth。
+
+---
+
+## Problem
+
+禁止直接依赖：
+
+```text
+1. INSERT delivery into D1
+2. Queue.send()
+```
+
+因为：
+
+```text
+D1 success
+Queue failure
+```
+
+会得到：
+
+```text
+delivery exists
+but never dispatched
+```
+
+反过来也存在：
+
+```text
+Queue success
+D1 update failure
+```
+
+---
+
+# 11. Outbox schema
+
+Conceptual：
+
+```text
+outbox_jobs
+
+id
+kind
+aggregate_id
+payload_version
+available_at
+status
+attempt_count
+last_error
+dispatched_at
+created_at
+updated_at
+```
+
+推荐状态：
+
+```text
+pending
+dispatched
+```
+
+Queue duplicate 是允许的，因此 outbox 不需要承担 exactly-once guarantee。
+
+必须有索引：
+
+```text
+(status, available_at)
+```
+
+核心查询：
+
+```sql
+SELECT ...
+FROM outbox_jobs
+WHERE status = 'pending'
+  AND available_at <= ?
+ORDER BY available_at
+LIMIT ?
+```
+
+该查询 MUST 使用 index。
+
+---
+
+# 12. Immediate publishing
+
+流程：
+
+```text
+POST /publications
+        │
+        ▼
+Create Publication
+Create Deliveries
+Create OutboxJobs
+        │
+        ▼
+   D1 transaction
+        │
+        ▼
+      commit
+        │
+        ├───────────── optional fast path
+        │                     │
+        │                     ▼
+        │                Queue.send()
+        │
+        ▼
+ HTTP response
+```
+
+Fast path Queue send 失败：
+
+```text
+不 rollback Publication
+不返回 inconsistent error
+```
+
+因为：
+
+```text
+outbox_jobs.status = pending
+```
+
+Cron dispatcher 会重新发送。
+
+如果：
+
+```text
+Queue.send()
+成功
+
+但：
+
+mark outbox dispatched
+失败
+```
+
+则可能再次 send。
+
+这是允许的，因为 Queue consumer MUST idempotent。
+
+---
+
+# 13. Scheduled publishing
+
+Cloudflare Queues 当前单条消息 delay 最长 24 小时。
+
+因此 Queues MUST NOT 被用作 Syndroo 的长期 scheduler。
+
+禁止：
+
+```text
+Publish next month
+        ↓
+Queue(delay=30 days)
+```
+
+正确模型：
+
+```text
+Publication
+scheduled_at = 2026-10-30
+
+OutboxJob
+available_at = 2026-10-30
+```
+
+Cron：
+
+```text
+every minute
+      │
+      ▼
+SELECT pending outbox
+WHERE available_at <= now()
+      │
+      ▼
+Queue.send()
+```
+
+因此：
+
+```text
+D1        = scheduling source of truth
+Cron      = wake-up mechanism
+Queues    = short-lived execution transport
+```
+
+---
+
+# 14. Scheduler Port
+
+Application 层 SHOULD 定义：
+
+```ts
+interface OutboxDispatcher {
+  dispatchReadyJobs(
+    now: Instant,
+    limit: number,
+  ): Promise<DispatchResult>;
+}
+```
+
+不要定义：
+
+```ts
+CloudflareCronScheduler
+```
+
+Cloudflare Cron 只是触发：
+
+```ts
+dispatchReadyJobs(now, limit)
+```
+
+未来：
+
+```text
+Cloudflare → Cron Trigger
+Docker     → internal timer / cron
+Kubernetes → CronJob
+```
+
+Application behavior 不变。
+
+---
+
+# 15. Queue Port
+
+Queue interface 应保持非常小：
+
+```ts
+interface JobQueue {
+  send(message: QueueEnvelope): Promise<void>;
+}
+```
+
+不要暴露：
+
+```text
+Cloudflare delaySeconds
+MessageBatch
+ack()
+retry()
+```
+
+这些属于 adapter/consumer runtime。
+
+特别建议 Queue Port **不提供任意 scheduledAt/delay**。
+
+长期 scheduling 已由：
+
+```text
+D1 + Outbox
+```
+
+解决。
+
+---
+
+# 16. Queue message contract
+
+Queue message MUST versioned。
+
+例如：
+
+```ts
+type QueueEnvelopeV1 = {
+  version: 1;
+
+  jobId: string;
+
+  kind:
+    | "delivery.execute";
+
+  entityId: string;
+
+  enqueuedAt: string;
+
+  traceId?: string;
+};
+```
+
+Queue message MUST NOT 包含：
+
+```text
+完整 Post content
+OAuth token
+provider secret
+raw webhook
+media binary
+connection credential
+```
+
+Consumer 收到消息之后：
+
+```text
+Queue message
+     │
+     ▼
+deliveryRepository.get(entityId)
+     │
+     ▼
+load current authoritative state
+```
+
+这样旧 Queue 消息不会携带 stale domain state。
+
+---
+
+# 17. Queue delivery semantics
+
+Cloudflare Queues 默认是：
+
+```text
+at-least-once
+```
+
+因此 rare duplicate delivery 是正常行为。Cloudflare 官方也建议使用唯一 ID / idempotency key 对重复消息做去重。
+
+所以：
+
+> Every queue consumer MUST be idempotent.
+
+不能假设：
+
+```text
+one queue message = exactly one execution
+```
+
+---
+
+# 18. Delivery idempotency
+
+每个 Delivery MUST 有 stable：
+
+```text
+delivery_id
+provider_request_key
+```
+
+推荐：
+
+```text
+provider_request_key = delivery_id
+```
+
+或：
+
+```text
+publication_id + destination_id + content_version
+```
+
+如果 provider 支持 idempotency key：
+
+```text
+Syndroo delivery ID
+      ↓
+Provider idempotency key
+```
+
+所有 retries MUST 重用同一个 key。
+
+不能每次 retry 创建新 key。
+
+---
+
+# 19. Provider retry vs Queue retry
+
+必须区分两类 retry。
+
+## Infrastructure retry
+
+例如：
+
+```text
+Worker crash
+D1 unavailable
+unexpected runtime exception
+```
+
+使用 Queue runtime retry。
+
+Cloudflare Queues 支持 retry，并可配置 retry delay。
+
+---
+
+## Application retry
+
+例如：
+
+```text
+HTTP 429
+HTTP 503
+provider temporarily unavailable
+provider rate limit
+```
+
+不要依赖 Cloudflare-specific retry schedule。
+
+应该：
+
+```text
+Delivery
+    ↓
+retry_scheduled
+
+next_attempt_at = T
+
+        +
+
+OutboxJob
+available_at = T
+```
+
+然后：
+
+```text
+ACK current queue message
+```
+
+未来到达 T：
+
+```text
+Outbox → Queue
+```
+
+这样 retry policy 可跨：
+
+```text
+Cloudflare
+Redis
+BullMQ
+SQS
+Postgres jobs
+```
+
+保持一致。
+
+---
+
+# 20. Dead Letter Queue
+
+Cloudflare Queue consumer MUST 配置 DLQ。
+
+例如：
+
+```text
+syndroo-delivery
+        │
+        │ max infrastructure retries reached
+        ▼
+syndroo-delivery-dlq
+```
+
+Cloudflare Queues 支持在超过 `max_retries` 后把消息放入 Dead Letter Queue。若不配置 DLQ，超过 retry limit 的消息最终会被删除。
+
+推荐初始：
+
+```text
+max_retries = 3
+```
+
+但必须是 configuration，而不能写入 domain logic。
+
+DLQ consumer：
+
+```text
+receive message
+      │
+      ▼
+load Delivery
+      │
+      ▼
+mark dead_lettered
+      │
+      ▼
+record compact failure metadata
+      │
+      ▼
+archive diagnostic payload if needed
+```
+
+---
+
+# 21. R2 responsibilities
+
+R2 不应该被定义为：
+
+```text
+Logging backend
+```
+
+应拆成两个 semantic ports：
+
+```text
+BlobStore
+ArchiveStore
+```
+
+---
+
+# 22. BlobStore
+
+用于用户内容：
+
+```text
+images
+video
+attachments
+generated media
+```
+
+Interface：
+
+```ts
+interface BlobStore {
+  put(
+    key: string,
+    body: BinaryBody,
+    metadata?: BlobMetadata,
+  ): Promise<StoredObject>;
+
+  get(key: string): Promise<StoredObject | null>;
+
+  delete(key: string): Promise<void>;
+
+  exists(key: string): Promise<boolean>;
+}
+```
+
+未来：
+
+```text
+Cloudflare → R2
+Docker     → MinIO
+AWS        → S3
+Local      → filesystem
+```
+
+---
+
+# 23. ArchiveStore
+
+用于低频查询 / diagnostic / historical payload：
+
+```text
+provider raw response
+webhook raw payload
+historical audit payload
+DLQ diagnostics
+```
+
+Interface：
+
+```ts
+interface ArchiveStore {
+  put(
+    key: ArchiveKey,
+    payload: ArchivePayload,
+    metadata?: ArchiveMetadata,
+  ): Promise<void>;
+
+  get(key: ArchiveKey): Promise<ArchivePayload | null>;
+
+  delete(key: ArchiveKey): Promise<void>;
+}
+```
+
+---
+
+# 24. Never persist provider URLs
+
+D1 MUST NOT 保存：
+
+```text
+https://pub-xxx.r2.dev/foo/bar.json
+```
+
+只保存：
+
+```text
+archive_key =
+provider-responses/2026/09/abc123/attempt-1.json
+```
+
+或者：
+
+```text
+media_key =
+media/post/abc123/image-01.webp
+```
+
+URL resolution：
+
+```text
+BlobStore
+      ↓
+resolve / proxy / signed URL
+```
+
+这样：
+
+```text
+R2 → S3
+```
+
+不需要修改业务数据库中的 URL。
+
+---
+
+# 25. R2 object layout
+
+建议：
+
+```text
+archive/
+├── provider-responses/
+│   └── YYYY/MM/
+│       └── <delivery-id>/
+│           └── <attempt-id>.json
+│
+├── webhooks/
+│   └── YYYY/MM/
+│       └── <provider>/
+│           └── <event-id>.json
+│
+├── audit/
+│   └── YYYY/MM/
+│       └── <event-id>.json
+│
+└── dlq/
+    └── YYYY/MM/
+        └── <job-id>.json
+```
+
+用户 media 单独：
+
+```text
+media/
+├── posts/
+└── uploads/
+```
+
+---
+
+# 26. Bucket separation
+
+推荐生产环境：
+
+```text
+MEDIA_BUCKET
+ARCHIVE_BUCKET
+```
+
+原因：
+
+```text
+media
+├── potentially user accessible
+└── CDN/public delivery
+
+archive
+├── private
+├── diagnostic
+├── webhook payload
+└── provider response
+```
+
+尤其：
+
+> ARCHIVE_BUCKET MUST NOT be publicly accessible.
+
+如果为了 local/MVP 简化使用一个 physical bucket，也必须使用独立 logical prefix 和独立 ports。
+
+Domain 不应知道 physical bucket 数量。
+
+---
+
+# 27. Sensitive archive data
+
+Provider response / webhook payload 可能包含：
+
+```text
+OAuth tokens
+cookies
+Authorization header
+email
+account metadata
+provider-specific private data
+```
+
+ArchiveStore 写入前 MUST 执行 sanitization。
+
+至少移除：
+
+```text
+Authorization
+Cookie
+Set-Cookie
+access_token
+refresh_token
+client_secret
+API key
+```
+
+Connection credentials MUST NOT 被写入 R2 diagnostic objects。
+
+---
+
+# 28. Connection storage
+
+Connection 可以保存在 D1。
+
+但是 credential SHOULD 以 encrypted envelope 保存。
+
+例如：
+
+```text
+connections
+
+id
+provider
+account_id
+
+credential_ciphertext
+credential_version
+
+created_at
+updated_at
+```
+
+Master encryption key：
+
+```text
+MUST NOT
+↓
+存在 D1
+
+MUST
+↓
+来自 runtime secret/configuration
+```
+
+建议抽象：
+
+```ts
+interface CredentialCipher {
+  encrypt(value: CredentialPayload): Promise<EncryptedCredential>;
+  decrypt(value: EncryptedCredential): Promise<CredentialPayload>;
+}
+```
+
+这样未来可使用：
+
+```text
+Cloudflare secret
+Docker env / Docker secret
+Kubernetes Secret
+external KMS
+```
+
+---
+
+# 29. Raw response failure semantics
+
+Archive 是 secondary concern。
+
+非常重要：
+
+```text
+provider publish succeeded
+        ↓
+D1 mark published succeeded
+        ↓
+R2 archive write failed
+```
+
+MUST NOT：
+
+```text
+retry provider publish
+```
+
+否则可能产生重复 SNS 内容。
+
+正确行为：
+
+```text
+Delivery = published
+
+archive_status = failed
+or
+log warning
+```
+
+Archive failure 不得改变远程发布的成功结果。
+
+---
+
+# 30. D1 source-of-truth rule
+
+Consistency priority：
+
+```text
+Provider side effect
+      ↓
+D1 application state
+      ↓
+Queue transport
+      ↓
+R2 archive
+      ↓
+logs
+```
+
+也就是说：
+
+```text
+D1 = source of truth
+Queue = transport
+R2 archive = secondary data
+Logs = observability
+```
+
+不能让 Queue 或 R2 成为 domain state source。
+
+---
+
+# 31. SQL portability rules
+
+Core/Application MUST NOT 依赖：
+
+```text
+rowid
+AUTOINCREMENT semantics
+SQLite-specific PRAGMA
+SQLite JSON functions
+SQLite FTS
+SQLite trigger behavior
+D1-specific SQL
+```
+
+如果确实需要：
+
+```text
+SQLite-specific optimization
+```
+
+必须放在：
+
+```text
+infrastructure/cloudflare/d1
+```
+
+或：
+
+```text
+persistence/sqlite
+```
+
+内部。
+
+---
+
+# 32. IDs
+
+Persistent IDs MUST application-generated。
+
+推荐：
+
+```text
+UUIDv7
+```
+
+例如：
+
+```text
+post_id
+publication_id
+delivery_id
+outbox_id
+attempt_id
+event_id
+```
+
+禁止依赖：
+
+```sql
+INTEGER PRIMARY KEY AUTOINCREMENT
+```
+
+作为 domain identity。
+
+这样：
+
+```text
+D1
+PostgreSQL
+SQLite
+MongoDB
+```
+
+之间迁移时 ID 不会发生改变。
+
+---
+
+# 33. Timestamp model
+
+Domain 使用：
+
+```text
+UTC Instant
+```
+
+Domain 不依赖 SQL timestamp type。
+
+Adapter 可以：
+
+```text
+D1
+→ INTEGER epoch milliseconds
+
+PostgreSQL
+→ TIMESTAMPTZ
+```
+
+或者其他等价 representation。
+
+重点是：
+
+```text
+Domain semantics
+!=
+database representation
+```
+
+---
+
+# 34. Required indexes
+
+最终名称可以遵循当前 migration convention。
+
+Semantic indexes 至少包括：
+
+```text
+publications:
+(status, scheduled_at)
+
+deliveries:
+(publication_id)
+
+deliveries:
+(status, next_attempt_at)
+
+outbox_jobs:
+(status, available_at)
+
+idempotency_keys:
+UNIQUE(scope, key)
+
+webhook_events:
+UNIQUE(provider, external_event_id)
+```
+
+所有：
+
+```text
+scheduler
+outbox
+retry
+status polling
+```
+
+hot queries MUST 检查 query plan。
+
+目标是避免 D1 full-table scan。
+
+D1 Free 当前 rows-read 按扫描/读取记录计量，因此索引设计直接影响免费额度消耗。
+
+---
+
+# 35. Suggested project structure
+
+根据当前 monorepo 实际结构调整，但 dependency boundary 推荐：
+
+```text
+packages/
+├── core/
+│   ├── domain/
+│   │   ├── post/
+│   │   ├── publication/
+│   │   └── delivery/
+│   │
+│   └── ports/
+│       ├── post-repository.ts
+│       ├── publication-repository.ts
+│       ├── delivery-repository.ts
+│       ├── connection-repository.ts
+│       ├── idempotency-repository.ts
+│       ├── job-queue.ts
+│       ├── blob-store.ts
+│       ├── archive-store.ts
+│       ├── credential-cipher.ts
+│       └── logger.ts
+│
+├── application/
+│   ├── publish/
+│   ├── delivery/
+│   ├── scheduling/
+│   └── outbox/
+│
+└── adapters/
+    └── cloudflare/
+        ├── d1/
+        │   ├── repositories/
+        │   ├── migrations/
+        │   └── outbox.ts
+        │
+        ├── r2/
+        │   ├── blob-store.ts
+        │   └── archive-store.ts
+        │
+        ├── queues/
+        │   ├── producer.ts
+        │   ├── consumer.ts
+        │   └── dlq-consumer.ts
+        │
+        └── cron/
+            └── outbox-dispatcher.ts
+```
+
+如果当前 0.5.0 已经建立自己的 package structure：
+
+> 不要求照搬目录名称。
+
+但 Ports / Application / Infrastructure dependency boundary MUST 保留。
+
+---
+
+# 36. Cloudflare bindings
+
+Reference deployment 可以类似：
+
+```text
+DB
+→ D1
+
+MEDIA_BUCKET
+→ R2
+
+ARCHIVE_BUCKET
+→ R2
+
+DELIVERY_QUEUE
+→ Cloudflare Queue
+```
+
+这些 bindings MUST 只在 Cloudflare bootstrap/composition root 中读取。
+
+例如：
+
+```text
+Worker entry
+      │
+      ▼
+Cloudflare adapters
+      │
+      ▼
+Application services
+```
+
+不能：
+
+```text
+Application service
+      ↓
+env.DB
+```
+
+---
+
+# 37. Reference Queue topology
+
+v0.5.0 建议先保持简单：
+
+```text
+syndroo-delivery
+        │
+        ▼
+Delivery Consumer
+
+syndroo-delivery-dlq
+        │
+        ▼
+DLQ Consumer
+```
+
+暂时不要为：
+
+```text
+X
+Threads
+Bluesky
+Mastodon
+```
+
+建立独立 Queue。
+
+Provider-specific：
+
+```text
+rate limit
+concurrency
+backoff
+```
+
+应该首先由 Provider Adapter / rate limiter 管理。
+
+未来确有 scaling 需要再拆 queue。
+
+---
+
+# 38. Consumer algorithm
+
+Conceptual：
+
+```text
+receive QueueEnvelope
+
+        ↓
+
+validate envelope version
+
+        ↓
+
+load Delivery from D1
+
+        ↓
+
+if already terminal:
+    ACK
+    return
+
+        ↓
+
+acquire logical processing state
+
+        ↓
+
+load Connection
+
+        ↓
+
+call Provider Adapter
+
+        ↓
+┌──────────────────────────────┐
+│ success                      │
+│                              │
+│ mark Delivery published      │
+│ ACK                          │
+│ archive response best-effort │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│ retryable provider error     │
+│                              │
+│ Delivery retry_scheduled     │
+│ create future OutboxJob      │
+│ ACK current queue message    │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│ terminal provider error      │
+│                              │
+│ Delivery failed              │
+│ ACK                          │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│ infrastructure failure       │
+│                              │
+│ Queue retry                  │
+└──────────────────────────────┘
+```
+
+---
+
+# 39. Provider error normalization
+
+Provider adapters SHOULD return normalized errors：
+
+```ts
+type ProviderError =
+  | {
+      kind: "rate_limited";
+      retryAfter?: Instant;
+    }
+  | {
+      kind: "temporary";
+      retryAfter?: Instant;
+    }
+  | {
+      kind: "authentication";
+    }
+  | {
+      kind: "validation";
+    }
+  | {
+      kind: "permission";
+    }
+  | {
+      kind: "ambiguous";
+    };
+```
+
+Application 层不应该出现：
+
+```text
+if provider === "twitter"
+if provider === "threads"
+```
+
+来决定 retry semantics。
+
+---
+
+# 40. Retry policy
+
+Application 层定义统一 policy。
+
+例如 conceptual：
+
+```text
+attempt 1
++ 1 minute
+
+attempt 2
++ 5 minutes
+
+attempt 3
++ 30 minutes
+
+attempt 4
++ 2 hours
+
+attempt 5
+failed
+```
+
+Provider 明确返回：
+
+```text
+Retry-After
+```
+
+时可以优先采用 provider 建议。
+
+具体数值可由现有 0.5.0 design 决定。
+
+关键要求：
+
+> Retry policy belongs to Syndroo application logic, not Cloudflare Queue configuration.
+
+Cloudflare Queue retry 只负责 infrastructure-level redelivery。
+
+---
+
+# 41. Logging
+
+Logging MUST 独立于 ArchiveStore。
+
+定义：
+
+```ts
+interface Logger {
+  debug(...): void;
+  info(...): void;
+  warn(...): void;
+  error(...): void;
+}
+```
+
+Cloudflare adapter：
+
+```text
+Logger
+→ console / Workers Logs
+```
+
+未来：
+
+```text
+Docker
+→ stdout
+
+Kubernetes
+→ stdout → Loki/etc.
+```
+
+禁止：
+
+```text
+Logger
+→ R2 object per log line
+```
+
+---
+
+# 42. Retention
+
+Raw payload 不应该永久保存。
+
+建议将 retention 做成 configuration/policy。
+
+Initial recommendation：
+
+```text
+provider raw responses     30 days
+webhook raw payloads       30 days
+DLQ diagnostics            90 days
+historical audit payload   90 days
+```
+
+具体默认值可在产品审核阶段调整。
+
+Domain 只理解：
+
+```text
+retention policy
+```
+
+Cloudflare adapter 可以通过 R2 lifecycle 等机制实现。
+
+不能让 Core 依赖 R2 lifecycle API。
+
+---
+
+# 43. Storage capacity policy
+
+需要提供 application metrics / diagnostics：
+
+```text
+D1 approximate size
+outbox pending count
+delivery retry count
+DLQ count
+archive failures
+```
+
+推荐 operational thresholds：
+
+```text
+D1 < 60%
+healthy
+
+60–80%
+warning
+
+>80%
+critical / migration or retention action
+```
+
+Cloudflare Free 当前单个 D1 database 最大 500 MB、账号总 D1 storage 5 GB。
+
+这些限制只能作为 Cloudflare adapter / operational information。
+
+不能写入 domain assumptions。
+
+---
+
+# 44. Portability target
+
+未来可以实现：
+
+```text
+CloudflareProfile
+├── D1Repository
+├── R2BlobStore
+├── R2ArchiveStore
+├── CloudflareQueue
+└── Cron
+
+NodeProfile
+├── PostgresRepository
+├── S3BlobStore
+├── S3ArchiveStore
+├── RedisQueue
+└── InternalScheduler
+
+LocalProfile
+├── SQLiteRepository
+├── FileBlobStore
+├── FileArchiveStore
+├── InMemoryQueue
+└── TimerScheduler
+```
+
+Application 层完全不变化。
+
+---
+
+# 45. No platform-specific deployment adapters
+
+未来不要设计：
+
+```text
+RailwayAdapter
+HerokuAdapter
+FlyAdapter
+KubernetesAdapter
+```
+
+这些大部分都可以共享：
+
+```text
+Node/Docker deployment profile
+```
+
+例如：
+
+```text
+Runtime       Node/Bun
+Database      PostgreSQL
+Object Store  S3-compatible
+Queue         Redis
+```
+
+Railway/Fly/Kubernetes 只是运行这个 profile 的不同环境。
+
+---
+
+# 46. Failure matrix
+
+v0.5.0 implementation SHOULD 明确定义：
+
+| Failure | Expected behavior |
+|---|---|
+| D1 write fails before commit | operation fails, nothing dispatched |
+| D1 commit succeeds, Queue send fails | outbox remains pending |
+| Queue send succeeds, outbox mark fails | possible duplicate send; consumer idempotency handles it |
+| Queue delivers same message twice | second execution becomes no-op where possible |
+| Provider returns 429 | schedule application retry via outbox |
+| Provider returns validation error | Delivery failed |
+| Provider succeeds, archive fails | Delivery remains published |
+| Worker crashes before Queue ack | Queue redelivers |
+| Queue infra retries exhausted | DLQ |
+| Provider result ambiguous | Delivery becomes `unknown` unless safely reconcilable |
+| R2 unavailable | do not retry successful SNS publication |
+| Cron temporarily unavailable | pending outbox remains in D1 and is dispatched later |
+
+---
+
+# 47. Testing requirements
+
+## Architecture test
+
+Fail CI if Core/Application imports：
+
+```text
+cloudflare:workers
+D1Database
+R2Bucket
+Queue
+ExecutionContext
+```
+
+---
+
+## Repository contract tests
+
+Cloudflare D1 repositories MUST pass common repository behavior tests.
+
+---
+
+## Queue contract tests
+
+Required scenarios：
+
+```text
+duplicate Queue message
+
+already-published Delivery
+
+retryable provider error
+
+terminal provider error
+
+infrastructure exception
+
+DLQ
+```
+
+---
+
+## Scheduling tests
+
+Required：
+
+```text
+publish now
+
+publish +5 minutes
+
+publish +7 days
+
+publish +30 days
+```
+
+Especially：
+
+> +7/+30 day publishing MUST NOT rely on Cloudflare Queue delay.
+
+---
+
+## Outbox tests
+
+Required：
+
+```text
+D1 commit succeeds + Queue unavailable
+
+Queue succeeds + mark-dispatched fails
+
+dispatcher retries pending outbox
+
+same outbox job dispatched twice
+```
+
+---
+
+## Archive tests
+
+Required：
+
+```text
+provider succeeds + archive succeeds
+
+provider succeeds + archive fails
+
+archive contains redacted secrets
+
+stored D1 reference is logical key, not R2 URL
+```
+
+---
+
+# 48. Query-plan verification
+
+For D1 hot-path queries：
+
+```text
+outbox scan
+scheduler scan
+retry scan
+delivery lookup
+idempotency lookup
+```
+
+CI/integration test SHOULD run：
+
+```sql
+EXPLAIN QUERY PLAN ...
+```
+
+and verify intended indexes are selected.
+
+This is particularly important because D1 Free currently provides 5 million rows-read/day and 100,000 rows-written/day.
+
+---
+
+# 49. Acceptance criteria
+
+This architecture addition is accepted when all of the following hold.
+
+### Dependency
+
+- [ ] Domain has zero Cloudflare imports.
+- [ ] Application has zero Cloudflare imports.
+- [ ] D1/R2/Queues types exist only inside Cloudflare infrastructure/bootstrap code.
+
+### Persistence
+
+- [ ] D1 is the authoritative application state.
+- [ ] Large raw payloads are not stored in D1.
+- [ ] IDs are application-generated.
+- [ ] Scheduler/outbox queries have indexes.
+
+### Queue
+
+- [ ] Queue message contract is versioned.
+- [ ] Queue messages contain IDs, not domain payload snapshots.
+- [ ] Consumers tolerate duplicate messages.
+- [ ] DLQ is configured.
+- [ ] Provider retry is distinct from Queue infrastructure retry.
+
+### Scheduling
+
+- [ ] Future publication is represented in D1/outbox.
+- [ ] Long-term scheduling does not depend on Queue delay.
+- [ ] Cron only wakes the dispatcher.
+
+### Consistency
+
+- [ ] Publication + Delivery + initial Outbox are written transactionally.
+- [ ] Queue send failure cannot permanently lose a Delivery.
+- [ ] Successful provider publication is not retried because R2 archival failed.
+
+### R2
+
+- [ ] BlobStore and ArchiveStore are separate abstractions.
+- [ ] Archive objects are private.
+- [ ] D1 stores logical object keys rather than R2 URLs.
+- [ ] Sensitive headers/tokens are redacted.
+
+### Portability
+
+- [ ] Future PostgreSQL/S3/Redis implementation does not require modifying Core.
+- [ ] Tests can substitute fake/in-memory implementations of the ports.
+- [ ] Cloudflare is treated as one deployment profile rather than part of the domain model.
+
+---
+
+# 50. Integration into existing 0.5.0 design
+
+Do NOT replace the existing 0.5.0 design wholesale.
+
+Review the existing architecture and merge this spec at the following points.
+
+## A. Persistence
+
+Where current design directly uses：
+
+```text
+D1
+```
+
+replace conceptual dependency with：
+
+```text
+Repository Port
+      ↓
+Cloudflare D1 Adapter
+```
+
+---
+
+## B. Media / raw payload storage
+
+Where current design stores：
+
+```text
+provider response
+webhook body
+large historical payload
+```
+
+move payload into：
+
+```text
+ArchiveStore
+      ↓
+R2
+```
+
+D1 retains：
+
+```text
+metadata
+logical archive key
+status
+timestamps
+```
+
+---
+
+## C. Async publication
+
+Where current design directly invokes：
+
+```text
+Cloudflare Queue
+```
+
+change to：
+
+```text
+JobQueue Port
+       ↓
+Cloudflare Queue Adapter
+```
+
+---
+
+## D. Immediate publication
+
+Add:
+
+```text
+Transactional Outbox
+```
+
+between D1 and Queue。
+
+---
+
+## E. Scheduled publication
+
+Replace Queue-delay-based scheduling, if present, with：
+
+```text
+D1 / Outbox.available_at
+          +
+       Cron
+          +
+       Queue
+```
+
+---
+
+## F. Retry
+
+Separate：
+
+```text
+Infrastructure retry
+→ Cloudflare Queue retry
+```
+
+from：
+
+```text
+Provider/application retry
+→ Delivery state + future OutboxJob
+```
+
+---
+
+## G. Logging
+
+If current design treats R2 as logging storage：
+
+replace with：
+
+```text
+Logger
++
+ArchiveStore
+```
+
+as independent concerns.
+
+---
+
+# 51. Final architectural rules
+
+The following rules should be considered normative for Syndroo from v0.5.0 onward:
+
+```text
+RULE-001
+Core MUST NOT depend on Cloudflare runtime APIs.
+
+RULE-002
+Cloudflare resources MUST be accessed through ports/adapters.
+
+RULE-003
+D1 is application state; R2 is blob/archive storage.
+
+RULE-004
+Queues are transport, never source of truth.
+
+RULE-005
+Long-term scheduling MUST be persisted outside the Queue.
+
+RULE-006
+Queue consumers MUST assume at-least-once delivery.
+
+RULE-007
+D1 → Queue dispatch MUST use a transactional outbox pattern.
+
+RULE-008
+Provider retries and infrastructure retries MUST be separate.
+
+RULE-009
+Persistent domain IDs MUST be application-generated.
+
+RULE-010
+Persistent object references MUST use logical storage keys,
+not provider-specific URLs.
+
+RULE-011
+Large/raw diagnostic payloads MUST NOT live indefinitely in D1.
+
+RULE-012
+Archive failure MUST NOT turn successful remote publication
+into a retry.
+
+RULE-013
+Provider-specific behavior MUST remain inside Provider Adapters.
+
+RULE-014
+Cloudflare-specific optimization MUST remain inside the
+Cloudflare infrastructure layer.
+
+RULE-015
+Cloudflare is the reference deployment,
+not the Syndroo execution model.
+```
+
+---
+
+# 52. Recommended implementation scope for 0.5.0
+
+To avoid architecture work expanding uncontrollably, the concrete implementation target should be limited to:
+
+```text
+1. Define Ports
+2. Refactor existing D1 access behind repositories
+3. Add ArchiveStore abstraction
+4. Implement R2ArchiveStore
+5. Add JobQueue abstraction
+6. Implement CloudflareQueue
+7. Introduce outbox_jobs
+8. Add OutboxDispatcher
+9. Connect Cron → OutboxDispatcher
+10. Add Queue consumer
+11. Add DLQ
+12. Implement idempotent Delivery execution
+13. Separate Provider retry from Queue retry
+14. Add required indexes
+15. Add portability/contract tests
+```
+
+Do not implement PostgreSQL/S3/Redis in this release.
+
+Those adapters should become straightforward future additions rather than architectural rewrites.
+
+---
+
+# 53. Design review questions
+
+The 0.5.0 reviewer should specifically check:
+
+1. Does the existing design currently leak Cloudflare types into Core/Application?
+2. Where should the new Ports live within the current package structure?
+3. Can Publication + Deliveries + Outbox be persisted atomically with the current repository design?
+4. Is there already an idempotency abstraction that can be reused?
+5. Does the current Delivery state machine require `unknown` / `dead_lettered`?
+6. Does the existing retry design incorrectly couple provider retry to Cloudflare Queue retry?
+7. Does current scheduling rely on Queue delayed delivery?
+8. Are any raw provider/webhook payloads currently planned for D1?
+9. Is R2 currently being conflated with application logging?
+10. Are Connection credentials encrypted independently of D1?
+11. Which current queries require new composite indexes?
+12. Can the Cloudflare implementation be removed and replaced by fakes in application tests without modifying business logic?
+
+The reviewer should modify this spec only where it conflicts with stronger domain abstractions already established in the existing 0.5.0 design. Portability, consistency, scheduling, and idempotency guarantees should not be weakened merely to preserve current implementation details.

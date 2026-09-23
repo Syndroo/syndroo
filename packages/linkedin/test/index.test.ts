@@ -1,5 +1,10 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { LinkedInPublisher, isLinkedInConfigurationValid } from "../src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  LinkedInPublisher,
+  buildLinkedInPublisher,
+  decodeLinkedInCredential,
+  isLinkedInConfigurationValid,
+} from "../src/index.js";
 
 const options = { accessToken: "test-token", author: "urn:li:person:Test_123", apiVersion: "202604" };
 const request = (content = "Hello") => ({ publicationId: "pub", platform: "linkedin" as const, content });
@@ -16,7 +21,9 @@ it.each(["urn:li:person:Test_123", "urn:li:organization:123"])("publishes as %s 
   const [url, init] = mock.mock.calls[0]!;
   expect(url).toBe("https://api.linkedin.com/rest/posts");
   expect(init?.method).toBe("POST");
-  expect(init?.redirect).toBe("error");
+  // The shared transport always asks for manual redirects and rejects 3xx
+  // itself; workerd refuses `redirect: "error"` before dispatch.
+  expect(init?.redirect).toBe("manual");
   const headers = new Headers(init?.headers);
   expect(headers.get("authorization")).toBe("Bearer test-token");
   expect(headers.get("linkedin-version")).toBe("202604");
@@ -81,4 +88,81 @@ it("aborts a request that never returns headers, without retrying", async () => 
 it("does not expose network error details", async () => {
   vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("private-token"));
   await expect(new LinkedInPublisher(options).publish(request())).rejects.toMatchObject({ code: "NETWORK", ambiguous: true, message: "LinkedIn request was interrupted" });
+});
+
+it("refuses a redirect instead of forwarding the bearer token", async () => {
+  const mock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(null, { status: 302, headers: { location: "https://attacker.example/collect" } }),
+  );
+
+  await expect(new LinkedInPublisher(options).publish(request())).rejects.toMatchObject({
+    code: "UNKNOWN",
+    ambiguous: true,
+  });
+  expect(mock).toHaveBeenCalledTimes(1);
+  expect(mock.mock.calls[0]?.[1]?.redirect).toBe("manual");
+});
+
+it("carries a trustworthy Retry-After from an explicit 429 rejection", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("private-token", { status: 429, headers: { "retry-after": "1800" } }),
+  );
+
+  const error = await new LinkedInPublisher(options)
+    .publish(request())
+    .catch((failure: unknown) => failure);
+
+  expect(error).toMatchObject({
+    code: "RATE_LIMIT",
+    ambiguous: false,
+    message: "LinkedIn request failed (HTTP 429)",
+  });
+  const delayMs = Date.parse((error as { retryAfterAt?: string }).retryAfterAt ?? "") - Date.now();
+  expect(delayMs).toBeGreaterThan(1_740_000);
+  expect(delayMs).toBeLessThanOrEqual(1_800_500);
+});
+
+describe("LinkedIn typed credential decoding", () => {
+  it("decodes a complete credential", () => {
+    expect(
+      decodeLinkedInCredential({
+        access_token: "token",
+        author: "urn:li:person:Test_123",
+        api_version: "202604",
+      }),
+    ).toEqual({
+      accessToken: "token",
+      author: "urn:li:person:Test_123",
+      apiVersion: "202604",
+    });
+  });
+
+  it.each([
+    [{}],
+    [{ access_token: "token", author: "urn:li:person:Test_123" }],
+    [{ access_token: "token", api_version: "202604" }],
+    [{ author: "urn:li:person:Test_123", api_version: "202604" }],
+    [{ access_token: "token", author: "urn:li:person:Test_123", api_version: "202613" }],
+    [{ client_id: "app", client_secret: "app-secret" }],
+    [null],
+  ])("rejects %j without inventing an API version", input => {
+    expect(() => decodeLinkedInCredential(input)).toThrowError(
+      expect.objectContaining({ code: "AUTH" }),
+    );
+  });
+
+  it("builds a publisher without any network activity", () => {
+    const mock = vi.spyOn(globalThis, "fetch");
+
+    const publisher = buildLinkedInPublisher(
+      decodeLinkedInCredential({
+        access_token: "token",
+        author: "urn:li:person:Test_123",
+        api_version: "202604",
+      }),
+    );
+
+    expect(publisher.name).toBe("linkedin-native");
+    expect(mock).not.toHaveBeenCalled();
+  });
 });

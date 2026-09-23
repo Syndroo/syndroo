@@ -1,0 +1,851 @@
+{
+  "document_version": "2.0",
+  "source_file": "sources/portable-storage-queue.original.txt",
+  "source_sections": [
+    {
+      "section": 1,
+      "title": "Purpose",
+      "source_start_line": 10,
+      "source_end_line": 45,
+      "decision": "采纳",
+      "interpretation": "CF只作为reference profile，application不依赖Cloudflare。",
+      "merged_location": "01 §1/3；07 §1",
+      "acceptance_ids": [
+        "PORT-01",
+        "PORT-03"
+      ]
+    },
+    {
+      "section": 2,
+      "title": "Goals",
+      "source_start_line": 46,
+      "source_end_line": 64,
+      "decision": "采纳",
+      "interpretation": "D1状态、R2大对象、queue transport、outbox一致性与低扫描目标同时保留。",
+      "merged_location": "01 §12–15",
+      "acceptance_ids": [
+        "OBX-01",
+        "STO-03",
+        "OPS-01"
+      ]
+    },
+    {
+      "section": 3,
+      "title": "Non-goals",
+      "source_start_line": 65,
+      "source_end_line": 89,
+      "decision": "采纳",
+      "interpretation": "不实现第二套生产PG/S3/Redis/部署profile；fake是测试替身。",
+      "merged_location": "01 §1；ADR-050-20",
+      "acceptance_ids": [
+        "PORT-03",
+        "CUT-04"
+      ]
+    },
+    {
+      "section": 4,
+      "title": "Architecture",
+      "source_start_line": 90,
+      "source_end_line": 145,
+      "decision": "适配",
+      "interpretation": "ports由application拥有，adapter依赖ports；不用示意箭头误导源码依赖方向。",
+      "merged_location": "01 §3；07 §3",
+      "acceptance_ids": [
+        "PORT-01",
+        "PORT-02",
+        "PORT-05"
+      ]
+    },
+    {
+      "section": 5,
+      "title": "Data ownership",
+      "source_start_line": 146,
+      "source_end_line": 193,
+      "decision": "适配",
+      "interpretation": "保留现有posts/publications/credential slot/key结构；增加outbox与紧凑archive metadata，不机械建所有示例表。",
+      "merged_location": "01 §10/12",
+      "acceptance_ids": [
+        "OBX-01",
+        "OBX-10",
+        "STO-03"
+      ]
+    },
+    {
+      "section": 6,
+      "title": "Domain semantics",
+      "source_start_line": 194,
+      "source_end_line": 273,
+      "decision": "适配",
+      "interpretation": "沿用Post聚合与Publication单目标；Delivery为语义映射，避免破坏/v1。",
+      "merged_location": "01 §3.4；07 §2",
+      "acceptance_ids": [
+        "PORT-06"
+      ]
+    },
+    {
+      "section": 7,
+      "title": "Delivery state machine",
+      "source_start_line": 274,
+      "source_end_line": 339,
+      "decision": "适配",
+      "interpretation": "unknown独立语义但映射failed+errorAmbiguous；dead_lettered需guard；不新增draft/cancel API。",
+      "merged_location": "01 §5；07 §2/7",
+      "acceptance_ids": [
+        "PUB-04",
+        "QUE-05",
+        "QUE-06"
+      ]
+    },
+    {
+      "section": 8,
+      "title": "Repository Ports",
+      "source_start_line": 340,
+      "source_end_line": 404,
+      "decision": "适配",
+      "interpretation": "用PublishingStore/CredentialStore/OutboxStore语义事务端口，不按表制造泛型CRUD。",
+      "merged_location": "07 §3",
+      "acceptance_ids": [
+        "PORT-04",
+        "PORT-05"
+      ]
+    },
+    {
+      "section": 9,
+      "title": "Transaction boundary",
+      "source_start_line": 405,
+      "source_end_line": 450,
+      "decision": "加强",
+      "interpretation": "create含Post/Publications/jobs/key及revision guard；0行CAS亦须全不写。",
+      "merged_location": "07 §3.3",
+      "acceptance_ids": [
+        "CRT-03",
+        "OBX-01"
+      ]
+    },
+    {
+      "section": 10,
+      "title": "Transactional Outbox",
+      "source_start_line": 451,
+      "source_end_line": 498,
+      "decision": "采纳",
+      "interpretation": "新增独立outbox_jobs，替代v1 publication兼任outbox的取舍。",
+      "merged_location": "01 §13；ADR-050-05",
+      "acceptance_ids": [
+        "OBX-01",
+        "OBX-02"
+      ]
+    },
+    {
+      "section": 11,
+      "title": "Outbox schema",
+      "source_start_line": 499,
+      "source_end_line": 548,
+      "decision": "加强",
+      "interpretation": "采用概念schema并加attempt_no/current_job_id/dispatch_revision/recovery metadata围栏。",
+      "merged_location": "07 §4.1",
+      "acceptance_ids": [
+        "OBX-05",
+        "OBX-06",
+        "OPS-01"
+      ]
+    },
+    {
+      "section": 12,
+      "title": "Immediate publishing",
+      "source_start_line": 549,
+      "source_end_line": 608,
+      "decision": "采纳",
+      "interpretation": "快路径和Cron同dispatcher，commit后send失败仍保持受理与pending。",
+      "merged_location": "07 §4.2",
+      "acceptance_ids": [
+        "OBX-02",
+        "OBX-03",
+        "OBX-07"
+      ]
+    },
+    {
+      "section": 13,
+      "title": "Scheduled publishing",
+      "source_start_line": 609,
+      "source_end_line": 655,
+      "decision": "采纳",
+      "interpretation": "长期schedule只在D1.available_at；采用每分钟有界wake，不靠Queue长delay。",
+      "merged_location": "01 §13；07 §8",
+      "acceptance_ids": [
+        "SCH-01",
+        "SCH-03"
+      ]
+    },
+    {
+      "section": 14,
+      "title": "Scheduler Port",
+      "source_start_line": 656,
+      "source_end_line": 692,
+      "decision": "适配",
+      "interpretation": "OutboxDispatcher是应用函数，Cron是薄调用者，不另造Scheduler实现层次。",
+      "merged_location": "01 §3；07 §8",
+      "acceptance_ids": [
+        "PORT-03",
+        "SCH-03"
+      ]
+    },
+    {
+      "section": 15,
+      "title": "Queue Port",
+      "source_start_line": 693,
+      "source_end_line": 725,
+      "decision": "采纳",
+      "interpretation": "JobQueue.send语义小且明确，ack/retry/CF delay只属runtime。",
+      "merged_location": "07 §3/5",
+      "acceptance_ids": [
+        "PORT-05",
+        "OBX-07"
+      ]
+    },
+    {
+      "section": 16,
+      "title": "Queue message contract",
+      "source_start_line": 726,
+      "source_end_line": 775,
+      "decision": "加强",
+      "interpretation": "versioned ID-only envelope还需D1身份复核；2KiB是本项目限制。",
+      "merged_location": "07 §5",
+      "acceptance_ids": [
+        "QUE-01",
+        "QUE-02",
+        "OBX-10"
+      ]
+    },
+    {
+      "section": 17,
+      "title": "Queue delivery semantics",
+      "source_start_line": 776,
+      "source_end_line": 797,
+      "decision": "采纳",
+      "interpretation": "consumer假定at-least-once，不以唯一消息ID代替原子claim。",
+      "merged_location": "07 §5",
+      "acceptance_ids": [
+        "PUB-02",
+        "QUE-03"
+      ]
+    },
+    {
+      "section": 18,
+      "title": "Delivery idempotency",
+      "source_start_line": 798,
+      "source_end_line": 832,
+      "decision": "适配",
+      "interpretation": "原Publication.id作为稳定provider_request_key；平台不支持时不发送虚构幂等参数。",
+      "merged_location": "07 §2.2/6",
+      "acceptance_ids": [
+        "OBX-09"
+      ]
+    },
+    {
+      "section": 19,
+      "title": "Provider retry vs Queue retry",
+      "source_start_line": 833,
+      "source_end_line": 906,
+      "decision": "加强",
+      "interpretation": "provider retry用future job；post-write503不因示例temporary列表而安全重试。",
+      "merged_location": "01 §5.4；07 §6",
+      "acceptance_ids": [
+        "PUB-03",
+        "PUB-04",
+        "OBX-04"
+      ]
+    },
+    {
+      "section": 20,
+      "title": "Dead Letter Queue",
+      "source_start_line": 907,
+      "source_end_line": 950,
+      "decision": "加强",
+      "interpretation": "配置DLQ；只有当前未claim等待job可终止，迟到DLQ不覆盖成功/unknown/active。",
+      "merged_location": "07 §7",
+      "acceptance_ids": [
+        "QUE-04",
+        "QUE-05",
+        "QUE-06",
+        "QUE-07",
+        "QUE-08"
+      ]
+    },
+    {
+      "section": 21,
+      "title": "R2 responsibilities",
+      "source_start_line": 951,
+      "source_end_line": 967,
+      "decision": "采纳",
+      "interpretation": "BlobStore/ArchiveStore与Logger三者语义分离。",
+      "merged_location": "01 §14；07 §9",
+      "acceptance_ids": [
+        "STO-01",
+        "STO-08"
+      ]
+    },
+    {
+      "section": 22,
+      "title": "BlobStore",
+      "source_start_line": 968,
+      "source_end_line": 1007,
+      "decision": "范围说明",
+      "interpretation": "实现R2BlobStore与合同，但不新增媒体上传/发布产品；MEDIA_BUCKET只在需要时配置。",
+      "merged_location": "07 §9.1",
+      "acceptance_ids": [
+        "STO-01",
+        "STO-02"
+      ]
+    },
+    {
+      "section": 23,
+      "title": "ArchiveStore",
+      "source_start_line": 1008,
+      "source_end_line": 1036,
+      "decision": "采纳",
+      "interpretation": "实现R2ArchiveStore及生产diagnostic路径，原始响应只保留有界脱敏允许字段。",
+      "merged_location": "07 §9",
+      "acceptance_ids": [
+        "STO-04",
+        "STO-05"
+      ]
+    },
+    {
+      "section": 24,
+      "title": "Never persist provider URLs",
+      "source_start_line": 1037,
+      "source_end_line": 1076,
+      "decision": "适配",
+      "interpretation": "禁止存储R2/S3物理URL；不禁止外部SNS externalUrl/permalink。",
+      "merged_location": "07 §9.2",
+      "acceptance_ids": [
+        "STO-03"
+      ]
+    },
+    {
+      "section": 25,
+      "title": "R2 object layout",
+      "source_start_line": 1077,
+      "source_end_line": 1111,
+      "decision": "采纳",
+      "interpretation": "archive/media逻辑前缀分离，日期+publication/attempt或job key。",
+      "merged_location": "07 §9.2",
+      "acceptance_ids": [
+        "STO-03",
+        "STO-06"
+      ]
+    },
+    {
+      "section": 26,
+      "title": "Bucket separation",
+      "source_start_line": 1112,
+      "source_end_line": 1144,
+      "decision": "加强",
+      "interpretation": "archive不能public；共享bucket的prefix不是ACL，整体private才可共享。",
+      "merged_location": "07 §9.1",
+      "acceptance_ids": [
+        "STO-02"
+      ]
+    },
+    {
+      "section": 27,
+      "title": "Sensitive archive data",
+      "source_start_line": 1145,
+      "source_end_line": 1175,
+      "decision": "加强",
+      "interpretation": "allowlist+大小/字段限制，unknown省略body；OAuth token response完全不归档。",
+      "merged_location": "07 §9.3",
+      "acceptance_ids": [
+        "NET-05",
+        "STO-04",
+        "CIP-04"
+      ]
+    },
+    {
+      "section": 28,
+      "title": "Connection storage",
+      "source_start_line": 1176,
+      "source_end_line": 1229,
+      "decision": "明确选择",
+      "interpretation": "采纳SHOULD：本版加入最小AES-GCM CredentialCipher与旧明文迁移；不做自动轮换/KMS。",
+      "merged_location": "01 §10.3/14；07 §10",
+      "acceptance_ids": [
+        "CIP-01",
+        "CIP-02",
+        "CIP-03",
+        "CIP-04",
+        "CIP-05"
+      ]
+    },
+    {
+      "section": 29,
+      "title": "Raw response failure semantics",
+      "source_start_line": 1230,
+      "source_end_line": 1265,
+      "decision": "采纳",
+      "interpretation": "D1结果先提交；归档故障不可改变provider结果或创建业务retry。",
+      "merged_location": "07 §9.3；FM-13/FM-14",
+      "acceptance_ids": [
+        "STO-05",
+        "STO-06"
+      ]
+    },
+    {
+      "section": 30,
+      "title": "D1 source-of-truth rule",
+      "source_start_line": 1266,
+      "source_end_line": 1294,
+      "decision": "澄清",
+      "interpretation": "D1是系统已知状态权威，不意味着能推断SNS未知事实；Queue/R2均非业务状态权威。",
+      "merged_location": "07 §1",
+      "acceptance_ids": [
+        "PUB-04",
+        "STO-07"
+      ]
+    },
+    {
+      "section": 31,
+      "title": "SQL portability rules",
+      "source_start_line": 1295,
+      "source_end_line": 1330,
+      "decision": "采纳",
+      "interpretation": "SQL/PRAGMA/SQLite/D1优化留adapter，合同不暴露底层语法。",
+      "merged_location": "07 §3/11",
+      "acceptance_ids": [
+        "PORT-02",
+        "PORT-05",
+        "OPS-01"
+      ]
+    },
+    {
+      "section": 32,
+      "title": "IDs",
+      "source_start_line": 1331,
+      "source_end_line": 1372,
+      "decision": "适配",
+      "interpretation": "保留既有应用UUIDv4和前缀；UUIDv7是推荐非强制，不改历史ID。",
+      "merged_location": "07 §2.2",
+      "acceptance_ids": [
+        "PORT-06",
+        "CUT-02"
+      ]
+    },
+    {
+      "section": 33,
+      "title": "Timestamp model",
+      "source_start_line": 1373,
+      "source_end_line": 1404,
+      "decision": "适配",
+      "interpretation": "UTC Instant为规范ISO字符串；不为epoch示例重写既有时间存储。",
+      "merged_location": "07 §2.2/8",
+      "acceptance_ids": [
+        "SCH-01",
+        "CUT-02"
+      ]
+    },
+    {
+      "section": 34,
+      "title": "Required indexes",
+      "source_start_line": 1405,
+      "source_end_line": 1447,
+      "decision": "适配",
+      "interpretation": "索引按现有名称和实际hot queries，不为尚不存在webhook产品建表。",
+      "merged_location": "07 §11.1",
+      "acceptance_ids": [
+        "OPS-01",
+        "OPS-02"
+      ]
+    },
+    {
+      "section": 35,
+      "title": "Suggested project structure",
+      "source_start_line": 1448,
+      "source_end_line": 1505,
+      "decision": "适配",
+      "interpretation": "新增私有application；CF infra留Worker包，migration路径不迁移。",
+      "merged_location": "01 §3.3",
+      "acceptance_ids": [
+        "PORT-01",
+        "PORT-05",
+        "CUT-04"
+      ]
+    },
+    {
+      "section": 36,
+      "title": "Cloudflare bindings",
+      "source_start_line": 1506,
+      "source_end_line": 1547,
+      "decision": "采纳",
+      "interpretation": "Env/bucket/queue/database只在composition root与CF adapter读取。",
+      "merged_location": "01 §3；07 §3",
+      "acceptance_ids": [
+        "PORT-02",
+        "PORT-05"
+      ]
+    },
+    {
+      "section": 37,
+      "title": "Reference Queue topology",
+      "source_start_line": 1548,
+      "source_end_line": 1588,
+      "decision": "适配",
+      "interpretation": "单业务主Queue+DLQ；物理版本化用于切换，不按provider拆队列。",
+      "merged_location": "01 §10.4；07 §5/7",
+      "acceptance_ids": [
+        "QUE-04",
+        "CUT-01"
+      ]
+    },
+    {
+      "section": 38,
+      "title": "Consumer algorithm",
+      "source_start_line": 1589,
+      "source_end_line": 1654,
+      "decision": "加强",
+      "interpretation": "先加载/准备后claim，guard当前job与版本；保护原B前置故障/late commit。",
+      "merged_location": "01 §5.2；07 §5/7",
+      "acceptance_ids": [
+        "PUB-01",
+        "PUB-02",
+        "PUB-05",
+        "PUB-06"
+      ]
+    },
+    {
+      "section": 39,
+      "title": "Provider error normalization",
+      "source_start_line": 1655,
+      "source_end_line": 1693,
+      "decision": "适配",
+      "interpretation": "保留PublishError兼容，加标准retryAfter/分类；application不按平台名if判断安全重试。",
+      "merged_location": "07 §6；ADR-050-02/14",
+      "acceptance_ids": [
+        "ARC-02",
+        "ARC-04",
+        "PUB-04"
+      ]
+    },
+    {
+      "section": 40,
+      "title": "Retry policy",
+      "source_start_line": 1694,
+      "source_end_line": 1734,
+      "decision": "适配",
+      "interpretation": "沿用三次Publisher总上限与60/120秒，可信Retry-After可延后；示例五次非强制。",
+      "merged_location": "07 §6",
+      "acceptance_ids": [
+        "PUB-03",
+        "OBX-05"
+      ]
+    },
+    {
+      "section": 41,
+      "title": "Logging",
+      "source_start_line": 1735,
+      "source_end_line": 1775,
+      "decision": "采纳",
+      "interpretation": "小Logger.write结构事件，经adapter到console/stdout；不按日志行写R2。",
+      "merged_location": "07 §9",
+      "acceptance_ids": [
+        "STO-08"
+      ]
+    },
+    {
+      "section": 42,
+      "title": "Retention",
+      "source_start_line": 1776,
+      "source_end_line": 1804,
+      "decision": "适配",
+      "interpretation": "provider30天、DLQ90天；未来webhook/audit分别30/90不增产品，物理删除非精确到期。",
+      "merged_location": "07 §9.4",
+      "acceptance_ids": [
+        "STO-07",
+        "OPS-04",
+        "OPS-05"
+      ]
+    },
+    {
+      "section": 43,
+      "title": "Storage capacity policy",
+      "source_start_line": 1805,
+      "source_end_line": 1837,
+      "decision": "适配",
+      "interpretation": "只读diagnostics有count/oldest/size；size不可得为null；阈值是ops config非domain。",
+      "merged_location": "07 §11.2/11.3",
+      "acceptance_ids": [
+        "OPS-02",
+        "OPS-03",
+        "OPS-06"
+      ]
+    },
+    {
+      "section": 44,
+      "title": "Portability target",
+      "source_start_line": 1838,
+      "source_end_line": 1868,
+      "decision": "澄清",
+      "interpretation": "Future profile可以替换相同端口，仍需合同和数据/密钥迁移；本版不宣称迁移零成本。",
+      "merged_location": "07 §1/12",
+      "acceptance_ids": [
+        "PORT-03",
+        "PORT-04"
+      ]
+    },
+    {
+      "section": 45,
+      "title": "No platform-specific deployment adapters",
+      "source_start_line": 1869,
+      "source_end_line": 1898,
+      "decision": "采纳",
+      "interpretation": "不造Railway/Heroku/Fly业务adapter；未来共享Node/Docker profile。",
+      "merged_location": "01 §1；ADR-050-20",
+      "acceptance_ids": [
+        "PORT-05"
+      ]
+    },
+    {
+      "section": 46,
+      "title": "Failure matrix",
+      "source_start_line": 1899,
+      "source_end_line": 1919,
+      "decision": "加强",
+      "interpretation": "保留全部原失败语义并扩为FM-01–22，覆盖旧消息/DLQ/归档/留存/密钥。",
+      "merged_location": "07 §7",
+      "acceptance_ids": [
+        "OBX-01",
+        "OBX-03",
+        "PUB-04",
+        "STO-05",
+        "QUE-07",
+        "SCH-04"
+      ]
+    },
+    {
+      "section": 47,
+      "title": "Testing requirements",
+      "source_start_line": 1920,
+      "source_end_line": 2013,
+      "decision": "采纳",
+      "interpretation": "architecture/repository/queue/scheduling/outbox/archive合同与真实localCF集成并行覆盖。",
+      "merged_location": "03 全文；07 §12",
+      "acceptance_ids": [
+        "PORT-04",
+        "QUE-01",
+        "SCH-01",
+        "STO-01",
+        "PKG-04"
+      ]
+    },
+    {
+      "section": 48,
+      "title": "Query-plan verification",
+      "source_start_line": 2014,
+      "source_end_line": 2037,
+      "decision": "采纳",
+      "interpretation": "query plan用代表性数据和语义索引断言，实际rows计量不凭估算保证免费。",
+      "merged_location": "07 §11",
+      "acceptance_ids": [
+        "OPS-01",
+        "OPS-02"
+      ]
+    },
+    {
+      "section": 49,
+      "title": "Acceptance criteria",
+      "source_start_line": 2038,
+      "source_end_line": 2089,
+      "decision": "采纳",
+      "interpretation": "原依赖/存储/queue/schedule/一致性/R2/portability验收全部映射到新矩阵。",
+      "merged_location": "03；本文件§3",
+      "acceptance_ids": [
+        "PORT-01",
+        "OBX-01",
+        "QUE-04",
+        "SCH-01",
+        "STO-02"
+      ]
+    },
+    {
+      "section": 50,
+      "title": "Integration into existing 0.5.0 design",
+      "source_start_line": 2090,
+      "source_end_line": 2220,
+      "decision": "采纳",
+      "interpretation": "更新原主设计/ADR/验收/交接，不只把附件孤立放到附录。",
+      "merged_location": "01–07；acceptance-change-log.json",
+      "acceptance_ids": [
+        "CUT-05",
+        "PKG-06"
+      ]
+    },
+    {
+      "section": 51,
+      "title": "Final architectural rules",
+      "source_start_line": 2221,
+      "source_end_line": 2277,
+      "decision": "采纳",
+      "interpretation": "15条RULE分别保留并设验收，不以旧实现方便为由弱化。",
+      "merged_location": "本文件§3",
+      "acceptance_ids": [
+        "PORT-02",
+        "OBX-01",
+        "STO-05"
+      ]
+    },
+    {
+      "section": 52,
+      "title": "Recommended implementation scope for 0.5.0",
+      "source_start_line": 2278,
+      "source_end_line": 2305,
+      "decision": "采纳并明示补充",
+      "interpretation": "原15项具体范围全部包含；另采纳Blob实现/最小cipher/有界stalled恢复满足完整保证，不做PG/S3/Redis。",
+      "merged_location": "01 §1；04",
+      "acceptance_ids": [
+        "STO-01",
+        "CIP-01",
+        "SCH-04",
+        "CUT-04"
+      ]
+    },
+    {
+      "section": 53,
+      "title": "Design review questions",
+      "source_start_line": 2306,
+      "source_end_line": 2323,
+      "decision": "逐项作答",
+      "interpretation": "见本文件§4的12个问题，分清旧设计事实与新方案。",
+      "merged_location": "本文件§4",
+      "acceptance_ids": [
+        "CUT-05"
+      ]
+    }
+  ],
+  "normative_rules": [
+    {
+      "id": "RULE-001",
+      "guarantee": "Core零Cloudflare runtime API。",
+      "acceptance_ids": [
+        "PORT-01",
+        "PORT-02"
+      ]
+    },
+    {
+      "id": "RULE-002",
+      "guarantee": "CF资源经ports/adapters访问，application零bindings。",
+      "acceptance_ids": [
+        "PORT-05"
+      ]
+    },
+    {
+      "id": "RULE-003",
+      "guarantee": "D1域状态；R2 blob/archive；logs不入D1。",
+      "acceptance_ids": [
+        "OBX-10",
+        "STO-01",
+        "STO-08"
+      ]
+    },
+    {
+      "id": "RULE-004",
+      "guarantee": "Queue是transport，不是域状态源。",
+      "acceptance_ids": [
+        "QUE-02",
+        "OBX-08"
+      ]
+    },
+    {
+      "id": "RULE-005",
+      "guarantee": "长期schedule持久在outbox.available_at。",
+      "acceptance_ids": [
+        "SCH-01",
+        "SCH-02"
+      ]
+    },
+    {
+      "id": "RULE-006",
+      "guarantee": "at-least-once与并发duplicate是正常输入。",
+      "acceptance_ids": [
+        "PUB-02",
+        "QUE-03"
+      ]
+    },
+    {
+      "id": "RULE-007",
+      "guarantee": "D1→Queue必须独立transactional outbox。",
+      "acceptance_ids": [
+        "OBX-01",
+        "OBX-02",
+        "OBX-03"
+      ]
+    },
+    {
+      "id": "RULE-008",
+      "guarantee": "安全provider retry与infra redelivery分开。",
+      "acceptance_ids": [
+        "PUB-03",
+        "QUE-04"
+      ]
+    },
+    {
+      "id": "RULE-009",
+      "guarantee": "ID应用生成，不依赖数据库自增/rowid。",
+      "acceptance_ids": [
+        "PORT-06",
+        "CUT-02"
+      ]
+    },
+    {
+      "id": "RULE-010",
+      "guarantee": "持久对象引用为logical key，不是R2 URL。",
+      "acceptance_ids": [
+        "STO-03"
+      ]
+    },
+    {
+      "id": "RULE-011",
+      "guarantee": "大型/raw诊断不无限保留在D1。",
+      "acceptance_ids": [
+        "OBX-10",
+        "STO-04",
+        "OPS-04",
+        "OPS-05"
+      ]
+    },
+    {
+      "id": "RULE-012",
+      "guarantee": "archive故障不令成功SNS重新发布。",
+      "acceptance_ids": [
+        "STO-05",
+        "STO-06"
+      ]
+    },
+    {
+      "id": "RULE-013",
+      "guarantee": "平台特有协议/成功信号/错误解释在provider策略。",
+      "acceptance_ids": [
+        "ARC-02",
+        "NET-04"
+      ]
+    },
+    {
+      "id": "RULE-014",
+      "guarantee": "CF/SQLite优化只存在infra。",
+      "acceptance_ids": [
+        "PORT-02",
+        "PORT-05",
+        "OPS-01"
+      ]
+    },
+    {
+      "id": "RULE-015",
+      "guarantee": "CF为reference profile非执行模型。",
+      "acceptance_ids": [
+        "PORT-01",
+        "PORT-03",
+        "PORT-04"
+      ]
+    }
+  ],
+  "baseline_source": "sources/v1-original-design-package.zip",
+  "implementation_status": "not_started"
+}

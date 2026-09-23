@@ -46,6 +46,41 @@ function post(overrides: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
+/** One real 0.5.0 platform status DTO, as `GET /v1/auth/<platform>` answers it. */
+function platformStatus(
+  platform: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    platform,
+    configured: true,
+    source: "credential",
+    oauthSupported: true,
+    readiness: "ready",
+    missingFields: [],
+    expiresAt: null,
+    revision: 4,
+    ...overrides,
+  };
+}
+
+/** The real 0.5.0 auth status DTO: instance readiness plus the platform map. */
+function authStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    instance: { publishingReady: true, missingFields: [] },
+    platforms: {
+      bluesky: platformStatus("bluesky"),
+      x: platformStatus("x", {
+        configured: false,
+        source: null,
+        readiness: "missing_credentials",
+        missingFields: ["X_ACCESS_TOKEN"],
+      }),
+    },
+    ...overrides,
+  };
+}
+
 describe("doctor", () => {
   it("fails as a usage problem when nothing is configured", async () => {
     const fixture = await server((_request, response) => {
@@ -68,6 +103,12 @@ describe("doctor", () => {
       }
 
       expect(request.headers["authorization"]).toBe(`Bearer ${SENTINEL}`);
+
+      if (request.url === "/v1/auth") {
+        json(response, 200, authStatus());
+        return;
+      }
+
       json(response, 200, { items: [] });
     });
     const result = await runCli(["doctor", "--json"], {
@@ -81,8 +122,23 @@ describe("doctor", () => {
     expect(payload["createRequests"]).toBe(0);
     expect((payload["health"] as Record<string, unknown>)["reachable"]).toBe(true);
     expect((payload["credentials"] as Record<string, unknown>)["ok"]).toBe(true);
-    expect(fixture.requestCount()).toBe(2);
-    expect(fixture.requests.map(request => request.method)).toEqual(["GET", "GET"]);
+    // health, the read-only auth.status readiness read, and posts.list.
+    expect(fixture.requestCount()).toBe(3);
+    expect(fixture.requests.map(request => request.method)).toEqual(["GET", "GET", "GET"]);
+    expect(fixture.requests.map(request => request.url)).toEqual([
+      "/health",
+      "/v1/auth",
+      "/v1/posts?limit=1",
+    ]);
+    expect(payload["authReadiness"]).toBe("available");
+    expect((payload["instance"] as Record<string, unknown>)["publishingReady"]).toBe(true);
+    expect(Object.keys(payload["platforms"] as Record<string, unknown>)).toEqual([
+      "bluesky",
+      "x",
+    ]);
+    expect(
+      (payload["platforms"] as Record<string, Record<string, unknown>>)["x"]?.["readiness"],
+    ).toBe("missing_credentials");
     expect(result.stdout).not.toContain(SENTINEL);
     expect(result.stderr).not.toContain(SENTINEL);
     expect(result.stdout).not.toContain("apiKey:");
@@ -95,7 +151,14 @@ describe("doctor", () => {
         return;
       }
 
-      json(response, 401, { code: "UNAUTHORIZED", message: "missing or invalid API key" });
+      if (request.url === "/v1/auth") {
+        json(response, 200, authStatus());
+        return;
+      }
+
+      json(response, 401, {
+        error: { code: "UNAUTHORIZED", message: "missing or invalid API key" },
+      });
     });
     const result = await runCli(["doctor", "--json"], {
       env: { SYNDROO_BASE_URL: fixture.url, SYNDROO_API_KEY: SENTINEL },
@@ -105,6 +168,66 @@ describe("doctor", () => {
     expect(result.code).toBe(1);
     expect(payload["ok"]).toBe(false);
     expect(String((payload["error"] as Record<string, unknown>)["code"])).toBe("AUTH_REJECTED");
+    expect(result.stdout).not.toContain(SENTINEL);
+    expect(result.stderr).not.toContain(SENTINEL);
+  });
+
+  it("fails, and never claims success, when the readiness read itself is rejected", async () => {
+    const fixture = await server((request, response) => {
+      if (request.url === "/health") {
+        json(response, 200, { status: "ok" });
+        return;
+      }
+
+      json(response, 401, {
+        error: { code: "UNAUTHORIZED", message: "missing or invalid API key" },
+      });
+    });
+    const result = await runCli(["doctor", "--json"], {
+      env: { SYNDROO_BASE_URL: fixture.url, SYNDROO_API_KEY: SENTINEL },
+    });
+    const payload = parseJsonObject(result.stdout);
+
+    // A rejected key is a failure here, never a compatibility fallback to "unknown".
+    expect(result.code).toBe(1);
+    expect(payload["ok"]).toBe(false);
+    expect(fixture.requests.map(request => request.url)).toEqual(["/health", "/v1/auth"]);
+    expect(result.stdout).not.toContain(SENTINEL);
+    expect(result.stderr).not.toContain(SENTINEL);
+  });
+
+  it("reports unknown readiness for a legacy server without the auth status endpoint", async () => {
+    const fixture = await server((request, response) => {
+      if (request.url === "/health") {
+        json(response, 200, { status: "ok" });
+        return;
+      }
+
+      if (request.url === "/v1/auth") {
+        json(response, 404, { error: { code: "NOT_FOUND" } });
+        return;
+      }
+
+      json(response, 200, { items: [] });
+    });
+    const result = await runCli(["doctor", "--json"], {
+      env: { SYNDROO_BASE_URL: fixture.url, SYNDROO_API_KEY: SENTINEL },
+    });
+    const payload = parseJsonObject(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(payload["ok"]).toBe(true);
+    expect(payload["authReadiness"]).toBe(
+      "the instance does not expose the 0.5.0 auth status endpoint",
+    );
+    expect(payload["instance"]).toBe(null);
+    expect(payload["platforms"]).toEqual({});
+    expect(payload["createRequests"]).toBe(0);
+    expect(fixture.requests.map(request => request.url)).toEqual([
+      "/health",
+      "/v1/auth",
+      "/v1/posts?limit=1",
+    ]);
     expect(result.stdout).not.toContain(SENTINEL);
     expect(result.stderr).not.toContain(SENTINEL);
   });

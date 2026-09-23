@@ -4,7 +4,10 @@ Read this once a create or a wait has returned and you have to explain the outco
 
 ## Acceptance is not delivery
 
-`POST /v1/posts` answers `202`, and a zero exit from `posts create` reports that receipt. It means the instance queued one logical post. It says nothing about any platform.
+`POST /v1/posts` answers `202` for a newly accepted document and `200` when the
+same idempotency key replays an earlier result; either way a zero exit from
+`posts create` reports that receipt. It means the instance accepted or replayed
+one logical post. It says nothing about any platform.
 
 A post is delivered only when its status is `published`, which means every selected platform succeeded. Read the post, or wait for it, before claiming that anything reached a platform.
 

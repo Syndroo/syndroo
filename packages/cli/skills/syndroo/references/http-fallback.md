@@ -2,7 +2,17 @@
 
 Use this only when the CLI cannot run in the current environment but an authorized HTTP tool can reach the instance. The workflow, the authorization rules, and the idempotency rules are the same as for the CLI; only the transport changes.
 
-Direct HTTP is a fallback for a missing capability. It is not a second attempt after a CLI failure.
+Direct HTTP is a fallback for a missing capability. It is not a second attempt
+after a CLI failure.
+
+This document covers only the documented posts subset: `GET /health`,
+`POST /v1/posts`, `GET /v1/posts`, and `GET /v1/posts/{id}`. It deliberately
+does not document an HTTP path for credentials, authorization, or diagnostics:
+if `syndroo auth status`, `syndroo auth set`, `syndroo auth connect`,
+`syndroo auth operation`, `syndroo auth complete`, `syndroo auth refresh`,
+`syndroo auth remove`, or `syndroo diagnostics` cannot run, report that and stop.
+Never improvise an authorization or credential request by hand, and never carry a
+secret through a tool that was not built to bound it.
 
 ## Endpoints
 

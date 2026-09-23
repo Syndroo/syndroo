@@ -1,4 +1,19 @@
-import { PublishError, type PlatformAdapter, type Publisher, type PublishRequest, type PublishResult } from "@syndroo/core";
+import {
+  PublishError,
+  type PlatformAdapter,
+  type Publisher,
+  type PublishRequest,
+  type PublishResult,
+} from "@syndroo/core";
+import {
+  TransportError,
+  boundedRequest,
+  oauth1AuthorizationHeader,
+  parseRetryAfter,
+} from "@syndroo/transport";
+
+const MAX_POST_CODE_POINTS = 4096;
+const MAX_RESPONSE_BYTES = 64 * 1024;
 
 export interface TumblrPublisherOptions {
   consumerKey: string;
@@ -7,6 +22,20 @@ export interface TumblrPublisherOptions {
   tokenSecret: string;
   blog: string;
   timeoutMs?: number;
+}
+
+/** What a user or agent can supply directly, before app credentials are added. */
+export interface TumblrUserCredential {
+  readonly token: string;
+  readonly tokenSecret: string;
+  readonly blog?: string;
+}
+
+/** Exact typed credential the Tumblr publisher needs (app credentials + user tokens). */
+export interface TumblrCredential extends TumblrUserCredential {
+  readonly consumerKey: string;
+  readonly consumerSecret: string;
+  readonly blog: string;
 }
 
 // Accept a Tumblr blog name or its tumblr.com hostname, never an arbitrary URL.
@@ -18,128 +47,257 @@ export function normalizeTumblrBlog(value: string): string {
   return name;
 }
 
-const encode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g,
-  char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+/**
+ * Typed decoder for a direct user credential.
+ *
+ * It carries no app credentials: consumer key and secret stay runtime secrets
+ * owned by the composition root and must not be merged in from this input.
+ */
+export function decodeTumblrUserCredential(input: unknown): TumblrUserCredential {
+  const record = asRecord(input);
+  const token = readString(record, "token");
+  const tokenSecret = readString(record, "token_secret");
+  const blog = readString(record, "blog");
 
-// This signer is deliberately limited to our fixed POST endpoint with JSON,
-// no query parameters. JSON body fields are not OAuth 1.0 signature parameters.
-async function authorization(url: string, options: TumblrPublisherOptions): Promise<string> {
-  const params: Record<string, string> = {
-    oauth_consumer_key: options.consumerKey,
-    oauth_nonce: crypto.randomUUID().replaceAll("-", ""),
-    oauth_signature_method: "HMAC-SHA1",
-    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
-    oauth_token: options.token,
-    oauth_version: "1.0",
-  };
-  const normalized = Object.keys(params).sort().map(key => `${encode(key)}=${encode(params[key]!)}`).join("&");
-  const base = `POST&${encode(url)}&${encode(normalized)}`;
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw",
-    encoder.encode(`${encode(options.consumerSecret)}&${encode(options.tokenSecret)}`),
-    { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(base));
-  params.oauth_signature = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  return "OAuth " + Object.keys(params).sort().map(key => `${encode(key)}="${encode(params[key]!)}"`).join(", ");
+  if (!token || !tokenSecret) {
+    throw new PublishError(
+      "Tumblr user credential is incomplete (token, token_secret)",
+      "AUTH",
+    );
+  }
+
+  return { token, tokenSecret, ...(blog === undefined ? {} : { blog }) };
+}
+
+/**
+ * Typed decoder for the resolved publishing credential (app + user).
+ *
+ * It validates the whole group it was given and never fills a missing user
+ * token from environment app credentials.
+ */
+export function decodeTumblrCredential(input: unknown): TumblrCredential {
+  const record = asRecord(input);
+  const consumerKey = readString(record, "consumer_key");
+  const consumerSecret = readString(record, "consumer_secret");
+  const user = decodeTumblrUserCredential(input);
+  const blog = user.blog;
+
+  if (!consumerKey || !consumerSecret || blog === undefined) {
+    throw new PublishError(
+      "Tumblr credential is incomplete (consumer_key, consumer_secret, token, token_secret, blog)",
+      "AUTH",
+    );
+  }
+
+  return { consumerKey, consumerSecret, token: user.token, tokenSecret: user.tokenSecret, blog };
+}
+
+/** Pure construction: no network, no credential resolution, no side effects. */
+export function buildTumblrPublisher(
+  credential: TumblrCredential,
+  config: Pick<TumblrPublisherOptions, "timeoutMs"> = {},
+): TumblrPublisher {
+  return new TumblrPublisher({ ...config, ...credential });
 }
 
 export class TumblrPublisher implements Publisher {
   readonly name = "tumblr-native";
+
+  private readonly consumerKey: string;
+  private readonly consumerSecret: string;
+  private readonly token: string;
+  private readonly tokenSecret: string;
   private readonly blog: string;
   private readonly timeoutMs: number;
 
-  constructor(private readonly options: TumblrPublisherOptions) {
-    if (![options.consumerKey, options.consumerSecret, options.token, options.tokenSecret]
-      .every(value => typeof value === "string" && value.trim())) {
+  constructor(options: TumblrPublisherOptions) {
+    if (
+      ![options.consumerKey, options.consumerSecret, options.token, options.tokenSecret].every(
+        value => typeof value === "string" && value.trim(),
+      )
+    ) {
       throw new TypeError("All four Tumblr OAuth credentials are required");
     }
+
     this.blog = normalizeTumblrBlog(options.blog);
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) throw new TypeError("Tumblr timeout must be positive");
+
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
+      throw new TypeError("Tumblr timeout must be positive");
+    }
+
+    this.consumerKey = options.consumerKey;
+    this.consumerSecret = options.consumerSecret;
+    this.token = options.token;
+    this.tokenSecret = options.tokenSecret;
   }
 
   async publish(request: PublishRequest): Promise<PublishResult> {
     // v0.1 intentionally uses one NPF text block, not HTML or Markdown.
-    if (request.platform !== "tumblr" || !request.content.trim() || [...request.content].length > 4096) {
-      throw new PublishError("Tumblr requires text within 4096 Unicode code points", "INVALID_CONTENT");
+    if (
+      request.platform !== "tumblr" ||
+      !request.content.trim() ||
+      [...request.content].length > MAX_POST_CODE_POINTS
+    ) {
+      throw new PublishError(
+        "Tumblr requires text within 4096 Unicode code points",
+        "INVALID_CONTENT",
+      );
     }
+
     const url = `https://api.tumblr.com/v2/blog/${this.blog}.tumblr.com/posts`;
-    let auth: string;
+    let authorization: string;
+
     try {
-      auth = await authorization(url, this.options);
+      authorization = await oauth1AuthorizationHeader({
+        method: "POST",
+        url,
+        consumerKey: this.consumerKey,
+        consumerSecret: this.consumerSecret,
+        token: this.token,
+        tokenSecret: this.tokenSecret,
+        nonce: crypto.randomUUID().replaceAll("-", ""),
+        timestamp: String(Math.floor(Date.now() / 1000)),
+      });
     } catch {
       throw new PublishError("Tumblr request signing failed", "UNKNOWN");
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response;
+
     try {
-      const response = await fetch(url, {
-        method: "POST", redirect: "error", signal: controller.signal,
-        headers: { authorization: auth, "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ state: "published", send_to_twitter: false,
-          content: [{ type: "text", text: request.content }] }),
+      response = await boundedRequest({
+        url,
+        method: "POST",
+        headers: {
+          authorization,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          state: "published",
+          send_to_twitter: false,
+          content: [{ type: "text", text: request.content }],
+        }),
+        timeoutMs: this.timeoutMs,
+        maxResponseBytes: MAX_RESPONSE_BYTES,
       });
-      // Classify explicit HTTP failures without retaining provider error text.
-      if (!response.ok) {
-        await response.body?.cancel();
-        const status = response.status;
-        const code = status === 401 || status === 403 || status === 404 ? "AUTH"
-          : status === 429 ? "RATE_LIMIT"
-          : [400, 413, 422].includes(status) ? "INVALID_CONTENT"
-          : status >= 500 ? "PROVIDER_UNAVAILABLE" : "UNKNOWN";
-        throw new PublishError(`Tumblr request failed (HTTP ${status})`, code,
-          status >= 500 || code === "UNKNOWN");
-      }
-      const body = await readJson(response, controller.signal);
-      if (!isRecord(body) || !isRecord(body.meta) || body.meta.status !== 201 ||
-        response.status !== 201 || !isRecord(body.response) ||
-        typeof body.response.id !== "string" || !/^\d+$/.test(body.response.id)) {
-        throw new PublishError("Tumblr response did not confirm a created post", "UNKNOWN", true);
-      }
-      return { externalId: body.response.id, externalUrl: `https://${this.blog}.tumblr.com/post/${body.response.id}` };
     } catch (error) {
-      if (error instanceof PublishError) throw error;
-      throw new PublishError("Tumblr request or response was interrupted", "NETWORK", true);
-    } finally {
-      clearTimeout(timer);
+      throw toPublishError(error);
     }
+
+    if (!response.ok) {
+      throw classifyStatus(
+        response.status,
+        response.headers.get("retry-after"),
+        new Date(),
+      );
+    }
+
+    const body = parseJson(response.text());
+
+    if (
+      !isRecord(body) ||
+      !isRecord(body.meta) ||
+      body.meta.status !== 201 ||
+      response.status !== 201 ||
+      !isRecord(body.response) ||
+      typeof body.response.id !== "string" ||
+      !/^\d+$/.test(body.response.id)
+    ) {
+      throw new PublishError(
+        "Tumblr response did not confirm a created post",
+        "UNKNOWN",
+        true,
+      );
+    }
+
+    return {
+      externalId: body.response.id,
+      externalUrl: `https://${this.blog}.tumblr.com/post/${body.response.id}`,
+    };
   }
 }
 
-async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
-  const limit = 64 * 1024;
-  if (Number(response.headers.get("content-length")) > limit) {
-    await response.body?.cancel();
-    throw new PublishError("Tumblr response exceeded size limit", "UNKNOWN", true);
+function classifyStatus(
+  status: number,
+  retryAfter: string | null,
+  now: Date,
+): PublishError {
+  const message = `Tumblr request failed (HTTP ${status})`;
+
+  if (status === 401 || status === 403 || status === 404) {
+    return new PublishError(message, "AUTH", false);
   }
-  const reader = response.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  // Also cancel mocked/custom streams that do not inherit fetch's signal.
-  const abort = () => { void reader?.cancel().catch(() => undefined); };
-  signal.addEventListener("abort", abort, { once: true });
-  try {
-    signal.throwIfAborted();
-    while (reader) {
-      const { done, value } = await reader.read();
-      signal.throwIfAborted();
-      if (done) break;
-      length += value.byteLength;
-      if (length > limit) throw new PublishError("Tumblr response exceeded size limit", "UNKNOWN", true);
-      chunks.push(value);
+
+  if (status === 429) {
+    const retryAfterAt = parseRetryAfter(retryAfter, { now });
+    return new PublishError(
+      message,
+      "RATE_LIMIT",
+      false,
+      retryAfterAt === undefined ? undefined : { retryAfterAt },
+    );
+  }
+
+  if (status === 400 || status === 413 || status === 422) {
+    return new PublishError(message, "INVALID_CONTENT", false);
+  }
+
+  if (status >= 500) {
+    return new PublishError(message, "PROVIDER_UNAVAILABLE", true);
+  }
+
+  return new PublishError(message, "UNKNOWN", true);
+}
+
+function toPublishError(error: unknown): PublishError {
+  if (error instanceof TransportError) {
+    // The single POST is the write; anything after dispatch stays ambiguous.
+    const ambiguous = error.requestDispatched;
+
+    if (error.code === "network" || error.code === "timeout" || error.code === "aborted") {
+      return new PublishError(
+        "Tumblr request or response was interrupted",
+        "NETWORK",
+        ambiguous,
+      );
     }
-  } catch (error) {
-    await reader?.cancel().catch(() => undefined);
-    throw error;
-  } finally {
-    signal.removeEventListener("abort", abort);
-    reader?.releaseLock();
+
+    if (error.code === "response_too_large") {
+      return new PublishError(
+        "Tumblr response exceeded size limit",
+        "UNKNOWN",
+        ambiguous,
+      );
+    }
+
+    return new PublishError("Tumblr request was not completed", "UNKNOWN", ambiguous);
   }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  try { return JSON.parse(new TextDecoder().decode(bytes)); }
-  catch { throw new PublishError("Tumblr returned invalid JSON", "UNKNOWN", true); }
+
+  return new PublishError("Tumblr request or response was interrupted", "NETWORK", true);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new PublishError("Tumblr returned invalid JSON", "UNKNOWN", true);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -150,26 +308,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Platform adapter
 // ---------------------------------------------------------------------------
 
-
 export const tumblrAdapter: PlatformAdapter = {
   providerName: "tumblr-native",
 
-  buildPublisher: (cred) => {
-    if (!cred.consumer_key?.trim() || !cred.consumer_secret?.trim() ||
-        !cred.token?.trim() || !cred.token_secret?.trim() || !cred.blog?.trim()) {
-      throw new PublishError(
-        "Tumblr credential is incomplete (consumer_key, consumer_secret, token, token_secret, blog)",
-        "AUTH",
-      );
-    }
-    return new TumblrPublisher({
-      consumerKey: cred.consumer_key,
-      consumerSecret: cred.consumer_secret,
-      token: cred.token,
-      tokenSecret: cred.token_secret,
-      blog: cred.blog,
-    });
-  },
+  buildPublisher: (cred) => buildTumblrPublisher(decodeTumblrCredential(cred)),
 
   oauth: {
     type: "oauth1",

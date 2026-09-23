@@ -18,6 +18,31 @@ export {
   type WaitOptions,
 } from "./client.js";
 
+export { AuthResource } from "./auth.js";
+
+export {
+  type AuthCompleteInput,
+  type AuthCompleteTarget,
+  type AuthCredentialInput,
+  type AuthMutationOptions,
+  type AuthOperationStatus,
+  type AuthPhase,
+  type AuthRefreshReceipt,
+  type AuthRemoveReceipt,
+  type AuthRequestOptions,
+  type AuthSetReceipt,
+  type AuthSource,
+  type AuthStatus,
+  type CompleteReceipt,
+  type ConnectReceipt,
+  type InstanceStatus,
+  type PlatformStatus,
+  type PlatformTarget,
+  type Readiness,
+} from "./auth-types.js";
+
+export { type Diagnostics, type DiagnosticsStorage } from "./diagnostics.js";
+
 export {
   SyndrooAbortError,
   SyndrooApiError,
@@ -29,6 +54,7 @@ export {
   SyndrooValidationError,
   SyndrooWaitTimeoutError,
   isSyndrooError,
+  type SdkOperation,
   type SyndrooErrorCode,
   type SyndrooErrorInit,
 } from "./errors.js";

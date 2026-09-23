@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "document_version": "2.0",
+  "checked_at": "2026-09-21T13:21:13.109774+00:00",
+  "kind": "document_package_integrity_only",
+  "product_tests_executed": false,
+  "repository_observed_this_revision": false,
+  "implementation_status": "not_started",
+  "product_acceptance": {
+    "total": 120,
+    "not_run": 120
+  },
+  "summary": {
+    "checks": 24,
+    "passed": 24,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "name": "required_files_present",
+      "status": "PASS",
+      "evidence": {
+        "required_files": 15
+      }
+    },
+    {
+      "name": "json_payloads_parse",
+      "status": "PASS",
+      "evidence": [
+        "input-provenance.json",
+        "source-integration-map.json",
+        "acceptance-results.template.json",
+        "acceptance-change-log.json"
+      ]
+    },
+    {
+      "name": "acceptance_ids_unique",
+      "status": "PASS",
+      "evidence": {
+        "unique_ids": 120
+      }
+    },
+    {
+      "name": "all_original_acceptance_ids_retained",
+      "status": "PASS",
+      "evidence": {
+        "original": 66,
+        "retained": 66,
+        "new": 54
+      }
+    },
+    {
+      "name": "existing_criterion_changes_fully_disclosed",
+      "status": "PASS",
+      "evidence": {
+        "disclosed_existing_revisions": 20
+      }
+    },
+    {
+      "name": "product_tests_not_run_and_no_invented_evidence",
+      "status": "PASS",
+      "evidence": {
+        "product_checks_not_run": 120
+      }
+    },
+    {
+      "name": "acceptance_summary_consistent",
+      "status": "PASS",
+      "evidence": {
+        "total": 120,
+        "local_required": 118,
+        "live_separate_authorization": 2,
+        "passed": 0,
+        "failed": 0,
+        "blocked": 0,
+        "not_run": 120
+      }
+    },
+    {
+      "name": "authorization_and_required_gates_preserved",
+      "status": "PASS",
+      "evidence": "Original local/live requirements and action-time boundaries retained"
+    },
+    {
+      "name": "markdown_and_json_acceptance_match",
+      "status": "PASS",
+      "evidence": {
+        "matched_rows": 120
+      }
+    },
+    {
+      "name": "original_inputs_byte_hashes_preserved",
+      "status": "PASS",
+      "evidence": [
+        {
+          "file": "sources/v1-original-design-package.zip",
+          "sha256": "787ab87f697a92be9131ae9c0f31e34c32971b02b6226086635266bbfbe1c9c6"
+        },
+        {
+          "file": "sources/portable-storage-queue.original.txt",
+          "sha256": "276dae1e29738dfc0a8f9e2dbdc054cd50f4134ad57eedcfa6e0a743b15f2a4a"
+        }
+      ]
+    },
+    {
+      "name": "all_source_sections_and_exact_ranges_mapped",
+      "status": "PASS",
+      "evidence": {
+        "source_lines": 2323,
+        "mapped_sections": 53
+      }
+    },
+    {
+      "name": "all_15_source_rules_preserved",
+      "status": "PASS",
+      "evidence": {
+        "rules": 15
+      }
+    },
+    {
+      "name": "source_mapping_targets_existing_acceptance_ids",
+      "status": "PASS",
+      "evidence": {
+        "mapping_entries": 68
+      }
+    },
+    {
+      "name": "readable_and_machine_source_maps_agree",
+      "status": "PASS",
+      "evidence": "53 sections and 15 rules represented in readable and machine forms"
+    },
+    {
+      "name": "all_12_source_review_questions_addressed",
+      "status": "PASS",
+      "evidence": {
+        "review_questions_answered": 12
+      }
+    },
+    {
+      "name": "adr_numbering_01_through_20",
+      "status": "PASS",
+      "evidence": {
+        "adrs": 20
+      }
+    },
+    {
+      "name": "failure_matrix_01_through_22",
+      "status": "PASS",
+      "evidence": {
+        "failure_windows": 22
+      }
+    },
+    {
+      "name": "markdown_fences_balanced",
+      "status": "PASS",
+      "evidence": {
+        "markdown_files": 8
+      }
+    },
+    {
+      "name": "local_links_and_explicit_anchors_resolve",
+      "status": "PASS",
+      "evidence": {
+        "local_links_checked": 96,
+        "network_links_fetched": 0
+      }
+    },
+    {
+      "name": "local_source_reference_labels_defined",
+      "status": "PASS",
+      "evidence": {
+        "resolved_source_references": 43
+      }
+    },
+    {
+      "name": "document_text_hygiene",
+      "status": "PASS",
+      "evidence": "UTF-8 text, no conflict markers or unresolved drafting placeholders"
+    },
+    {
+      "name": "integration_scope_and_completion_boundaries_present",
+      "status": "PASS",
+      "evidence": "Expected integrated topics and non-implementation boundary present; semantic correctness not executed"
+    },
+    {
+      "name": "payload_sha256_manifest_matches",
+      "status": "PASS",
+      "evidence": {
+        "hashed_payloads": 15,
+        "excluded": [
+          "SHA256SUMS.txt",
+          "document-validation.json"
+        ]
+      }
+    },
+    {
+      "name": "zip_crc_paths_and_payload_bytes",
+      "status": "PASS",
+      "evidence": {
+        "file": "/mnt/data/syndroo-v0.5.0-design-package-rev2.zip",
+        "entries": 17,
+        "crc": "ok",
+        "payload_bytes": "match"
+      }
+    }
+  ],
+  "limitations": [
+    "Does not compile or execute Syndroo product code.",
+    "Does not prove transaction, crypto, OAuth or concurrent behavior; all product acceptance remains NOT_RUN.",
+    "Remote links and current account/runtime configuration are not fetched by this script.",
+    "Manual design review is separate from these deterministic checks.",
+    "The report is excluded from recursive payload checksums."
+  ]
+}

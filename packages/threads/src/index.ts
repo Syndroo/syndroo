@@ -5,6 +5,11 @@ import {
   type PublishRequest,
   type PublishResult,
 } from "@syndroo/core";
+import {
+  TransportError,
+  boundedRequest,
+  parseRetryAfter,
+} from "@syndroo/transport";
 
 const DEFAULT_API_BASE_URL = "https://graph.threads.net";
 const MAX_POST_CODE_POINTS = 500;
@@ -16,30 +21,64 @@ export interface ThreadsPublisherOptions {
   timeoutMs?: number;
 }
 
-class ThreadsRequestError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "ThreadsRequestError";
+/** Exact typed credential the Threads publisher needs. */
+export interface ThreadsCredential {
+  readonly accessToken: string;
+}
+
+/**
+ * Typed decoder for a Threads credential record.
+ *
+ * It validates only what the caller passed in: a missing access token is never
+ * filled from another source, so a partially configured deployment fails closed
+ * instead of publishing through an unintended account.
+ */
+export function decodeThreadsCredential(input: unknown): ThreadsCredential {
+  const record = asRecord(input);
+  const accessToken =
+    typeof record?.["access_token"] === "string"
+      ? record["access_token"].trim()
+      : "";
+
+  if (!accessToken) {
+    throw new PublishError(
+      "Threads credential is incomplete (access_token)",
+      "AUTH",
+    );
   }
+
+  return { accessToken };
+}
+
+/** Pure construction: no network, no credential resolution, no side effects. */
+export function buildThreadsPublisher(
+  credential: ThreadsCredential,
+  config: Omit<ThreadsPublisherOptions, "accessToken"> = {},
+): ThreadsPublisher {
+  return new ThreadsPublisher({ ...config, accessToken: credential.accessToken });
 }
 
 export class ThreadsPublisher implements Publisher {
   readonly name = "threads-native";
 
+  private readonly accessToken: string;
   private readonly apiBaseUrl: string;
   private readonly timeoutMs: number;
 
-  constructor(private readonly options: ThreadsPublisherOptions) {
-    if (!options.accessToken.trim()) {
+  constructor(options: ThreadsPublisherOptions) {
+    if (typeof options.accessToken !== "string" || !options.accessToken.trim()) {
       throw new TypeError("Threads access token is required");
     }
 
-    this.apiBaseUrl = normalizeApiBaseUrl(
-      options.apiBaseUrl ?? DEFAULT_API_BASE_URL,
-    );
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+    ) {
+      throw new TypeError("Threads timeout must be positive");
+    }
+
+    this.accessToken = options.accessToken;
+    this.apiBaseUrl = normalizeApiBaseUrl(options.apiBaseUrl ?? DEFAULT_API_BASE_URL);
     this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
@@ -59,55 +98,49 @@ export class ThreadsPublisher implements Publisher {
       throw new PublishError("Threads content exceeds post limits", "INVALID_CONTENT");
     }
 
+    let response;
+
     try {
-      const body = new URLSearchParams({
-        media_type: "TEXT",
-        text: request.content,
-        auto_publish_text: "true",
+      response = await boundedRequest({
+        url: `${this.apiBaseUrl}/me/threads`,
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.accessToken}`,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          media_type: "TEXT",
+          text: request.content,
+          auto_publish_text: "true",
+        }),
+        timeoutMs: this.timeoutMs,
+        maxResponseBytes: MAX_RESPONSE_BYTES,
       });
-      let response: Response;
-
-      try {
-        response = await fetch(`${this.apiBaseUrl}/me/threads`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${this.options.accessToken}`,
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body,
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
-      } catch (error) {
-        throw new PublishError(
-          error instanceof Error ? error.message : "Threads network failure",
-          "NETWORK",
-          true,
-          error instanceof Error ? { cause: error } : undefined,
-        );
-      }
-
-      const responseBody = await readJson(response);
-
-      if (!response.ok) {
-        const detail = errorDetail(responseBody);
-        throw new ThreadsRequestError(
-          `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
-          response.status,
-        );
-      }
-
-      if (!isRecord(responseBody) || typeof responseBody.id !== "string") {
-        throw new PublishError(
-          "Threads response did not include a post ID",
-          "UNKNOWN",
-          true,
-        );
-      }
-
-      return { externalId: responseBody.id };
     } catch (error) {
-      throw normalizeError(error);
+      // The single POST is the write: a dispatched attempt may already have
+      // created a post, so it stays ambiguous. Nothing is retried here.
+      throw toPublishError(error);
     }
+
+    if (!response.ok) {
+      throw classifyStatus(
+        response.status,
+        response.headers.get("retry-after"),
+        new Date(),
+      );
+    }
+
+    const responseBody = parseJson(response.text());
+
+    if (!isRecord(responseBody) || typeof responseBody.id !== "string") {
+      throw new PublishError(
+        "Threads response did not include a post ID",
+        "UNKNOWN",
+        true,
+      );
+    }
+
+    return { externalId: responseBody.id };
   }
 }
 
@@ -127,119 +160,82 @@ function normalizeApiBaseUrl(value: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-async function readJson(response: Response): Promise<unknown> {
-  const declaredLength = Number(response.headers.get("content-length") ?? 0);
-
-  if (declaredLength > MAX_RESPONSE_BYTES) {
-    throw new PublishError("Threads response exceeded size limit", "UNKNOWN", true);
+function classifyStatus(
+  status: number,
+  retryAfter: string | null,
+  now: Date,
+): PublishError {
+  if (status === 401 || status === 403) {
+    return new PublishError("Threads request failed (HTTP 401 or 403)", "AUTH");
   }
 
-  if (!response.body) {
-    return undefined;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-
-      if (done) {
-        break;
-      }
-
-      length += value.byteLength;
-
-      if (length > MAX_RESPONSE_BYTES) {
-        await reader.cancel("Response exceeded size limit");
-        throw new PublishError(
-          "Threads response exceeded size limit",
-          "UNKNOWN",
-          true,
-        );
-      }
-
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  if (bytes.byteLength === 0) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch (error) {
-    throw new PublishError(
-      "Threads returned invalid JSON",
-      "UNKNOWN",
-      true,
-      error instanceof Error ? { cause: error } : undefined,
-    );
-  }
-}
-
-function errorDetail(value: unknown): string | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const error = value.error;
-
-  if (isRecord(error) && typeof error.message === "string") {
-    return error.message;
-  }
-
-  return typeof value.message === "string" ? value.message : undefined;
-}
-
-function normalizeError(error: unknown): PublishError {
-  if (error instanceof PublishError) {
-    return error;
-  }
-
-  if (!(error instanceof ThreadsRequestError)) {
+  if (status === 429) {
+    // An explicit 429 rejection is the only place a Retry-After hint is trusted.
+    const retryAfterAt = parseRetryAfter(retryAfter, { now });
     return new PublishError(
-      error instanceof Error ? error.message : "Unknown Threads publishing failure",
-      "UNKNOWN",
-      true,
-      error instanceof Error ? { cause: error } : undefined,
+      "Threads request failed (HTTP 429)",
+      "RATE_LIMIT",
+      false,
+      retryAfterAt === undefined ? undefined : { retryAfterAt },
     );
   }
 
-  if (error.status === 401 || error.status === 403) {
-    return new PublishError(error.message, "AUTH", false, { cause: error });
+  if (status === 400 || status === 413 || status === 422) {
+    return new PublishError("Threads request failed (HTTP 400, 413 or 422)", "INVALID_CONTENT");
   }
 
-  if (error.status === 429) {
-    return new PublishError(error.message, "RATE_LIMIT", false, { cause: error });
+  if (status >= 500) {
+    return new PublishError(
+      `Threads request failed (HTTP ${status})`,
+      "PROVIDER_UNAVAILABLE",
+      true,
+    );
   }
 
-  if (error.status === 400 || error.status === 413 || error.status === 422) {
-    return new PublishError(error.message, "INVALID_CONTENT", false, {
-      cause: error,
-    });
+  return new PublishError(`Threads request failed (HTTP ${status})`, "UNKNOWN", true);
+}
+
+function toPublishError(error: unknown): PublishError {
+  if (error instanceof TransportError) {
+    // `requestDispatched` is only the observable fetch-start fact; for this
+    // single-write protocol anything after that point stays ambiguous.
+    const ambiguous = error.requestDispatched;
+
+    if (error.code === "network" || error.code === "timeout" || error.code === "aborted") {
+      return new PublishError("Threads request was interrupted", "NETWORK", ambiguous);
+    }
+
+    if (error.code === "response_too_large") {
+      return new PublishError(
+        "Threads response exceeded size limit",
+        "UNKNOWN",
+        ambiguous,
+      );
+    }
+
+    return new PublishError("Threads request was not completed", "UNKNOWN", ambiguous);
   }
 
-  if (error.status >= 500) {
-    return new PublishError(error.message, "PROVIDER_UNAVAILABLE", true, {
-      cause: error,
-    });
+  // Nothing from the runtime or the provider is attached as a cause.
+  return new PublishError("Threads publishing failed", "UNKNOWN", true);
+}
+
+function parseJson(text: string): unknown {
+  if (text === "") {
+    return undefined;
   }
 
-  return new PublishError(error.message, "UNKNOWN", true, { cause: error });
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new PublishError("Threads returned invalid JSON", "UNKNOWN", true);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -250,14 +246,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Platform adapter
 // ---------------------------------------------------------------------------
 
-
 export const threadsAdapter: PlatformAdapter = {
   providerName: "threads-native",
 
-  buildPublisher: (cred) => {
-    if (!cred.access_token?.trim()) {
-      throw new PublishError("Threads credential is incomplete (access_token)", "AUTH");
-    }
-    return new ThreadsPublisher({ accessToken: cred.access_token });
-  },
+  buildPublisher: (cred) => buildThreadsPublisher(decodeThreadsCredential(cred)),
 };

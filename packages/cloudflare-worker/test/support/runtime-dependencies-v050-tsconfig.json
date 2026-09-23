@@ -1,0 +1,20 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/composition/runtime-dependencies.ts",
+    "../../src/composition/platform-strategies.ts",
+    "../../src/composition/platform-credential-decoders.ts",
+    "../../src/composition/oauth-drivers.ts",
+    "../../src/composition/oauth-protocol-support.ts",
+    "../../src/infrastructure/crypto/**/*.ts",
+    "./runtime-dependencies-v050-fixtures.ts",
+    "./runtime-dependencies-v050-worker.ts",
+    "../runtime-dependencies-v050.native.ts"
+  ]
+}

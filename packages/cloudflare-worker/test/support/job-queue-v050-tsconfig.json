@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/infrastructure/queue/**/*.ts",
+    "../job-queue-v050.spec.ts"
+  ]
+}

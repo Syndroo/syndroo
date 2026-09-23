@@ -7,19 +7,22 @@
  */
 
 import {
+  createErrorSink,
   SyndrooAbortError,
   SyndrooApiError,
   SyndrooConfigError,
   SyndrooError,
   SyndrooValidationError,
   SyndrooWaitTimeoutError,
+  type ErrorSink,
+  type SdkOperation,
 } from "./errors.js";
 import {
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
   MIN_MAX_RESPONSE_BYTES,
+  durationError,
   sendRequest,
-  unrefTimer,
   type TransportConfig,
 } from "./http.js";
 import {
@@ -35,6 +38,8 @@ import {
   type PostReceipt,
   type PostSummary,
 } from "./types.js";
+import { AuthResource } from "./auth.js";
+import { parseDiagnostics, type Diagnostics } from "./diagnostics.js";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 export const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -108,6 +113,7 @@ export interface WaitOptions extends RequestOptions {
  */
 export class SyndrooClient {
   readonly posts: PostsResource;
+  readonly auth: AuthResource;
   readonly #config: TransportConfig;
   readonly #waitTimeoutMs: number;
 
@@ -117,12 +123,13 @@ export class SyndrooClient {
     validatePositiveDuration(this.#waitTimeoutMs, "waitTimeoutMs");
 
     if (typeof globalThis.fetch !== "function") {
-      throw new SyndrooConfigError(
+      throw configError(
         "This runtime has no global fetch(). The SDK requires Node.js 22 or newer.",
       );
     }
 
     this.posts = new PostsResource(this.#config, this.#waitTimeoutMs);
+    this.auth = new AuthResource(this.#config);
   }
 
   /**
@@ -131,15 +138,54 @@ export class SyndrooClient {
    * API key is correct or that the deployment can publish.
    */
   async health(options: RequestOptions = {}): Promise<HealthStatus> {
-    const response = await sendRequest(this.#config, {
-      method: "GET",
-      path: "/health",
-      authenticated: false,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-    });
+    const operation: SdkOperation = "health";
+    const errors = createErrorSink();
+    validateRequestDuration(options.timeoutMs, "timeoutMs", operation, errors);
+    const response = await sendRequest(
+      this.#config,
+      {
+        method: "GET",
+        operation,
+        path: "/health",
+        authenticated: false,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      },
+      errors,
+    );
 
-    return parseHealth(response.body, { status: response.status });
+    return parseHealth(response.body, {
+      status: response.status,
+      operation,
+      errors,
+    });
+  }
+
+  /**
+   * `GET /v1/diagnostics`. Read-only: counts describe current rows, and an
+   * unknown storage size or limit is `null` rather than a guess.
+   */
+  async diagnostics(options: RequestOptions = {}): Promise<Diagnostics> {
+    const operation: SdkOperation = "diagnostics";
+    const errors = createErrorSink();
+    validateRequestDuration(options.timeoutMs, "timeoutMs", operation, errors);
+    const response = await sendRequest(
+      this.#config,
+      {
+        method: "GET",
+        operation,
+        path: "/v1/diagnostics",
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      },
+      errors,
+    );
+
+    return parseDiagnostics(response.body, {
+      status: response.status,
+      operation,
+      errors,
+    });
   }
 }
 
@@ -162,52 +208,99 @@ export class PostsResource {
     input: CreatePostInput,
     options: CreatePostOptions = {},
   ): Promise<PostReceipt> {
-    validateCreateInput(input);
+    const operation: SdkOperation = "posts.create";
+    const errors = createErrorSink();
+    validateRequestDuration(options.timeoutMs, "timeoutMs", operation, errors);
+    validateCreateInput(input, operation, errors);
     const idempotencyKey =
       options.idempotencyKey === undefined
         ? undefined
-        : validateIdempotencyKey(options.idempotencyKey);
-    const response = await sendRequest(this.#config, {
-      method: "POST",
-      path: "/v1/posts",
-      json: input,
-      idempotencyKey,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-    });
+        : validateIdempotencyKey(options.idempotencyKey, operation, errors);
+    const response = await sendRequest(
+      this.#config,
+      {
+        method: "POST",
+        operation,
+        path: "/v1/posts",
+        json: input,
+        idempotencyKey,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      },
+      errors,
+    );
 
     return parsePostReceipt(response.body, {
       status: response.status,
       requestMayHaveBeenApplied: true,
+      operation,
+      errors,
     });
   }
 
   /** `GET /v1/posts/<id>`. Read-only, so repeating it is safe. */
   async get(id: string, options: RequestOptions = {}): Promise<PostDetail> {
-    const postId = validatePostId(id);
-    const response = await sendRequest(this.#config, {
-      method: "GET",
-      path: `/v1/posts/${encodeURIComponent(postId)}`,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-    });
-
-    return parsePostDetail(response.body, { status: response.status });
+    return this.#readPost(id, "posts.get", options, createErrorSink());
   }
 
   /** `GET /v1/posts`, newest first. */
   async list(options: ListPostsOptions = {}): Promise<PostSummary[]> {
+    const operation: SdkOperation = "posts.list";
+    const errors = createErrorSink();
+    validateRequestDuration(options.timeoutMs, "timeoutMs", operation, errors);
     const limit =
-      options.limit === undefined ? undefined : validateLimit(options.limit);
-    const response = await sendRequest(this.#config, {
-      method: "GET",
-      path: "/v1/posts",
-      query: limit === undefined ? undefined : { limit: String(limit) },
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-    });
+      options.limit === undefined
+        ? undefined
+        : validateLimit(options.limit, operation, errors);
+    const response = await sendRequest(
+      this.#config,
+      {
+        method: "GET",
+        operation,
+        path: "/v1/posts",
+        query: limit === undefined ? undefined : { limit: String(limit) },
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      },
+      errors,
+    );
 
-    return parsePostList(response.body, { status: response.status });
+    return parsePostList(response.body, {
+      status: response.status,
+      operation,
+      errors,
+    });
+  }
+
+  /**
+   * One bounded post read, shared by `posts.get` and `posts.wait` so each
+   * reports its own operation without duplicating the request.
+   */
+  async #readPost(
+    id: string,
+    operation: SdkOperation,
+    options: RequestOptions,
+    errors: ErrorSink,
+  ): Promise<PostDetail> {
+    validateRequestDuration(options.timeoutMs, "timeoutMs", operation, errors);
+    const postId = validatePostId(id, operation, errors);
+    const response = await sendRequest(
+      this.#config,
+      {
+        method: "GET",
+        operation,
+        path: `/v1/posts/${encodeURIComponent(postId)}`,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      },
+      errors,
+    );
+
+    return parsePostDetail(response.body, {
+      status: response.status,
+      operation,
+      errors,
+    });
   }
 
   /**
@@ -221,15 +314,17 @@ export class PostsResource {
    * resume instead of starting over.
    */
   async wait(id: string, options: WaitOptions = {}): Promise<PostDetail> {
-    const postId = validatePostId(id);
+    const operation: SdkOperation = "posts.wait";
+    const errors = createErrorSink();
+    const postId = validatePostId(id, operation, errors);
     const timeoutMs = options.timeoutMs ?? this.#defaultWaitTimeoutMs;
     const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const maxPollIntervalMs =
       options.maxPollIntervalMs ?? DEFAULT_MAX_POLL_INTERVAL_MS;
 
-    validatePositiveDuration(timeoutMs, "timeoutMs");
-    validatePositiveDuration(pollIntervalMs, "pollIntervalMs");
-    validatePositiveDuration(maxPollIntervalMs, "maxPollIntervalMs");
+    validatePositiveDuration(timeoutMs, "timeoutMs", operation, errors);
+    validatePositiveDuration(pollIntervalMs, "pollIntervalMs", operation, errors);
+    validatePositiveDuration(maxPollIntervalMs, "maxPollIntervalMs", operation, errors);
 
     const deadline = Date.now() + timeoutMs;
     let interval = Math.min(pollIntervalMs, maxPollIntervalMs);
@@ -244,10 +339,15 @@ export class PostsResource {
       }
 
       try {
-        const post = await this.get(postId, {
-          signal: options.signal,
-          timeoutMs: Math.max(1, Math.min(remaining, this.#config.timeoutMs)),
-        });
+        const post = await this.#readPost(
+          postId,
+          operation,
+          {
+            signal: options.signal,
+            timeoutMs: Math.max(1, Math.min(remaining, this.#config.timeoutMs)),
+          },
+          errors,
+        );
         lastPost = post;
         lastError = undefined;
 
@@ -255,7 +355,7 @@ export class PostsResource {
           return post;
         }
       } catch (error) {
-        const failure = toSyndrooError(error);
+        const failure = toSyndrooError(error, errors);
 
         if (isFatalWaitFailure(failure)) {
           throw failure;
@@ -271,21 +371,40 @@ export class PostsResource {
       const pause = Math.min(interval, Math.max(0, deadline - Date.now()));
 
       if (pause > 0) {
-        await sleep(pause, options.signal);
+        await sleep(pause, options.signal, operation, errors);
       }
 
       interval = Math.min(interval * 2, maxPollIntervalMs);
     }
 
-    throw new SyndrooWaitTimeoutError(waitTimeoutMessage(postId, timeoutMs, lastPost, lastError), {
-      postId,
-      timeoutMs,
-      lastStatus: lastPost?.status,
-      lastPost,
-      lastError,
-    });
+    throw errors.mark(
+      new SyndrooWaitTimeoutError(
+        waitTimeoutMessage(postId, timeoutMs, lastPost, lastError),
+        {
+          postId,
+          timeoutMs,
+          operation,
+          lastStatus: lastPost?.status,
+          lastPost,
+          lastError,
+        },
+      ),
+    );
   }
 }
+
+/**
+ * The post statuses this SDK documents. A forward-compatible status the server
+ * sends later is reported as unrecognized instead of being echoed.
+ */
+const KNOWN_POST_STATUSES: ReadonlySet<string> = new Set([
+  "scheduled",
+  "queued",
+  "publishing",
+  "published",
+  "partial",
+  "failed",
+]);
 
 function waitTimeoutMessage(
   postId: string,
@@ -296,7 +415,7 @@ function waitTimeoutMessage(
   const observed =
     lastPost === undefined
       ? "no status was observed"
-      : `the last observed status was "${lastPost.status}"`;
+      : `the last observed status was ${describePostStatus(lastPost.status)}`;
   const failure =
     lastError === undefined ? "" : ` The last status read failed with: ${lastError.message}`;
 
@@ -306,6 +425,12 @@ function waitTimeoutMessage(
     "work continues; resume with posts.get or a longer posts.wait." +
     failure
   );
+}
+
+function describePostStatus(status: string): string {
+  return KNOWN_POST_STATUSES.has(status)
+    ? `"${status}"`
+    : "not one this SDK recognizes";
 }
 
 /**
@@ -329,15 +454,19 @@ function isFatalWaitFailure(error: SyndrooError): boolean {
   return false;
 }
 
-function toSyndrooError(error: unknown): SyndrooError {
-  if (error instanceof SyndrooError) {
+/**
+ * Only the SDK's own errors are safe to keep. Anything else is dropped whole:
+ * a raw failure can carry a URL, a provider message, or an abort reason.
+ */
+function toSyndrooError(error: unknown, errors: ErrorSink): SyndrooError {
+  if (errors.has(error)) {
     return error;
   }
 
-  return new SyndrooError(
-    error instanceof Error ? error.message : "Unknown failure",
-    { code: "UNKNOWN", cause: error },
-  );
+  return new SyndrooError("The status read failed with an unexpected error.", {
+    code: "UNKNOWN",
+    operation: "posts.wait",
+  });
 }
 
 function resolveConfig(options: SyndrooClientOptions): TransportConfig {
@@ -355,7 +484,7 @@ function resolveConfig(options: SyndrooClientOptions): TransportConfig {
     !Number.isInteger(maxResponseBytes) ||
     maxResponseBytes < MIN_MAX_RESPONSE_BYTES
   ) {
-    throw new SyndrooConfigError(
+    throw configError(
       `maxResponseBytes must be an integer of at least ${MIN_MAX_RESPONSE_BYTES} bytes.`,
     );
   }
@@ -365,7 +494,7 @@ function resolveConfig(options: SyndrooClientOptions): TransportConfig {
 
 function normalizeBaseUrl(value: string, allowInsecureHttp: boolean): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new SyndrooConfigError(
+    throw configError(
       "baseUrl is required, for example https://syndroo.example.com.",
     );
   }
@@ -375,25 +504,23 @@ function normalizeBaseUrl(value: string, allowInsecureHttp: boolean): string {
   try {
     url = new URL(value.trim());
   } catch {
-    throw new SyndrooConfigError(
-      `baseUrl must be an absolute URL, received "${value.trim()}".`,
+    throw configError(
+      "baseUrl must be an absolute URL, for example https://syndroo.example.com.",
     );
   }
 
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new SyndrooConfigError(
-      `baseUrl must use http or https, received "${url.protocol}".`,
-    );
+    throw configError("baseUrl must use http or https.");
   }
 
   if (url.username !== "" || url.password !== "") {
-    throw new SyndrooConfigError(
+    throw configError(
       "baseUrl must not embed credentials; pass the API key as apiKey so it is sent only as a Bearer header.",
     );
   }
 
   if (url.search !== "" || url.hash !== "") {
-    throw new SyndrooConfigError(
+    throw configError(
       "baseUrl must not include a query string or fragment.",
     );
   }
@@ -403,7 +530,7 @@ function normalizeBaseUrl(value: string, allowInsecureHttp: boolean): string {
     !allowInsecureHttp &&
     !isLoopbackHost(url.hostname)
   ) {
-    throw new SyndrooConfigError(
+    throw configError(
       "baseUrl must use https outside loopback: a bearer token sent over plaintext " +
         "is readable on the path. Pass allowInsecureHttp: true only for a " +
         "deliberate plaintext deployment.",
@@ -428,50 +555,110 @@ function isLoopbackHost(hostname: string): boolean {
 
 function validateApiKey(value: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new SyndrooConfigError(
+    throw configError(
       "apiKey is required. Keep it in a server, CLI, or CI credential store, " +
         "never in client-side code or a NEXT_PUBLIC_* variable.",
     );
   }
 
-  if (/\s/u.test(value)) {
-    throw new SyndrooConfigError(
-      "apiKey must not contain whitespace or line breaks.",
+  if (/[\s\u0000-\u001f\u007f]/u.test(value)) {
+    throw configError(
+      "apiKey must not contain whitespace, line breaks, or control characters: " +
+        "an Authorization header value cannot carry them.",
     );
   }
 
   return value;
 }
 
-function validatePositiveDuration(value: number, label: string): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new SyndrooConfigError(
-      `${label} must be a positive, finite number of milliseconds.`,
-    );
+/**
+ * Errors built by one SDK call are registered in that call's own sink, so a
+ * hostile fetch, body, or abort signal cannot smuggle an error of the same
+ * class — or a mutated error from an earlier call — past the boundary.
+ */
+function configError(
+  message: string,
+  init: {
+    operation?: SdkOperation | undefined;
+    errors?: ErrorSink | undefined;
+  } = {},
+): SyndrooConfigError {
+  const error = new SyndrooConfigError(message, { operation: init.operation });
+
+  return init.errors === undefined ? error : init.errors.mark(error);
+}
+
+function validationError(
+  message: string,
+  init: { operation: SdkOperation; errors?: ErrorSink | undefined },
+): SyndrooValidationError {
+  const error = new SyndrooValidationError(message, {
+    operation: init.operation,
+  });
+
+  return init.errors === undefined ? error : init.errors.mark(error);
+}
+
+function validatePositiveDuration(
+  value: number,
+  label: string,
+  operation?: SdkOperation,
+  errors?: ErrorSink,
+): void {
+  const message = durationError(value, label);
+
+  if (message !== undefined) {
+    throw configError(message, { operation, errors });
   }
 }
 
-function validateCreateInput(input: CreatePostInput): void {
+/**
+ * A per-call deadline is caller input, so it is rejected before any request or
+ * timer exists. The bound itself lives in `http.ts`, so the transport and the
+ * client cannot disagree about what Node's timers accept.
+ */
+function validateRequestDuration(
+  value: number | undefined,
+  label: string,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): void {
+  if (value !== undefined) {
+    validatePositiveDuration(value, label, operation, errors);
+  }
+}
+
+function validateCreateInput(
+  input: CreatePostInput,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): void {
   if (input === null || typeof input !== "object") {
-    throw new SyndrooValidationError(
+    throw validationError(
       "A post requires a content string and a list of platforms.",
+      { operation, errors },
     );
   }
 
   if (typeof input.content !== "string" || input.content.trim().length === 0) {
-    throw new SyndrooValidationError("content must be a non-empty string.");
+    throw validationError("content must be a non-empty string.", {
+      operation,
+      errors,
+    });
   }
 
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
-    throw new SyndrooValidationError(
+    throw validationError(
       "platforms must be a non-empty array of platform names.",
+      { operation, errors },
     );
   }
 
   input.platforms.forEach((platform, index) => {
     if (typeof platform !== "string" || platform.trim().length === 0) {
-      throw new SyndrooValidationError(
+      throw validationError(
         `platforms[${index}] must be a non-empty string.`,
+        { operation, errors },
       );
     }
   });
@@ -481,9 +668,10 @@ function validateCreateInput(input: CreatePostInput): void {
       typeof input.scheduledAt !== "string" ||
       Number.isNaN(Date.parse(input.scheduledAt))
     ) {
-      throw new SyndrooValidationError(
+      throw validationError(
         "scheduledAt must be an ISO 8601 date-time string with an explicit " +
           "offset, for example 2030-01-02T03:04:05.000Z.",
+        { operation, errors },
       );
     }
   }
@@ -492,63 +680,89 @@ function validateCreateInput(input: CreatePostInput): void {
 
   if (overrides !== undefined) {
     if (overrides === null || typeof overrides !== "object") {
-      throw new SyndrooValidationError(
+      throw validationError(
         "overrides must be an object keyed by platform name.",
+        { operation, errors },
       );
     }
 
-    for (const [platform, override] of Object.entries(overrides)) {
+    for (const override of Object.values(overrides)) {
       if (override === null || typeof override !== "object") {
-        throw new SyndrooValidationError(
-          `overrides.${platform} must be an object with an optional content string.`,
+        throw validationError(
+          "each overrides entry must be an object with an optional content string.",
+          { operation, errors },
         );
       }
 
       const content: unknown = override.content;
 
       if (content !== undefined && typeof content !== "string") {
-        throw new SyndrooValidationError(
-          `overrides.${platform}.content must be a string.`,
+        throw validationError(
+          "an overrides content must be a string.",
+          { operation, errors },
         );
       }
     }
   }
 }
 
-function validateIdempotencyKey(value: string): string {
+function validateIdempotencyKey(
+  value: string,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): string {
   if (typeof value !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(value)) {
-    throw new SyndrooValidationError(
+    throw validationError(
       "idempotencyKey must use 1-128 letters, digits, dots, underscores, colons, " +
         "or hyphens, and must be reused for the same logical post.",
+      { operation, errors },
     );
   }
 
   return value;
 }
 
-function validatePostId(value: string): string {
+function validatePostId(
+  value: string,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): string {
   if (typeof value !== "string" || value.length === 0) {
-    throw new SyndrooValidationError("A post id is required.");
+    throw validationError("A post id is required.", { operation, errors });
   }
 
   return value;
 }
 
-function validateLimit(value: number): number {
+function validateLimit(
+  value: number,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): number {
   if (!Number.isInteger(value) || value < 1 || value > 100) {
-    throw new SyndrooValidationError("limit must be an integer between 1 and 100.");
+    throw validationError(
+      "limit must be an integer between 1 and 100.",
+      { operation, errors },
+    );
   }
 
   return value;
 }
 
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+function sleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  operation: SdkOperation,
+  errors: ErrorSink,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(
-        new SyndrooAbortError(
-          "Waiting was aborted before the next status read. Nothing was created or cancelled.",
-          { cause: signal.reason },
+        errors.mark(
+          new SyndrooAbortError(
+            "Waiting was aborted before the next status read. Nothing was created or cancelled.",
+            { operation },
+          ),
         ),
       );
       return;
@@ -561,9 +775,11 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
     const onAbort = (): void => {
       finish();
       reject(
-        new SyndrooAbortError(
-          "Waiting was aborted. Nothing was created or cancelled; the post continues on the server.",
-          { cause: signal?.reason },
+        errors.mark(
+          new SyndrooAbortError(
+            "Waiting was aborted. Nothing was created or cancelled; the post continues on the server.",
+            { operation },
+          ),
         ),
       );
     };
@@ -573,7 +789,6 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
     }
 
-    unrefTimer(handle);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

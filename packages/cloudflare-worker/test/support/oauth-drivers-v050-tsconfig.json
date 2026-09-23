@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["@cloudflare/vitest-plugin/types", "@cloudflare/workers-types"],
+    "noEmit": true
+  },
+  "include": [
+    "../../src/composition/oauth-drivers.ts",
+    "../../src/composition/oauth-protocol-support.ts",
+    "./oauth-drivers-v050-worker.ts",
+    "./oauth-drivers-v050-fixtures.ts",
+    "../oauth-drivers-v050.native.ts",
+    "../oauth-drivers-v050.vitest.config.ts"
+  ]
+}

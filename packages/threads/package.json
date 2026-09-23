@@ -10,7 +10,8 @@
     }
   },
   "dependencies": {
-    "@syndroo/core": "0.1.0"
+    "@syndroo/core": "0.1.0",
+    "@syndroo/transport": "0.1.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
