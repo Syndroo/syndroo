@@ -261,3 +261,10 @@ export const threadsAdapter: PlatformAdapter = {
     return new ThreadsPublisher({ accessToken: cred.access_token });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Local (CLI-first) provider
+// ---------------------------------------------------------------------------
+
+export { ThreadsLocalProvider } from "./local.js";
+export type { ThreadsLocalProviderOptions } from "./local.js";

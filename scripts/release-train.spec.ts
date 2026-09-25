@@ -207,7 +207,12 @@ async function setRegistryState(
 }
 
 function runChecker(fixture: Fixture, options: RunOptions = {}): CheckerRun {
+  // The ambient release set is only what the caller supplied: a CI job that
+  // exports SYNDROO_RELEASE_SET must not silently turn the legacy `all` fixtures
+  // into CLI-set runs. Every fixture therefore starts from an explicit default
+  // and overrides it per test.
   const env: Record<string, string> = {
+    SYNDROO_RELEASE_SET: "all",
     PATH: process.env["PATH"] ?? "",
     ...options.env,
   };
@@ -319,6 +324,7 @@ describe("release train manifest validation", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
+      release_set: "all",
       version: "0.4.0-rc.1",
       stage: "rc",
       dist_tag: "next",
@@ -597,6 +603,7 @@ describe("registry planning", () => {
     assert.equal(result.json["publishRequired"], false);
     assert.match(String(result.json["nextStep"]), /nothing to publish/);
     assert.deepEqual(await readOutputs(fixture), {
+      release_set: "all",
       version: "0.4.0",
       stage: "final",
       dist_tag: "latest",
@@ -830,3 +837,80 @@ describe("partial publish recovery", () => {
     assert.equal(outputs["publish_worker"], "true");
   });
 });
+
+/**
+ * The 0.6 candidate publishes the CLI alone and self-contained. The `all` set
+ * above keeps its historical rules; these tests cover the narrowed set, where
+ * the SDK pin is replaced by a stricter rule: no workspace runtime dependency.
+ */
+describe("cli-only release set", () => {
+  it("accepts a self-contained CLI candidate at an independent version", async () => {
+    const fixture = await createFixture("cli-set-candidate", {
+      version: "0.6.0-rc.1",
+    });
+
+    await dropCliRuntimeDependencies(fixture);
+
+    const result = runChecker(fixture, {
+      env: { SYNDROO_RELEASE_SET: "cli" },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(statuses(result), { cli: "publish" });
+
+    const outputs = await readOutputs(fixture);
+
+    assert.equal(outputs["release_set"], "cli");
+    assert.equal(outputs["version"], "0.6.0-rc.1");
+    assert.equal(outputs["dist_tag"], "next");
+    assert.equal(outputs["cli_status"], "publish");
+    assert.equal(outputs["publish_cli"], "true");
+    // The SDK and Worker are out of the set, so they are not planned at all.
+    assert.equal(outputs["sdk_status"], undefined);
+    assert.equal(outputs["worker_status"], undefined);
+  });
+
+  it("rejects a CLI that keeps a workspace runtime dependency", async () => {
+    const fixture = await createFixture("cli-set-coupled", {
+      version: "0.6.0-rc.1",
+    });
+
+    const result = runChecker(fixture, {
+      env: { SYNDROO_RELEASE_SET: "cli" },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must be self-contained/u);
+    assert.match(result.stderr, /@syndroo\/sdk/u);
+  });
+
+  it("still rejects an unknown release set instead of falling back", async () => {
+    const fixture = await createFixture("cli-set-unknown", {
+      version: "0.6.0-rc.1",
+    });
+
+    const result = runChecker(fixture, {
+      env: { SYNDROO_RELEASE_SET: "cli-and-worker" },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /SYNDROO_RELEASE_SET must be "all" or "cli"/u);
+  });
+});
+
+/** Removes the SDK pin so the fixture models a bundled, self-contained CLI. */
+async function dropCliRuntimeDependencies(fixture: Fixture): Promise<void> {
+  const manifestPath = join(fixture.dir, "packages", "cli", "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+
+  delete manifest["dependencies"];
+
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+}

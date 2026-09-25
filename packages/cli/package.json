@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cli",
-  "version": "0.4.0-rc.1",
+  "version": "0.6.0-rc.1",
   "type": "module",
   "description": "The `syndroo` command: validate, create, and track Syndroo posts from a terminal, script, or CI job.",
   "license": "Apache-2.0",
@@ -39,10 +39,18 @@
     "access": "public"
   },
   "dependencies": {
-    "@syndroo/sdk": "0.4.0-rc.1"
+    "@types/node": "^26.4.0"
+  },
+  "devDependencies": {
+    "@syndroo/bluesky": "0.1.0",
+    "@syndroo/core": "0.1.0",
+    "@syndroo/sdk": "0.4.0-rc.1",
+    "@syndroo/threads": "0.1.0",
+    "esbuild": "0.28.1",
+    "jsonc-parser": "^3.3.1"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x ./dist/bin.js",
+    "build": "npm run build:scripts --prefix ../.. && node ../../.build/scripts/bundle-cli.js",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "npm run build && vitest run",
     "prepack": "npm run build"

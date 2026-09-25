@@ -4,7 +4,9 @@ Open-source publishing infrastructure for the social web.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Syndroo/syndroo)
 
-Syndroo `0.2.0-rc.1` is a release candidate, not a published release. It is a small npm-workspaces monorepo that accepts immediate or scheduled posts, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers.
+The `syndroo` CLI is the primary product path in the `0.6.0-rc.1` candidate: it publishes plain text to Bluesky and Threads from your own machine, with no server, queue, or database. Nothing is sent until you preview a frozen plan and then execute that same plan. Start with the [CLI manual](docs/cli-manual.md), or the [agent quickstart](docs/agent-quickstart.md) if an agent drives the command.
+
+The Cloudflare Worker path is retained and unchanged: it accepts immediate or scheduled posts over HTTP, stores one publication per selected platform in Cloudflare D1, dispatches publication jobs through Cloudflare Queues, and scans scheduled work with Cron Triggers. Syndroo `0.2.0-rc.1` remains the Worker candidate, and it is a release candidate rather than a published release.
 
 Threads, Bluesky, X, Tumblr, and LinkedIn adapters are installed in the v0.2 candidate. The public platform and publishing contracts live in `@syndroo/core`; adding another platform means adding one adapter package and wiring one explicit switch in the Worker. Requests for uninstalled or unconfigured platforms return `PLATFORM_NOT_CONFIGURED` instead of silently doing nothing. See the [SDK development roadmap](docs/platform-roadmap.md) for upcoming adapters.
 
@@ -24,9 +26,11 @@ This `0.2.0-rc.1` candidate has not been published to npm or tagged, and it has
 not been accepted as a release. See [docs/testing.md](docs/testing.md) for gate coverage and
 [docs/v0.2.0-todo.md](docs/v0.2.0-todo.md) for the outstanding release gates.
 
-## Using v0.2.0-rc.1 (candidate)
+## Using the Worker candidate (retained remote path)
 
-The v0.2 candidate is an HTTP API service. It does not include a web dashboard. Deploy it, then call the Worker URL from `curl`, an automation tool, or your own application.
+The v0.2 Worker candidate is an HTTP API service, and it is the remote surface the CLI still speaks to with `syndroo doctor` and `syndroo posts ...`. It does not include a web dashboard. Deploy it, then call the Worker URL from `curl`, an automation tool, or your own application.
+
+The local CLI path never falls back to this surface: a local failure is not a reason to switch, and the remote commands never read local state.
 
 ### 1. Deploy
 
@@ -604,16 +608,24 @@ Three packages are public:
 | `@syndroo/cli` | The `syndroo` command, which ships the bundled Agent Skill |
 | `@syndroo/cloudflare-worker` | The deployable Worker, bundling core and every platform adapter |
 
-The core and adapter workspaces stay private: they are bundled into the Worker
-artifact and are not separate public APIs. The CLI depends on the exact SDK
-version it ships with, so the three packages are published as one train in the
-order SDK, CLI, Worker.
+The core and adapter workspaces stay private: they are bundled into the CLI and
+Worker artifacts and are not separate public APIs.
 
-`@syndroo/sdk` and `@syndroo/cli` are new `0.4.0-rc.1` candidates for the
-v0.4.0 train. Neither is published yet, and the Worker is still `0.2.0-rc.1`, so
-the three packages do not currently share a single version. `npm run
-release:train` reports exactly that mismatch and refuses to describe the
-checkout as a releasable train until it is resolved.
+`@syndroo/cli` is the `0.6.0-rc.1` CLI-first candidate: local publishing plus
+the bundled Agent Skill, with the retained remote commands alongside it. It
+ships self-contained, so it carries no runtime dependency on any workspace
+package, and it is validated as its own release set:
+
+```bash
+SYNDROO_RELEASE_SET=cli npm run release:train
+```
+
+The default set is still `all`, the historical three-package train (SDK, CLI,
+Worker) that requires one uniform version and a CLI pinned to the exact SDK it
+was built against. That gate remains meaningful, and it currently reports the
+real mismatch: `@syndroo/sdk` is a `0.4.0-rc.1` candidate, the Worker is
+`0.2.0-rc.1`, and nothing is published yet. Selecting `cli` narrows which
+packages a run is responsible for; it does not relax a rule.
 
 The long-term deployment entry point is the separate
 `Syndroo/syndroo-deploy-template` repository. That repository stays small: it
@@ -669,7 +681,9 @@ npm run e2e:live -- --plan /absolute/path/to/approved-live-plan.json
                                   # L3: the only entry that may touch a real
                                   # instance; validates unless --execute is given
 npm run verify:package            # packed Worker artifact, licenses, isolated install
-npm run release:train             # the three-package release train
+npm run release:train             # the default `all` three-package train
+SYNDROO_RELEASE_SET=cli \
+  npm run release:train           # the self-contained CLI candidate alone
 ```
 
 `e2e:local` and `npm test` never contact a real platform or registry.

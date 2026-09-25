@@ -91,6 +91,46 @@ export const REGISTRY_URL = "https://registry.npmjs.org";
 export const REQUIRED_LICENSE = "Apache-2.0";
 export const REQUIRED_NODE_ENGINE = ">=22";
 
+/**
+ * Which packages this run is allowed to publish.
+ *
+ * `all` is the historical train: one uniform version, and a CLI that installs
+ * the exact SDK it was built against. `cli` is the 0.6 candidate: the CLI ships
+ * self-contained, so it is validated on its own and must carry no runtime
+ * dependency on any workspace package. Selecting `all` never stops being a
+ * meaningful check; `cli` narrows the set instead of relaxing a rule.
+ */
+export type ReleaseSet = "all" | "cli";
+
+export const DEFAULT_RELEASE_SET: ReleaseSet = "all";
+
+export function parseReleaseSet(env: NodeJS.ProcessEnv): ReleaseSet {
+  const raw = optionalValue(env["SYNDROO_RELEASE_SET"]);
+
+  if (raw === undefined || raw === "all") {
+    return "all";
+  }
+
+  if (raw === "cli") {
+    return "cli";
+  }
+
+  throw new Error(
+    `SYNDROO_RELEASE_SET must be "all" or "cli", received ${JSON.stringify(raw)}.`,
+  );
+}
+
+/** The packages a release set is responsible for. */
+export function releaseSetPackages(
+  releaseSet: ReleaseSet,
+): readonly TrainPackage[] {
+  if (releaseSet === "all") {
+    return RELEASE_TRAIN;
+  }
+
+  return RELEASE_TRAIN.filter((definition) => definition.name === "@syndroo/cli");
+}
+
 export type PackageStatus = "publish" | "already-published" | "blocked";
 
 export type PackagePlan = {
@@ -134,6 +174,7 @@ export type RegistryProbe =
 
 export type TrainResult = {
   readonly ok: boolean;
+  readonly releaseSet: ReleaseSet;
   readonly stage: string | null;
   readonly version: string | null;
   readonly distTag: DistTag | null;
@@ -157,8 +198,19 @@ async function main(): Promise<void> {
   const arguments_ = parseArguments(process.argv.slice(2));
   const root = resolveRepositoryRoot(process.cwd());
   const manifests: Manifest[] = [];
+  let releaseSet: ReleaseSet;
 
-  for (const definition of RELEASE_TRAIN) {
+  try {
+    releaseSet = parseReleaseSet(process.env);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+    finish(failed(DEFAULT_RELEASE_SET));
+    return;
+  }
+
+  const selected = releaseSetPackages(releaseSet);
+
+  for (const definition of selected) {
     const path = resolve(root, definition.directory, "package.json");
     let parsed: Manifest;
 
@@ -168,12 +220,12 @@ async function main(): Promise<void> {
       // A missing or unreadable manifest makes every later comparison
       // meaningless, so it ends the run with that one clear reason.
       fail(`${definition.name}: ${error instanceof Error ? error.message : String(error)}`);
-      finish(failed());
+      finish(failed(releaseSet));
       return;
     }
 
     manifests.push(parsed);
-    checkManifest(definition, parsed, manifests);
+    checkManifest(definition, parsed, manifests, releaseSet);
   }
 
   const declared = manifests[0]?.version;
@@ -195,32 +247,38 @@ async function main(): Promise<void> {
   }
 
   if (failures.length > 0 || channel === undefined || declared === undefined) {
-    finish(failed());
+    finish(failed(releaseSet));
     return;
   }
 
   const registryChecked = process.env["SYNDROO_CHECK_REGISTRY"] === "true";
   const packages = registryChecked
-    ? await planWithRegistry(declared, channel.distTag, channel.prerelease)
-    : planWithoutRegistry(declared, channel.distTag);
+    ? await planWithRegistry(
+        declared,
+        channel.distTag,
+        channel.prerelease,
+        selected,
+      )
+    : planWithoutRegistry(declared, channel.distTag, selected);
 
   const publishRequired = packages.some((entry) => entry.status === "publish");
   const ok = failures.length === 0;
 
   if (ok) {
     writeGithubOutput([
+      ["release_set", releaseSet],
       ["version", declared],
       ["stage", releaseStage(channel)],
       ["dist_tag", channel.distTag],
       ["publish_required", String(publishRequired)],
-      ...RELEASE_TRAIN.map(
+      ...selected.map(
         (definition) =>
           [
             `${definition.slug}_status`,
             statusOf(packages, definition.name),
           ] as const,
       ),
-      ...RELEASE_TRAIN.map(
+      ...selected.map(
         (definition) =>
           [
             `publish_${definition.slug}`,
@@ -232,6 +290,7 @@ async function main(): Promise<void> {
 
   finish({
     ok,
+    releaseSet,
     stage: releaseStage(channel),
     version: declared,
     distTag: channel.distTag,
@@ -264,7 +323,7 @@ function nextStep(result: TrainResult): { readonly nextStep: string } {
 
   if (pending.length === 0) {
     return {
-      nextStep: `All three packages already exist at ${String(result.version)}; nothing to publish.`,
+      nextStep: `All ${String(result.packages.length)} package(s) in the ${result.releaseSet} release set already exist at ${String(result.version)}; nothing to publish.`,
     };
   }
 
@@ -293,9 +352,10 @@ function finish(result: TrainResult): void {
 }
 
 /** A run that stopped before it could resolve the train. */
-function failed(): TrainResult {
+function failed(releaseSet: ReleaseSet): TrainResult {
   return {
     ok: false,
+    releaseSet,
     stage: null,
     version: null,
     distTag: null,
@@ -310,6 +370,7 @@ function checkManifest(
   definition: TrainPackage,
   manifest: Manifest,
   collected: readonly Manifest[],
+  releaseSet: ReleaseSet,
 ): void {
   if (manifest.name !== definition.name) {
     fail(
@@ -399,7 +460,20 @@ function checkManifest(
     }
   }
 
-  if (definition.dependsOn !== undefined) {
+  // A self-contained release set publishes the CLI alone, so the CLI must carry
+  // no runtime dependency on a workspace package at all. The historical train
+  // keeps its exact-version pin.
+  if (releaseSet === "cli") {
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (name.startsWith("@syndroo/")) {
+        fail(
+          `${definition.name} must be self-contained; it must not depend on ${name} at runtime.`,
+        );
+      }
+    }
+  }
+
+  if (definition.dependsOn !== undefined && releaseSet === "all") {
     const range = manifest.dependencies?.[definition.dependsOn];
 
     if (range !== manifest.version) {
@@ -483,8 +557,9 @@ function checkDistTagExpectation(
 function planWithoutRegistry(
   version: string,
   distTag: DistTag,
+  selected: readonly TrainPackage[],
 ): readonly PackagePlan[] {
-  return RELEASE_TRAIN.map((definition) => ({
+  return selected.map((definition) => ({
     name: definition.name,
     slug: definition.slug,
     version,
@@ -498,12 +573,13 @@ async function planWithRegistry(
   version: string,
   distTag: DistTag,
   prerelease: boolean,
+  selected: readonly TrainPackage[],
 ): Promise<readonly PackagePlan[]> {
   const packages: PackagePlan[] = [];
   const published: string[] = [];
   let blocked = false;
 
-  for (const definition of RELEASE_TRAIN) {
+  for (const definition of selected) {
     if (blocked) {
       packages.push({
         name: definition.name,
@@ -814,6 +890,6 @@ if (
     await main();
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
-    finish(failed());
+    finish(failed(DEFAULT_RELEASE_SET));
   }
 }

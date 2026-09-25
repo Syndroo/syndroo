@@ -52,6 +52,25 @@ const BASE_MANIFEST: Readonly<Record<string, unknown>> = {
   },
 };
 
+/**
+ * The 0.6 candidate publishes the CLI alone, at a version the Worker does not
+ * share. The legacy Worker layout above stays the default.
+ */
+const CLI_DIRECTORY = "packages/cli";
+const CLI_LAYOUT = {
+  directory: CLI_DIRECTORY,
+  base: {
+    name: "@syndroo/cli",
+    version: "0.6.0-rc.1",
+    license: "Apache-2.0",
+    repository: {
+      type: "git",
+      url: REPOSITORY_URL,
+      directory: CLI_DIRECTORY,
+    },
+  },
+} as const;
+
 type Fixture = {
   readonly dir: string;
   readonly outputPath: string;
@@ -74,17 +93,25 @@ type RunOptions = {
 async function createFixture(
   name: string,
   manifestOverrides: Readonly<Record<string, unknown>> = {},
+  layout: {
+    readonly directory?: string;
+    readonly base?: Readonly<Record<string, unknown>>;
+  } = {},
 ): Promise<Fixture> {
   const dir = join(FIXTURE_ROOT, name);
   const outputPath = join(dir, "github-output.txt");
   const preloadPath = join(dir, "fake-registry.mjs");
   const logPath = join(dir, "registry-requests.log");
-  const packageDir = join(dir, PACKAGE_DIRECTORY);
+  const packageDir = join(dir, layout.directory ?? PACKAGE_DIRECTORY);
 
   await mkdir(packageDir, { recursive: true });
   await writeFile(
     join(packageDir, "package.json"),
-    `${JSON.stringify({ ...BASE_MANIFEST, ...manifestOverrides }, null, 2)}\n`,
+    `${JSON.stringify(
+      { ...(layout.base ?? BASE_MANIFEST), ...manifestOverrides },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
   await writeFile(preloadPath, FAKE_REGISTRY_MODULE, "utf8");
@@ -93,7 +120,10 @@ async function createFixture(
 }
 
 function runChecker(fixture: Fixture, options: RunOptions = {}): CheckerRun {
+  // Pinned rather than inherited: a CI job that exports SYNDROO_RELEASE_SET=cli
+  // must not silently retarget the legacy Worker fixtures at the CLI package.
   const env: Record<string, string> = {
+    SYNDROO_RELEASE_SET: "all",
     PATH: process.env["PATH"] ?? "",
     ...options.env,
   };
@@ -195,6 +225,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
+      package: "@syndroo/cloudflare-worker",
       version: "0.2.0",
       published: "false",
       dist_tag: "latest",
@@ -214,6 +245,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
+      package: "@syndroo/cloudflare-worker",
       version: "0.2.0-rc.1",
       published: "false",
       dist_tag: "next",
@@ -244,6 +276,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
+      package: "@syndroo/cloudflare-worker",
       version: "0.2.0",
       published: "false",
       dist_tag: "latest",
@@ -511,6 +544,7 @@ describe("malformed versions", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(Object.keys(await readOutputs(fixture)).sort(), [
       "dist_tag",
+      "package",
       "published",
       "version",
     ]);
@@ -556,6 +590,7 @@ describe("registry check", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
+      package: "@syndroo/cloudflare-worker",
       version: "0.2.0-rc.1",
       published: "true",
       dist_tag: "next",
@@ -583,6 +618,78 @@ describe("registry check", () => {
     });
 
     assertFailed(result, /npm registry check failed: simulated registry network failure/);
+    assert.equal(existsSync(fixture.outputPath), false);
+  });
+});
+
+/**
+ * The CLI-only release set. Before this existed the checker always read the
+ * Worker manifest, so a `v0.6.0-rc.1` event validated version 0.2.0 and failed
+ * the release for the wrong package.
+ */
+describe("cli release set", () => {
+  it("validates the CLI manifest for a matching candidate tag", async () => {
+    const fixture = await createFixture("cli-candidate", {}, CLI_LAYOUT);
+    const result = runChecker(fixture, {
+      env: {
+        SYNDROO_RELEASE_SET: "cli",
+        GITHUB_EVENT_NAME: "release",
+        SYNDROO_RELEASE_TAG: "v0.6.0-rc.1",
+        SYNDROO_RELEASE_PRERELEASE: "true",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readOutputs(fixture), {
+      package: "@syndroo/cli",
+      version: "0.6.0-rc.1",
+      published: "false",
+      dist_tag: "next",
+    });
+    assert.equal(JSON.parse(result.stdout).package, "@syndroo/cli");
+    assert.equal(JSON.parse(result.stdout).releaseSet, "cli");
+  });
+
+  it("rejects a Worker release tag while validating the CLI", async () => {
+    const fixture = await createFixture("cli-wrong-tag", {}, CLI_LAYOUT);
+    const result = runChecker(fixture, {
+      env: {
+        SYNDROO_RELEASE_SET: "cli",
+        GITHUB_EVENT_NAME: "release",
+        SYNDROO_RELEASE_TAG: "v0.2.0-rc.1",
+        SYNDROO_RELEASE_PRERELEASE: "true",
+      },
+    });
+
+    assertFailed(result, /does not match package version/);
+    assert.equal(existsSync(fixture.outputPath), false);
+  });
+
+  it("keeps the Worker as the default target when no set is selected", async () => {
+    const fixture = await createFixture("cli-default-worker");
+    const result = runChecker(fixture, {
+      env: {
+        GITHUB_EVENT_NAME: "release",
+        SYNDROO_RELEASE_TAG: "v0.2.0",
+        SYNDROO_RELEASE_PRERELEASE: "false",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      JSON.parse(result.stdout).package,
+      "@syndroo/cloudflare-worker",
+    );
+    assert.equal(JSON.parse(result.stdout).releaseSet, "all");
+  });
+
+  it("fails closed on an unknown release set", async () => {
+    const fixture = await createFixture("cli-unknown-set", {}, CLI_LAYOUT);
+    const result = runChecker(fixture, {
+      env: { SYNDROO_RELEASE_SET: "sdk" },
+    });
+
+    assertFailed(result, /SYNDROO_RELEASE_SET must be "all" or "cli"/);
     assert.equal(existsSync(fixture.outputPath), false);
   });
 });

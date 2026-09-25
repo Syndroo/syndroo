@@ -395,6 +395,9 @@ describe("help and version", () => {
 
     expect(result.code).toBe(0);
     expect(payload["name"]).toBe("@syndroo/cli");
-    expect(payload["version"]).toBe("0.4.0-rc.1");
+    // The literal is deliberate: `syndroo version` must report the candidate
+    // version from the manifest, so a version bump has to be an explicit edit
+    // here rather than passing automatically.
+    expect(payload["version"]).toBe("0.6.0-rc.1");
   });
 });

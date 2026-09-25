@@ -19,11 +19,20 @@ packages/threads           Native text-only Threads publisher
 packages/x                 Official X SDK text-only publisher
 packages/tumblr            Native HTTP NPF text publisher
 packages/linkedin          Native HTTP LinkedIn Posts publisher
+packages/sdk               Public HTTP client for one deployed instance
+packages/cli               Public `syndroo` command: local publish/retry/receipts
+                           plus the retained remote commands and the bundled Skill
 packages/cloudflare-worker Public bundled Worker, D1, Queue, Cron, orchestration
 experiments/               Isolated compatibility experiments
 scripts/deploy.ts          Cloudflare deployment and D1 recovery
 wrangler.jsonc             Sole production Worker manifest
 ```
+
+CLI internals: `packages/cli/src/local/` holds the local use cases (`plan`,
+`execute`, `retry`, `auth`, `config`, `credentials`, `state/`) behind the narrow
+ports in `packages/cli/src/local/ports/`; `packages/cli/skills/syndroo/` is the
+single shipped Skill source; `packages/cli/test/local/` covers the local
+surface.
 
 Dependency direction:
 
@@ -136,8 +145,10 @@ After binding changes, run `npm run check`; the Worker workspace regenerates `wo
 - Do not claim a platform feature before its adapter, tests, configuration, and documentation all exist.
 - The repository and public Worker package use Apache-2.0. Preserve `LICENSE`,
   `NOTICE`, and required notices in distributions.
-- Only `@syndroo/cloudflare-worker` is a public package. Core and platform
-  adapters remain bundled implementation details unless the user changes this
-  policy.
+- Public packages are `@syndroo/cli`, `@syndroo/sdk`, and
+  `@syndroo/cloudflare-worker`. `@syndroo/core` and the platform adapters stay
+  private: they are bundled into the CLI and Worker artifacts, so a published
+  package must not reference them at runtime. Do not change this policy without
+  user direction.
 - Require DCO sign-off for contributions. Do not add a CLA without user
   direction.

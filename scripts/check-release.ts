@@ -6,14 +6,31 @@ import {
   type DistTag,
   type ReleaseChannel,
 } from "./release-version.js";
+import { parseReleaseSet, type ReleaseSet } from "./release-train.js";
 
-const PACKAGE_NAME = "@syndroo/cloudflare-worker";
-const PACKAGE_PATH = resolve(
-  process.cwd(),
-  "packages/cloudflare-worker/package.json",
-);
+/**
+ * Which package this metadata check is about.
+ *
+ * `all` keeps the historical Worker check, which is the default so nothing that
+ * relied on it changes. `cli` validates the 0.6 candidate, which publishes
+ * alone; the Worker is neither versioned nor gated by that release.
+ */
+const RELEASE_TARGETS: Readonly<
+  Record<ReleaseSet, { readonly name: string; readonly directory: string }>
+> = {
+  all: { name: "@syndroo/cloudflare-worker", directory: "packages/cloudflare-worker" },
+  cli: { name: "@syndroo/cli", directory: "packages/cli" },
+};
+
 const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
 const REGISTRY_URL = "https://registry.npmjs.org";
+
+let PACKAGE_NAME = RELEASE_TARGETS.all.name;
+let PACKAGE_PATH = resolve(
+  process.cwd(),
+  RELEASE_TARGETS.all.directory,
+  "package.json",
+);
 
 type ReleaseEvent =
   | { readonly kind: "absent" }
@@ -34,6 +51,19 @@ type PackageManifest = {
 };
 
 async function main(): Promise<void> {
+  let releaseSet: ReleaseSet;
+
+  try {
+    releaseSet = parseReleaseSet(process.env);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
+
+  const target = RELEASE_TARGETS[releaseSet];
+
+  PACKAGE_NAME = target.name;
+  PACKAGE_PATH = resolve(process.cwd(), target.directory, "package.json");
+
   const manifest = parseManifest(await readFile(PACKAGE_PATH, "utf8"));
 
   if (manifest.name !== PACKAGE_NAME) {
@@ -60,6 +90,7 @@ async function main(): Promise<void> {
   const published = await packageVersionExists(manifest.version);
 
   await writeGithubOutput([
+    ["package", manifest.name],
     ["version", manifest.version],
     ["published", String(published)],
     ["dist_tag", channel.distTag],
@@ -67,6 +98,7 @@ async function main(): Promise<void> {
 
   console.log(
     JSON.stringify({
+      releaseSet,
       package: manifest.name,
       version: manifest.version,
       distTag: channel.distTag,

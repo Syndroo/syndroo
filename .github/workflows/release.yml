@@ -14,6 +14,11 @@ jobs:
   package:
     if: github.repository == 'Syndroo/syndroo'
     runs-on: ubuntu-latest
+    env:
+      # The 0.6 candidate publishes @syndroo/cli only. The SDK and the Worker
+      # stay at their existing versions and are validated, never published, by
+      # this workflow.
+      SYNDROO_RELEASE_SET: cli
 
     steps:
       - name: Check out repository
@@ -55,15 +60,20 @@ jobs:
           SYNDROO_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           SYNDROO_RELEASE_TAG: ${{ github.event.release.tag_name }}
 
+      - name: Pack the CLI candidate
+        run: npm run pack:cli
+
+      - name: Install and exercise the CLI candidate in isolation
+        run: npm run e2e:cli-local
+
       - name: Run installed-package consumer gate
         run: npm run e2e:consumer -- --source tarball
 
       - name: Report which packages the train still needs
         run: |
-          echo "Release train ${{ steps.train.outputs.version }} (${{ steps.train.outputs.dist_tag }}):"
-          echo "  sdk    ${{ steps.train.outputs.sdk_status }}"
+          echo "Release set ${{ steps.train.outputs.release_set }} at ${{ steps.train.outputs.version }} (${{ steps.train.outputs.dist_tag }}):"
           echo "  cli    ${{ steps.train.outputs.cli_status }}"
-          echo "  worker ${{ steps.train.outputs.worker_status }}"
+          echo "  @syndroo/sdk and @syndroo/cloudflare-worker are out of this release set."
 
       - name: Validate release metadata
         id: package
@@ -73,8 +83,18 @@ jobs:
           SYNDROO_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           SYNDROO_RELEASE_TAG: ${{ github.event.release.tag_name }}
 
+      - name: Report the release target
+        run: |
+          echo "metadata target ${{ steps.package.outputs.package }} ${{ steps.package.outputs.version }} (${{ steps.package.outputs.dist_tag }})"
+          test "${{ steps.package.outputs.package }}" = "@syndroo/cli"
+          test "${{ steps.package.outputs.version }}" = "${{ steps.train.outputs.version }}"
+          test "${{ steps.package.outputs.dist_tag }}" = "${{ steps.train.outputs.dist_tag }}"
+
       - name: Inspect package contents
         run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
+
+      - name: Inspect the CLI candidate contents
+        run: npm pack --workspace @syndroo/cli --dry-run
 
       - name: Verify package artifact
         run: npm run verify:package
@@ -83,16 +103,28 @@ jobs:
         run: npm run test:e2e
 
       - name: Publish package
-        if: github.event_name == 'release' && steps.package.outputs.published != 'true'
+        if: >-
+          github.event_name == 'release' &&
+          steps.train.outputs.release_set == 'cli' &&
+          steps.train.outputs.publish_cli == 'true' &&
+          steps.package.outputs.package == '@syndroo/cli' &&
+          steps.package.outputs.published != 'true'
         env:
           DIST_TAG: ${{ steps.package.outputs.dist_tag }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
+          if [ "$PACKAGE_VERSION" != "${{ steps.train.outputs.version }}" ]; then
+            echo "Metadata version '$PACKAGE_VERSION' does not match the train version '${{ steps.train.outputs.version }}'; refusing to publish." >&2
+            exit 1
+          fi
+
           case "$DIST_TAG" in
             next)
-              npm publish --workspace @syndroo/cloudflare-worker --tag next
+              npm publish --workspace @syndroo/cli --tag next
               ;;
             latest)
-              npm publish --workspace @syndroo/cloudflare-worker
+              echo "A CLI release candidate must publish under 'next'; refusing 'latest'." >&2
+              exit 1
               ;;
             *)
               echo "Unexpected dist-tag '$DIST_TAG'; refusing to publish." >&2
@@ -102,7 +134,7 @@ jobs:
 
       - name: Report existing package
         if: github.event_name == 'release' && steps.package.outputs.published == 'true'
-        run: echo "@syndroo/cloudflare-worker@${{ steps.package.outputs.version }} already exists; skipping publish."
+        run: echo "${{ steps.package.outputs.package }}@${{ steps.package.outputs.version }} already exists; skipping publish."
 
       - name: Report validation-only run
         if: github.event_name != 'release'

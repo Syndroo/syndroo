@@ -1,118 +1,168 @@
 # @syndroo/cli
 
-The `syndroo` command talks to one deployed Syndroo instance. It is a thin
-client over `@syndroo/sdk`: it owns argument parsing, the post document, the
-preview, and the exit codes, and it defers authentication, retries, and polling
-to the SDK.
+The `syndroo` command publishes plain text to Bluesky and Threads from the
+machine it runs on. This is the CLI-first `0.6.0-rc.1` candidate: a local path
+with no server, no queue, and no database, plus the retained remote path for a
+deployed Syndroo instance.
+
+Local publishing is two commands over one frozen plan:
 
 ```text
-you / your shell / CI -> @syndroo/cli -> @syndroo/sdk -> Syndroo HTTP API
+document.json --dry-run--> signed local plan --plan <id>--> provider calls + receipts
 ```
+
+Nothing reaches a platform during the preview. The execution runs that same
+frozen plan, never re-reads your input file, and reports one result per target.
+
+## Status
+
+- Target version: `0.6.0-rc.1`. It is not published to npm yet.
+- Local providers: Bluesky and Threads, plain text, foreground execution.
+- Provider maturity is `fixture-tested`: the protocol paths are covered by
+  tests against controlled endpoints, and no live-account acceptance has been
+  run for this candidate.
+- The remote surface (`doctor`, `posts ...`) is unchanged and still speaks to a
+  deployed instance.
 
 ## Install
 
+The candidate is not on npm yet, so it is installed from the tarball this
+repository builds. To build it yourself, run this from the repository root:
+
 ```bash
-npm install --global @syndroo/cli
-# or run one command without installing
-npx @syndroo/cli doctor
+npm run pack:cli
+npm install --global ./artifacts/syndroo-cli-0.6.0-rc.1.tgz
+syndroo version
 ```
+
+If someone hands you the tarball, skip the build and install that path
+directly:
+
+```bash
+npm install --global /path/to/syndroo-cli-0.6.0-rc.1.tgz
+```
+
+`npm pack` inside `packages/cli` is not the release path: it packs a workspace
+whose internal dependencies are not published, which is what `pack:cli` exists
+to avoid.
 
 Requires Node.js 22 or newer.
 
-## Configure
-
-| Variable | Meaning |
-| --- | --- |
-| `SYNDROO_BASE_URL` | Origin of a deployed instance, for example `https://syndroo.example.com` |
-| `SYNDROO_API_KEY` | Instance API key. Sent only as a `Bearer` header, never printed |
-
-The CLI reads those two variables and its own flags. It never reads `.env`,
-`.dev.vars`, or a configuration file, and it never edits a shell profile. The
-key stays in the environment or a CI credential store. `--base-url` can
-override the URL for one run, but there is no `--api-key` flag, so a key cannot
-leak into shell history or a process listing.
-
-## Commands
+## Local quickstart
 
 ```bash
-syndroo doctor
-syndroo posts validate --file post.json
-syndroo posts create --file post.json
-syndroo posts list
-syndroo posts get <post-id>
-syndroo posts wait <post-id> --timeout 60s
-syndroo skill path
+syndroo init --namespace default
+syndroo providers list
+syndroo auth set bluesky --local --from-env
+syndroo auth set threads --local --from-env
+syndroo auth status --local
 ```
 
-A post document is JSON:
+`auth set` reads one whole credential group: `BLUESKY_IDENTIFIER`,
+`BLUESKY_PASSWORD`, and optional `BLUESKY_HOST` (`bsky.social`), or
+`THREADS_ACCESS_TOKEN`. It never reads `.env`, never mixes sources, and stores
+a reference plus a stable account id, never the secret.
+
+Bind only the providers you will actually publish to: every platform named in
+`platforms` needs an active binding, or the preview is refused before it writes
+anything. The document below selects `bluesky` alone, so one binding is enough;
+add `"threads"` to `platforms` only when a Threads binding exists.
+
+A credential file must be a plain file the current user owns, readable only by
+that user. Create it yourself and tighten it before use:
+
+```bash
+chmod 600 ./threads-credentials.json
+syndroo auth set threads --local --credential-file ./threads-credentials.json
+```
+
+The CLI refuses a file that is group- or world-readable, a symbolic link, or a
+directory, and it reads the whole group once to take a snapshot. Fix the
+permissions yourself; the CLI does not relax them for you.
+
+Write a strict JSON document, then preview it:
 
 ```json
 {
-  "content": "We just shipped a new release.",
-  "platforms": ["bluesky", "threads"],
-  "overrides": { "bluesky": { "content": "Shorter version." } },
-  "scheduledAt": "2026-10-01T09:00:00Z"
+  "schemaVersion": 1,
+  "key": "release-announcement-001",
+  "content": "Syndroo now publishes from the command line.",
+  "platforms": ["bluesky"]
 }
 ```
 
-`content` and each override must be non-empty and at most 10000 characters.
-Every platform must appear once in `platforms`, and `overrides` may only name a
-selected platform. The document can come from `--file <path>` or from stdin
-(`--file -`, or no `--file` when stdin is not a terminal). Content is read as
-bytes and sent as JSON; it is never passed to a shell.
-
-## Agent and CI mode
-
 ```bash
-syndroo posts create \
-  --file post.json \
-  --idempotency-key release-announcement-001 \
-  --json \
-  --yes
+syndroo publish --input post.json --dry-run --json
+syndroo publish --plan <plan-id> --yes --no-input --json
+syndroo receipts show <operation-id> --json
 ```
 
-With `--json`, stdout carries exactly one JSON object and every diagnostic,
-including the preview, goes to stderr.
+The preview prints the frozen text, the target accounts, the binding
+revisions, and the frozen business timestamp. The execution needs both `--yes`
+and `--no-input` when no human can answer a prompt. Exit code `0` on a preview
+means the plan was written; only a full success means everything published.
 
-A create runs in one of two modes:
+## What the local path does not do
 
-- Interactive: the CLI prints the preview and asks `Create this post? [y/N]`,
-  reading the answer from the terminal. Anything that is not `y` or `yes`
-  cancels and sends nothing.
-- Non-interactive: `--yes` is required, and so is a stable
-  `--idempotency-key`. The CLI never waits for input it cannot receive, and the
-  key is required rather than generated so a retry cannot create a second post.
+No scheduling, no media, no threads or replies, no batch or watch mode, no RSS,
+no experimental platforms, no local OAuth or token refresh, and no automatic
+switch to the remote path. `scheduledAt` is a remote document field only.
 
-The preview is a promise about what will be sent: the document is read once,
-and the exact bytes that were previewed are the bytes submitted. Editing the
-file after the preview changes nothing. The preview prints the sha256 of the
-request, so a receipt can be checked against it.
+## State and credentials
 
-## Exit codes
-
-| Code | Meaning |
+| What | Where |
 | --- | --- |
-| `0` | The command finished. For `posts create`, Syndroo **accepted** the request |
-| `1` | The command failed |
-| `2` | Usage, configuration, or document problem; nothing was sent |
-| `3` | `posts wait` reached its deadline; the post still exists |
-| `4` | A write may have reached Syndroo and no receipt was read |
-| `5` | The preview was declined; nothing was sent |
-| `6` | The post ended as `failed` or `partial` |
-| `130` | The local process stopped on a signal |
+| Config | `${XDG_CONFIG_HOME:-$HOME/.config}/syndroo/config.json` |
+| State | `${XDG_STATE_HOME:-$HOME/.local/state}/syndroo` |
 
-**`posts create` returning 0 does not mean anything was published.** HTTP 202 is
-an acceptance receipt. Read the post, or run `posts wait`, before claiming a
-delivery. `posts wait` exits 0 only when the status is `published`; an ambiguous
-publication reports exit 4, and `failed` or `partial` reports exit 6.
+Both are created by `syndroo init`. Directories are `0700` and files are
+`0600`; `--state-home <path>` overrides the location for one run. Permissions
+limit access, they are not encryption: plans and receipts hold the post text
+and the account identity.
 
-## When a result is unknown
+One logical delivery is identified by `(namespace, key, provider, targetId)`.
+Keep the key, the namespace, and the state directory when something goes wrong;
+changing any of them to "start clean" publishes the same text under a new
+identity. A preview whose target already succeeded reports `skip` and sends
+nothing, and a same-key same-target change of content is marked `blocked`
+rather than silently republished.
 
-If a create fails after the request may have reached the instance, the CLI
-reports exit 4, prints the idempotency key it used, and stops. It never retries
-silently and never mints a new key to paper over the failure. Re-run the same
-command with the same `--idempotency-key` to replay the original result, or read
-the post once you have its id.
+## Retry and recovery
 
-`posts wait` only reads. A timeout leaves the server-side post running, so
-resume with `posts get` or a longer `posts wait` instead of resending.
+```bash
+syndroo retry <operation-id> --to threads --dry-run --json
+syndroo retry --plan <plan-id> --yes --no-input --json
+syndroo state inspect
+syndroo state recover --confirm-no-writers --yes
+```
+
+Only targets whose failure is provably `not_applied` are retryable, within
+three content attempts per logical delivery. An `unknown` outcome is never
+retried blindly. `state recover` is maintenance for a machine whose writers
+have stopped: it quarantines a stale lock, keeps evidence, and turns orphaned
+in-flight intent into `unknown`.
+
+## Remote surface (retained)
+
+The pre-0.6 HTTP path is unchanged. It is selected explicitly and never as a
+fallback from a local failure.
+
+```bash
+export SYNDROO_BASE_URL=https://syndroo.example.com
+export SYNDROO_API_KEY=...
+syndroo doctor
+syndroo posts validate --file post.json
+syndroo posts create --file post.json --idempotency-key release-001 --yes
+syndroo posts get <post-id>
+```
+
+## The bundled skill
+
+`syndroo skill path` prints the directory of the bundled Agent Skill. The skill
+is guidance for a local, confirmed, two-phase publish; it grants no permission
+and proves nothing about any particular agent client.
+
+## More
+
+- CLI manual: https://github.com/Syndroo/syndroo/blob/main/docs/cli-manual.md
+- Agent quickstart: https://github.com/Syndroo/syndroo/blob/main/docs/agent-quickstart.md

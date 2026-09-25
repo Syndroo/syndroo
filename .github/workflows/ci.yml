@@ -12,14 +12,21 @@ permissions:
 
 jobs:
   validate:
-    name: Node.js ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Node.js ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
         node-version:
           - "22"
           - "24"
+    env:
+      # The 0.6 candidate publishes the CLI alone. The Worker gates below still
+      # run in full; only the publishable release set is narrowed.
+      SYNDROO_RELEASE_SET: cli
 
     steps:
       - name: Check out repository
@@ -56,15 +63,23 @@ jobs:
         run: npm run startup
 
       - name: Verify package artifact
-        if: matrix.node-version == '24'
+        if: matrix.node-version == '24' && matrix.os == 'ubuntu-latest'
         run: npm run verify:package
 
       - name: Run Mock SNS end-to-end suite
         run: npm run test:e2e
 
+      # The self-contained CLI candidate: built, packed, then installed into a
+      # throwaway directory outside the repository with a blank HOME.
+      - name: Pack the CLI candidate
+        run: npm run pack:cli
+
+      - name: Install and exercise the CLI candidate in isolation
+        run: npm run e2e:cli-local
+
       # Layer 2: pack the artifacts, install them outside the monorepo, and run
-      # the real SDK and CLI against the local harness. It installs only local
-      # tarballs and contacts no registry for the Syndroo packages.
+      # the real CLI against the local harness. It installs only local tarballs
+      # and contacts no registry for the Syndroo packages.
       - name: Run installed-package consumer gate
         if: matrix.node-version == '24'
         run: npm run e2e:consumer -- --source tarball
@@ -72,6 +87,9 @@ jobs:
       - name: Inspect publish package
         if: matrix.node-version == '24'
         run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
+
+      - name: Inspect the CLI candidate contents
+        run: npm pack --workspace @syndroo/cli --dry-run
 
       - name: Verify generated files
         run: git diff --exit-code

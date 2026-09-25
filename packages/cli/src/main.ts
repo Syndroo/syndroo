@@ -1,7 +1,13 @@
-import { parseArgs, wantsJson, type ParsedCommand } from "./args.js";
+import {
+  detectLocalCommand,
+  parseArgs,
+  wantsJson,
+  type ParsedCommand,
+} from "./args.js";
 import { CliError } from "./cli-error.js";
 import type { CommandContext } from "./commands/context.js";
 import { classifyFailure, runDoctor } from "./commands/doctor.js";
+import { runLocalCommand } from "./commands/local/router.js";
 import {
   runCreate,
   runGet,
@@ -14,6 +20,7 @@ import { API_KEY_ENV } from "./config.js";
 import { EXIT_CODE } from "./exit-codes.js";
 import { commandHelp, generalHelp } from "./help.js";
 import type { CliIo } from "./io.js";
+import type { LocalRunOverrides } from "./local/composition.js";
 import { Reporter, type CommandResult } from "./output.js";
 import { cliVersion } from "./version.js";
 
@@ -32,23 +39,44 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
 /**
  * Runs one command and returns its exit code. Nothing here throws: a failure
  * becomes a reported result, so `bin.ts` only has to set `process.exitCode`.
+ *
+ * The optional overrides exist for tests: they inject a fake provider or clock
+ * into the local composition. No command-line flag reaches them, so a released
+ * binary has exactly one production wiring.
  */
 export async function run(
   argv: readonly string[],
   io: CliIo,
+  overrides: LocalRunOverrides = {},
 ): Promise<number> {
   const reporter = new Reporter(io, wantsJson(argv));
+
+  const localCommand = detectLocalCommand(argv);
+
+  if (localCommand !== undefined) {
+    return runLocalCommand(localCommand, argv, io, reporter, overrides);
+  }
+
+  return runLegacy(argv, io, reporter);
+}
+
+/**
+ * The legacy remote surface, unchanged.
+ *
+ * The referenced keep-alive timer exists for `posts wait` only: the SDK
+ * unrefs its polling timers, and a CLI must stay alive until its own deadline.
+ * Local commands never create it.
+ */
+async function runLegacy(
+  argv: readonly string[],
+  io: CliIo,
+  reporter: Reporter,
+): Promise<number> {
+  // The remote instance key is registered only for the remote surface. A local
+  // command must never let an unrelated environment value redact frozen content.
   reporter.addSecret(io.env[API_KEY_ENV]);
 
-  /**
-   * The SDK unrefs the timers it sleeps on while polling, so that an SDK
-   * consumer running inside a server is never pinned open by a wait. A CLI has
-   * the opposite duty: `syndroo posts wait` must stay alive until its own
-   * deadline. This referenced timer keeps the event loop alive for the duration
-   * of the command and is cleared before the process exits.
-   */
   const keepAlive = setInterval(() => {}, 1_000);
-
   let parsed: ParsedCommand | undefined;
 
   try {

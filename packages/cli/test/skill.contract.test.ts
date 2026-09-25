@@ -104,12 +104,16 @@ async function readHelpSurface(): Promise<HelpSurface> {
     // A label looks like `posts get <post-id> [--json]`, and the special entry
     // is `help / version`. A command that takes a positional needs a value
     // before `--help` is accepted, so keep the documented placeholder too.
+    // Local usage lines also carry required flags and alternatives, as in
+    // `auth set <provider> --local (--from-env | --credential-file <path>)`;
+    // the run stops at the first optional or alternative group, because only
+    // the words before it are needed to reach this command's help.
     for (const part of label.split("/")) {
       const words: string[] = [];
       const positionals: string[] = [];
 
       for (const token of part.trim().split(/\s+/u)) {
-        if (token.startsWith("[")) {
+        if (token.startsWith("[") || token.startsWith("(") || token === "|") {
           break;
         }
 

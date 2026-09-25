@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { isInside, resolveRepositoryRoot } from "./package-support.js";
+import { parseReleaseSet } from "./release-train.js";
 
 const REGISTRY_URL =
   process.env["SYNDROO_CONSUMER_REGISTRY_URL"] ?? "https://registry.npmjs.org";
@@ -82,7 +83,30 @@ async function main(): Promise<void> {
   const sdk = await readManifest(join(root, CONSUMER_PACKAGES[0].directory, "package.json"));
   const cli = await readManifest(join(root, CONSUMER_PACKAGES[1].directory, "package.json"));
   const worker = await readManifest(join(root, WORKER_PACKAGE.directory, "package.json"));
-  const version = arguments_.version ?? sdk.version;
+
+  let releaseSet;
+
+  try {
+    releaseSet = parseReleaseSet(process.env);
+  } catch (error) {
+    finish(2, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  // The 0.6 candidate publishes the CLI alone, so the CLI's own version is the
+  // version under test. The historical train keeps the SDK as its anchor.
+  const version =
+    arguments_.version ?? (releaseSet === "cli" ? cli.version : sdk.version);
+
+  if (releaseSet === "cli") {
+    await runCliOnlySource(arguments_.source, version, arguments_.keep, {
+      sdk: sdk.version,
+      worker: worker.version,
+    });
+    return;
+  }
 
   if (cli.version !== version) {
     failures.push(
@@ -117,6 +141,110 @@ async function main(): Promise<void> {
   }
 
   await runTarballSource(root, version, arguments_.keep);
+}
+
+/**
+ * The self-contained CLI release set.
+ *
+ * The SDK and the Worker are out of this set: they are neither published nor
+ * installed by it, and their versions are reported as context rather than
+ * compared. The isolated install itself lives in the dedicated
+ * `e2e:cli-local` gate so there is exactly one implementation of it.
+ */
+async function runCliOnlySource(
+  source: Source,
+  version: string,
+  keep: boolean,
+  outOfSet: Readonly<Record<string, string>>,
+): Promise<void> {
+  const root = resolveRepositoryRoot(process.cwd());
+
+  if (source === "registry") {
+    const probe = await probeRegistry(CONSUMER_PACKAGES[1].name, version);
+
+    if (probe === "absent") {
+      finish(2, {
+        ok: false,
+        source: "registry",
+        releaseSet: "cli",
+        version,
+        error: `not published: ${CONSUMER_PACKAGES[1].name}@${version}`,
+        outOfSet,
+        notes: [
+          "A 404 is the only answer that means 'not published'; nothing was installed.",
+        ],
+      });
+      return;
+    }
+
+    if (probe !== "published") {
+      finish(1, {
+        source: "registry",
+        releaseSet: "cli",
+        version,
+        error: "the registry returned an error; this is not a 'not published' answer",
+        failures: [`${CONSUMER_PACKAGES[1].name}: ${probe}`],
+        outOfSet,
+      });
+      return;
+    }
+
+    finish(3, {
+      ok: false,
+      source: "registry",
+      releaseSet: "cli",
+      version,
+      error:
+        "the version is published, but installing from a real registry is not authorized in this environment",
+      outOfSet,
+      notes: [
+        "Set SYNDROO_CONSUMER_ALLOW_REGISTRY_INSTALL=true on an approved host to run the registry consumer check.",
+        "No install was attempted and no registry credentials were read.",
+      ],
+    });
+    return;
+  }
+
+  const gate = resolve(root, ".build", "scripts", "e2e-cli-local.js");
+
+  if (!existsSync(gate)) {
+    finish(1, {
+      source: "tarball",
+      releaseSet: "cli",
+      version,
+      error: `missing ${gate}; run \`npm run build:scripts\` first`,
+      outOfSet,
+    });
+    return;
+  }
+
+  const result = await capture(
+    process.execPath,
+    [gate],
+    root,
+    keep
+      ? { ...process.env, SYNDROO_CLI_E2E_KEEP: "true" }
+      : process.env,
+  );
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(result.stdout);
+  } catch {
+    payload = { stdout: result.stdout.trim().slice(0, 1200) };
+  }
+
+  finish(result.status === 0 ? 0 : 1, {
+    source: "tarball",
+    releaseSet: "cli",
+    version,
+    outOfSet,
+    notes: [
+      "only @syndroo/cli was packed and installed; the SDK and Worker are out of this release set",
+    ],
+    cliLocal: payload,
+    stderr: result.stderr.trim().slice(0, 800),
+  });
 }
 
 async function runTarballSource(

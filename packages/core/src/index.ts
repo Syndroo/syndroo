@@ -150,3 +150,22 @@ export interface PlatformAdapter {
   /** OAuth endpoint configuration; absent when the platform uses direct token submission only. */
   readonly oauth?: OAuthEndpoints;
 }
+
+// ---------------------------------------------------------------------------
+// Local (CLI-first) publishing contracts
+// ---------------------------------------------------------------------------
+
+export type {
+  FrozenDelivery,
+  LocalCredentials,
+  LocalProvider,
+  LocalProviderDescription,
+  LocalProviderId,
+  LocalProviderErrorCode,
+  PreparedTarget,
+  ProviderOutcome,
+  TargetBinding,
+  TargetStatus,
+} from "./local-publishing.js";
+
+export { LocalProviderError } from "./local-publishing.js";

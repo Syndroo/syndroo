@@ -8,6 +8,8 @@ import {
   type PublishResult,
 } from "@syndroo/core";
 
+import { createLinkFacets } from "./facets.js";
+
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_POST_BYTES = 3_000;
 const MAX_POST_CODE_POINTS = 300;
@@ -17,17 +19,6 @@ export interface BlueskyPublisherOptions {
   password: string;
   host: string;
   timeoutMs?: number;
-}
-
-interface BlueskyFacet {
-  index: {
-    byteStart: number;
-    byteEnd: number;
-  };
-  features: Array<{
-    $type: "app.bsky.richtext.facet#link";
-    uri: string;
-  }>;
 }
 
 class BlueskyRequestError extends Error {
@@ -175,43 +166,6 @@ export class BlueskyPublisher implements Publisher {
   }
 }
 
-function createLinkFacets(content: string): BlueskyFacet[] {
-  const encoder = new TextEncoder();
-  const facets: BlueskyFacet[] = [];
-  const pattern = /https?:\/\/[^\s<>"']+/gu;
-
-  for (const match of content.matchAll(pattern)) {
-    const matchedUrl = match[0];
-    const uri = matchedUrl.replace(/[.,!?;:]+$/u, "");
-
-    if (!uri || match.index === undefined) {
-      continue;
-    }
-
-    try {
-      new URL(uri);
-    } catch {
-      continue;
-    }
-
-    const byteStart = encoder.encode(content.slice(0, match.index)).byteLength;
-    facets.push({
-      index: {
-        byteStart,
-        byteEnd: byteStart + encoder.encode(uri).byteLength,
-      },
-      features: [
-        {
-          $type: "app.bsky.richtext.facet#link",
-          uri,
-        },
-      ],
-    });
-  }
-
-  return facets;
-}
-
 function normalizeHost(host: string): string {
   if (!host || host.includes("/") || host.includes("@")) {
     throw new TypeError("Bluesky host must be a hostname without protocol or path");
@@ -352,3 +306,10 @@ export const blueskyAdapter: PlatformAdapter = {
     });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Local (CLI-first) provider
+// ---------------------------------------------------------------------------
+
+export { BlueskyLocalProvider } from "./local.js";
+export type { BlueskyLocalProviderOptions } from "./local.js";
