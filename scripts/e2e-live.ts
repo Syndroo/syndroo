@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /**
- * Layer 3 entry point: the only command in this repository that may touch a
- * real Syndroo instance and real social accounts.
+ * Layer 3 entry point for the remote surface: the live gate that may touch a
+ * real deployed Syndroo instance and, through it, real social accounts.
+ *
+ * This covers the remote HTTP API only. The local CLI has its own path to real
+ * accounts, so this is no longer the only entry point in the repository that
+ * can publish for real.
  *
  * It is deliberately hard to run by accident:
  *

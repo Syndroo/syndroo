@@ -85,8 +85,16 @@ function spawn(
   stateHome: string,
   planId: string,
   controlDir: string,
+  nowIso: string,
 ): SpawnedChild {
-  const child = spawnExecutionChild(childEntry, mode, stateHome, planId, controlDir);
+  const child = spawnExecutionChild(
+    childEntry,
+    mode,
+    stateHome,
+    planId,
+    controlDir,
+    nowIso,
+  );
   children.push(child);
   return child;
 }
@@ -96,7 +104,13 @@ describe("execution processes", () => {
     const state = await fixture();
     const plan = await state.publishPlan();
     const control = controlDir();
-    const child = spawn("abort", state.stateHome, plan.planId, control);
+    const child = spawn(
+      "abort",
+      state.stateHome,
+      plan.planId,
+      control,
+      state.clock.now().toISOString(),
+    );
 
     await started(child, path.join(control, "abort.started"));
     child.child.kill("SIGINT");
@@ -131,7 +145,13 @@ describe("execution processes", () => {
     const state = await fixture();
     const plan = await state.publishPlan();
     const control = controlDir();
-    const child = spawn("silent", state.stateHome, plan.planId, control);
+    const child = spawn(
+      "silent",
+      state.stateHome,
+      plan.planId,
+      control,
+      state.clock.now().toISOString(),
+    );
 
     await started(child, path.join(control, "silent.started"));
     child.child.kill("SIGKILL");
@@ -178,11 +198,23 @@ describe("execution processes", () => {
     const state = await fixture();
     const plan = await state.publishPlan();
     const control = controlDir();
-    const holder = spawn("hold", state.stateHome, plan.planId, control);
+    const holder = spawn(
+      "hold",
+      state.stateHome,
+      plan.planId,
+      control,
+      state.clock.now().toISOString(),
+    );
 
     await started(holder, path.join(control, "hold.started"));
 
-    const second = spawn("steady", state.stateHome, plan.planId, control);
+    const second = spawn(
+      "steady",
+      state.stateHome,
+      plan.planId,
+      control,
+      state.clock.now().toISOString(),
+    );
     const secondCode = await waitForExit(second);
     const secondEvidence = readEvidence(path.join(control, "steady.json"));
 

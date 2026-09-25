@@ -1,17 +1,12 @@
 import { parseArgs, type ParsedCommand } from "../../args.js";
 import { CliError, usageError } from "../../cli-error.js";
 import { EXIT_CODE, type ExitCode } from "../../exit-codes.js";
-import { commandHelp } from "../../help.js";
+import { commandHelp, localDoctorSpec } from "../../help.js";
 import type { CliIo } from "../../io.js";
 import type { LocalRunOverrides } from "../../local/composition.js";
 import type { LocalEnvelopeError, Reporter } from "../../output.js";
 import type { CommandContext } from "../context.js";
-import {
-  runAuthConnect,
-  runAuthRemove,
-  runAuthSet,
-  runAuthStatus,
-} from "./auth.js";
+import { runAuthRemove, runAuthSet, runAuthStatus } from "./auth.js";
 import { runDoctorLocal } from "./doctor.js";
 import { runInit } from "./init.js";
 import { runProvidersList } from "./providers.js";
@@ -33,7 +28,6 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
   "auth.set": runAuthSet,
   "auth.status": runAuthStatus,
   "auth.remove": runAuthRemove,
-  "auth.connect": runAuthConnect,
   publish: runPublish,
   retry: runRetry,
   "receipts.list": runReceiptsList,
@@ -65,7 +59,11 @@ export async function runLocalCommand(
     const name = parsed.spec.name;
 
     if (parsed.help) {
-      const text = commandHelp(parsed.spec);
+      // `doctor` has one shared spec; `doctor --local --help` must render the
+      // local wording and flags, not the remote ones.
+      const text = commandHelp(
+        detected === "doctor" ? localDoctorSpec(parsed.spec) : parsed.spec,
+      );
 
       const emitted = emit(() =>
         reporter.finishLocal(name, {

@@ -1,6 +1,15 @@
 # Syndroo Connect
 
-Connect social platforms to a running Syndroo instance and publish content through the agent.
+Legacy remote flow: connect social platforms to a **running Syndroo instance**
+and publish through it. The Worker and SDK are retained and unchanged, so this
+guidance still applies to that path.
+
+For local publishing from this machine — the `0.6.0-rc.1` CLI-first path with
+frozen plans, receipts, and explicit retry — use the bundled Skill instead
+(`syndroo skill path`) and read
+[docs/cli-manual.md](../docs/cli-manual.md) or
+[docs/agent-quickstart.md](../docs/agent-quickstart.md). The local path never
+falls back to a remote instance, and this file does not describe it.
 
 ## When to use this skill
 
@@ -9,6 +18,12 @@ Load this skill whenever the user wants to:
 - Publish or schedule content to one or more platforms
 - Check which platforms are currently connected
 - Disconnect a platform
+
+Remote instance details — deploy, bindings, per-platform credentials and
+limits, and the API essentials — live in
+[docs/remote-compatibility.md](../docs/remote-compatibility.md),
+[packages/cloudflare-worker/README.md](../packages/cloudflare-worker/README.md),
+and [packages/sdk/README.md](../packages/sdk/README.md).
 
 ---
 

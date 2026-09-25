@@ -50,6 +50,25 @@ const LOCAL_EXIT_CODE_HELP: readonly string[] = [
 ];
 
 /**
+ * The general help spans both surfaces, so it must not repeat the old claim
+ * that the CLI reads no configuration at all. Local commands read the local
+ * config file; the legacy remote commands read only their two variables.
+ */
+const GENERAL_CONFIG_HELP: readonly string[] = [
+  "Configuration",
+  "  Local (primary)",
+  "    XDG_CONFIG_HOME    overrides $HOME/.config; the config file is <base>/syndroo/config.json",
+  "    XDG_STATE_HOME     overrides $HOME/.local/state; the state lives in <base>/syndroo",
+  "    A local command reads that config file, never reads SYNDROO_BASE_URL or",
+  "    SYNDROO_API_KEY, and never falls back to a server or reads .env.",
+  "  Remote (legacy)",
+  "    SYNDROO_BASE_URL   origin of a deployed Syndroo instance",
+  "    SYNDROO_API_KEY    instance API key, sent only as a Bearer header and never printed",
+  "    The remote commands read only these variables; they never read .env, .dev.vars,",
+  "    or the local config.",
+];
+
+/**
  * Local wording for flags the legacy surface describes differently.
  *
  * The legacy descriptions stay untouched for the remote commands; a local
@@ -66,22 +85,59 @@ const LOCAL_FLAG_HELP: Readonly<Record<string, string>> = {
   limit: "Maximum local operations to list, 1-100. Default 20.",
 };
 
+/**
+ * Display-only usage for the one shared command that has a local mode.
+ *
+ * `COMMAND_SPECS` keeps a single `doctor` entry, so each group renders the form
+ * it is about: the local section never advertises a remote endpoint and the
+ * legacy section never implies `--local`.
+ */
+const DOCTOR_LOCAL_USAGE = "doctor --local [--state-home <path>] [--json]";
+const DOCTOR_REMOTE_USAGE = "doctor [--base-url <url>] [--json]";
+
+interface HelpRow {
+  readonly label: string;
+  readonly summary: string;
+}
+
 export function generalHelp(): string {
-  const commandLabels = COMMAND_SPECS.map(spec =>
-    spec.usage.replace(/^syndroo /u, ""),
-  );
-  const labelWidth = Math.max(...commandLabels.map(label => label.length)) + 2;
+  // Local-first display order only; `COMMAND_SPECS` and the parser keep theirs.
+  const doctor = COMMAND_SPECS.find(spec => spec.name === "doctor");
+  const labelOf = (spec: CommandSpec): string =>
+    spec.usage.replace(/^syndroo /u, "");
+  const rowsOf = (specs: readonly CommandSpec[]): HelpRow[] =>
+    specs.map(spec => ({ label: labelOf(spec), summary: spec.summary }));
+  const localRows: HelpRow[] = [
+    ...(doctor === undefined
+      ? []
+      : [{ label: DOCTOR_LOCAL_USAGE, summary: doctor.summary }]),
+    ...rowsOf(COMMAND_SPECS.filter(spec => spec.local === true)),
+  ];
+  const remoteRows: HelpRow[] = [
+    ...(doctor === undefined
+      ? []
+      : [{ label: DOCTOR_REMOTE_USAGE, summary: doctor.summary }]),
+    ...rowsOf(
+      COMMAND_SPECS.filter(
+        spec => spec.local !== true && spec.name !== "doctor",
+      ),
+    ),
+  ];
+  const labelWidth =
+    Math.max(...[...localRows, ...remoteRows].map(row => row.label.length)) + 2;
+  const render = (rows: readonly HelpRow[]): string[] =>
+    rows.map(row => `  ${row.label.padEnd(labelWidth)}${row.summary}`);
   const lines: string[] = [
-    `syndroo ${cliVersion()} - talk to one deployed Syndroo instance`,
+    `syndroo ${cliVersion()} - local-first publishing for Bluesky and Threads`,
     "",
     "Usage",
     "  syndroo <command> [options]",
     "",
     "Commands",
-    ...COMMAND_SPECS.map(
-      (spec, index) =>
-        `  ${(commandLabels[index] as string).padEnd(labelWidth)}${spec.summary}`,
-    ),
+    "  Local (no server needed)",
+    ...render(localRows),
+    "  Remote client (legacy)",
+    ...render(remoteRows),
     "  help / version",
     "",
     "Global options",
@@ -100,14 +156,31 @@ export function generalHelp(): string {
         ) + flag.description,
     ),
     "",
-    ...CONFIG_HELP,
+    ...GENERAL_CONFIG_HELP,
     "",
-    ...EXIT_CODE_HELP,
+    "Exit codes (local)",
+    ...LOCAL_EXIT_CODE_HELP.slice(1),
     "",
-    ...LOCAL_EXIT_CODE_HELP,
+    "Exit codes (remote, legacy)",
+    ...EXIT_CODE_HELP.slice(1),
   ];
 
   return lines.join("\n");
+}
+
+/**
+ * The display-only local variant of the shared `doctor` spec.
+ *
+ * Parsing still uses the single shared spec; this only stops the local help
+ * from advertising the remote endpoint flag or the remote configuration.
+ */
+export function localDoctorSpec(spec: CommandSpec): CommandSpec {
+  return {
+    ...spec,
+    local: true,
+    usage: `syndroo ${DOCTOR_LOCAL_USAGE}`,
+    flags: spec.flags.filter(flag => flag !== "base-url"),
+  };
 }
 
 export function commandHelp(spec: CommandSpec): string {
@@ -121,10 +194,9 @@ export function commandHelp(spec: CommandSpec): string {
     spec.local === true ? (LOCAL_FLAG_HELP[name] ?? fallback) : fallback;
 
   const config = spec.local === true ? LOCAL_CONFIG_HELP : CONFIG_HELP;
-  const exitCodes =
-    spec.local === true
-      ? [...EXIT_CODE_HELP, "", ...LOCAL_EXIT_CODE_HELP]
-      : EXIT_CODE_HELP;
+  // A local command reports only the local exit codes; the remote table stays
+  // exactly as it was for the remote commands.
+  const exitCodes = spec.local === true ? LOCAL_EXIT_CODE_HELP : EXIT_CODE_HELP;
 
   return [
     `Usage: ${spec.usage}`,

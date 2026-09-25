@@ -1,4 +1,5 @@
 import { usageError } from "./cli-error.js";
+import { localError } from "./local/errors.js";
 
 export interface FlagDefinition {
   readonly name: string;
@@ -371,25 +372,6 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
 ];
 
-/**
- * Commands that are resolved but never advertised.
- *
- * `auth connect --local` exists only to answer an explicit local OAuth request
- * with `LOCAL_OAUTH_UNAVAILABLE`; it must not look like a capability in help.
- */
-export const HIDDEN_COMMAND_SPECS: readonly CommandSpec[] = [
-  {
-    name: "auth.connect",
-    words: ["auth", "connect"],
-    summary: "Not available in this version; answers with LOCAL_OAUTH_UNAVAILABLE.",
-    usage: "syndroo auth connect --local [--json]",
-    minPositionals: 0,
-    maxPositionals: 0,
-    flags: ["local", "no-input", "state-home"],
-    local: true,
-  },
-];
-
 export const SPECIAL_COMMANDS: readonly CommandSpec[] = [
   {
     name: "help",
@@ -421,7 +403,6 @@ export interface ParsedCommand {
 
 const ALL_SPECS: readonly CommandSpec[] = [
   ...COMMAND_SPECS,
-  ...HIDDEN_COMMAND_SPECS,
   ...SPECIAL_COMMANDS,
 ];
 
@@ -441,7 +422,6 @@ const LOCAL_COMMAND_WORDS: readonly (readonly string[])[] = [
   ["auth", "set"],
   ["auth", "status"],
   ["auth", "remove"],
-  ["auth", "connect"],
   ["publish"],
   ["retry"],
   ["receipts", "list"],
@@ -491,13 +471,20 @@ export function detectLocalCommand(
   argv: readonly string[],
 ): string | undefined {
   const words = positionalWords(argv);
+  const hasLocal = argv.some(
+    token => token === "--local" || token.startsWith("--local="),
+  );
 
   if (words[0] === "doctor") {
-    return argv.some(
-      token => token === "--local" || token.startsWith("--local="),
-    )
-      ? "doctor"
-      : undefined;
+    return hasLocal ? "doctor" : undefined;
+  }
+
+  // `auth connect --local` is not a command and is not advertised anywhere.
+  // It is only an explicit local OAuth request, so the local route owns the
+  // refusal and the safe local envelope. A bare `auth connect` keeps the
+  // ordinary unknown-command behavior: there is no legacy OAuth path here.
+  if (words[0] === "auth" && words[1] === "connect") {
+    return hasLocal ? "auth.connect" : undefined;
   }
 
   let best: readonly string[] | undefined;
@@ -528,6 +515,18 @@ export function wantsJson(argv: readonly string[]): boolean {
  */
 export function parseArgs(argv: readonly string[]): ParsedCommand {
   const localHint = detectLocalCommand(argv);
+
+  // The contract requires an explicit refusal for a local OAuth request even
+  // though no such command exists. It is raised here, before any command is
+  // resolved, before any flag is read, and before `--help` can look like a
+  // working command. No credential is read and nothing is mutated.
+  if (localHint === "auth.connect") {
+    throw localError(
+      "LOCAL_OAUTH_UNAVAILABLE",
+      "local OAuth is not available in this version; register an account with `auth set` and an explicit credential source",
+    );
+  }
+
   const positionals: string[] = [];
   const flags = new Map<string, string | true>();
   const repeated = new Set<string>();

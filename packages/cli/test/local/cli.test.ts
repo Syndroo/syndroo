@@ -343,6 +343,62 @@ describe("local help", () => {
       expect(envelope["ok"]).toBe(true);
     }
   });
+
+  it("leads with local workflows and labels the legacy surface", async () => {
+    const h = harness();
+
+    expect(await h.run(["help"])).toBe(0);
+
+    const text = h.stdout.join("");
+
+    expect(text).toContain("local-first");
+    expect(text).toContain("Local (no server needed)");
+    expect(text).toContain("doctor --local");
+    expect(text).toContain("Remote client (legacy)");
+    expect(text).toContain("SYNDROO_BASE_URL");
+    expect(text).not.toContain("talk to one deployed");
+
+    // The local group's doctor row must not advertise the remote endpoint flag.
+    const localSection = text.slice(
+      text.indexOf("Local (no server needed)"),
+      text.indexOf("Remote client (legacy)"),
+    );
+
+    expect(localSection).toContain("doctor --local");
+    expect(localSection).not.toContain("--base-url");
+
+    // Local exit codes come first and each table is labelled.
+    expect(text.indexOf("Exit codes (local)")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Exit codes (local)")).toBeLessThan(
+      text.indexOf("Exit codes (remote, legacy)"),
+    );
+  });
+
+  it("gives local commands local help only", async () => {
+    const h = harness();
+
+    expect(await h.run(["doctor", "--local", "--help"])).toBe(0);
+
+    const doctorLocal = h.stdout.join("");
+
+    expect(doctorLocal).toContain("Local configuration");
+    expect(doctorLocal).toContain("doctor --local");
+    expect(doctorLocal).not.toContain("--base-url");
+    expect(doctorLocal).not.toContain("posts wait");
+    expect(doctorLocal).not.toContain(".dev.vars");
+
+    h.stdout.length = 0;
+
+    expect(await h.run(["auth", "set", "--help"])).toBe(0);
+
+    const localHelp = h.stdout.join("");
+
+    expect(localHelp).toContain("Exit codes (local)");
+    expect(localHelp).not.toContain("Exit codes (remote");
+    expect(localHelp).not.toContain("posts wait");
+    expect(localHelp).not.toContain(".dev.vars");
+    expect(localHelp).not.toContain("--base-url");
+  });
 });
 
 describe("init, providers, and doctor", () => {
@@ -439,11 +495,51 @@ describe("auth", () => {
     expect(envelopeResult(h.lastEnvelope())["bindings"]).toEqual([]);
   });
 
-  it("answers a local OAuth request with the documented refusal", async () => {
+  it("refuses a local OAuth request without registering or advertising a command", async () => {
     const h = harness();
 
-    expect(await h.run(["auth", "connect", "--local", "--json"])).toBe(2);
-    expect(envelopeError(h.lastEnvelope())["code"]).toBe("LOCAL_OAUTH_UNAVAILABLE");
+    for (const argv of [
+      ["auth", "connect", "--local", "--json"],
+      // `--help` must not turn the missing capability into a working command.
+      ["auth", "connect", "--local", "--help", "--json"],
+      ["auth", "connect", "--local", "--yes", "--no-input", "--json"],
+    ]) {
+      expect(await h.run(argv), argv.join(" ")).toBe(2);
+      expect(envelopeError(h.lastEnvelope())["code"]).toBe(
+        "LOCAL_OAUTH_UNAVAILABLE",
+      );
+    }
+
+    // No credential, network, or state side effect: nothing was created and no
+    // provider call happened.
+    expect(existsSync(path.join(h.home, "config"))).toBe(false);
+    expect(existsSync(path.join(h.home, "state"))).toBe(false);
+    expect(h.bluesky.calls.verifyIdentity).toBe(0);
+    expect(h.bluesky.calls.prepare).toBe(0);
+    expect(h.bluesky.calls.publish).toBe(0);
+    expect(h.threads.calls.verifyIdentity).toBe(0);
+    expect(h.threads.calls.prepare).toBe(0);
+
+    // Ordinary help never advertises it as a command.
+    h.stdout.length = 0;
+
+    expect(await h.run(["help"])).toBe(0);
+    expect(h.stdout.join("")).not.toContain("connect");
+  });
+
+  it("keeps a bare `auth connect` on the ordinary unknown-command path", async () => {
+    const h = harness();
+
+    // There is no legacy OAuth path here, so an unflagged request stays a
+    // generic usage failure and never becomes the local refusal.
+    expect(await h.run(["auth", "connect", "--json"])).toBe(2);
+
+    const payload = JSON.parse(
+      h.stdout.join("").trim().split("\n").pop() as string,
+    ) as Record<string, unknown>;
+
+    expect(payload["mode"]).toBeUndefined();
+    expect(payload["exitCode"]).toBe(2);
   });
 });
 

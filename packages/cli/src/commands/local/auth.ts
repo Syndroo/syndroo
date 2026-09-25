@@ -256,17 +256,3 @@ export async function runAuthRemove(
     exitCode: EXIT_CODE.SUCCESS,
   };
 }
-
-/** `syndroo auth connect --local` — recognized, deliberately unavailable. */
-export async function runAuthConnect(
-  context: CommandContext,
-  overrides: LocalRunOverrides = {},
-): Promise<LocalCommandOutcome> {
-  void context;
-  void overrides;
-
-  throw localError(
-    "LOCAL_OAUTH_UNAVAILABLE",
-    "this version has no local OAuth or refresh path; use `auth set` with an explicit credential source",
-  );
-}

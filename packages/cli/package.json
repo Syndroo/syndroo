@@ -2,7 +2,7 @@
   "name": "@syndroo/cli",
   "version": "0.6.0-rc.1",
   "type": "module",
-  "description": "The `syndroo` command: validate, create, and track Syndroo posts from a terminal, script, or CI job.",
+  "description": "Local-first Syndroo CLI: publish text to Bluesky and Threads, with the retained remote command surface.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

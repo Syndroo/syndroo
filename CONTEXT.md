@@ -1,14 +1,48 @@
 # Syndroo
 
-Syndroo publishes content to multiple social platforms on behalf of a
-self-hosting operator.
+Syndroo is a CLI-first publisher: the `syndroo` command publishes plain text to
+Bluesky and Threads from the operator's own machine. A retained remote path
+serves the same product through a deployed Cloudflare Worker for operators who
+need an instance.
 
 ## Language
 
 **Post**:
-A publishing request with shared content, target platforms, optional
-platform-specific overrides, and a publication schedule.
+A publishing request with shared content, target platforms, and optional
+platform-specific overrides. A publication schedule belongs to the retained
+remote path only; local publishing is immediate.
 _Avoid_: Publication when referring to the whole multi-platform request
+
+**Frozen plan**:
+A signed local record of exactly what a preview showed: the final text, the
+target binding, the payload version, and a content digest. Executing a plan is
+the only way local publishing sends anything, and the plan is never rebuilt
+from the input file.
+_Avoid_: Draft, preview when referring to the stored plan itself
+
+**Local delivery**:
+One frozen plan item's progress for one provider and one stable target id,
+identified by `(namespace, key, provider, targetId)` and counted across every
+plan and operation.
+_Avoid_: Job, task when the identity matters
+
+**Binding**:
+The current local connection record for one provider: a stable account id, an
+opaque connection id, and a revision that increases whenever the account or its
+credential source changes.
+_Avoid_: Login, session when the stable identity is meant
+
+**Namespace**:
+A local deduplication domain stored in the local config. It separates unrelated
+publishing histories; it grants no permission and is not a repair for a failed
+or unknown outcome.
+_Avoid_: Profile, account, or tenant when deduplication is meant
+
+**Receipt**:
+The local record of what each target did, including an `unknown` outcome. A
+receipt is evidence, not authorization, and reading one never contacts a
+platform.
+_Avoid_: Proof of publication, success report
 
 **Publication**:
 One Post's delivery to one platform, with its own content and delivery outcome.

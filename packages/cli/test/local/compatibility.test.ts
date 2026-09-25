@@ -79,9 +79,47 @@ describe("legacy remote surface", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("posts create");
     expect(result.stdout).toContain("doctor");
+    // The primary surface is local-first, and the legacy identity line is gone.
+    expect(result.stdout).toContain("local-first");
+    expect(result.stdout).not.toContain("talk to one deployed");
     expect(result.stdout).not.toContain("sync");
     expect(result.stdout).not.toContain("skill install");
     expect(result.stdout).not.toContain("allow-experimental");
+    // No OAuth capability is advertised, because none exists.
+    expect(result.stdout).not.toContain("connect");
+  });
+
+  it("refuses a local OAuth request without registering it as a command", async () => {
+    const { env } = tempHome();
+
+    const refused = await runCli(["auth", "connect", "--local", "--json"], {
+      env,
+    });
+
+    expect(refused.code).toBe(2);
+    expect(json(refused)["mode"]).toBe("local");
+    expect(json(refused)["error"]).toMatchObject({
+      code: "LOCAL_OAUTH_UNAVAILABLE",
+    });
+
+    // `--help` cannot rescue it into a successful command.
+    const helped = await runCli(
+      ["auth", "connect", "--local", "--help", "--json"],
+      { env },
+    );
+
+    expect(helped.code).toBe(2);
+    expect(json(helped)["error"]).toMatchObject({
+      code: "LOCAL_OAUTH_UNAVAILABLE",
+    });
+
+    // There is no remote path to fall back to: unflagged stays a usage error
+    // on the legacy surface.
+    const bare = await runCli(["auth", "connect", "--json"], { env });
+
+    expect(bare.code).toBe(2);
+    expect(json(bare)["mode"]).toBeUndefined();
+    expect(json(bare)["exitCode"]).toBe(2);
   });
 });
 

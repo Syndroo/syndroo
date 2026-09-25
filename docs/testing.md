@@ -1,229 +1,117 @@
 # Testing Syndroo
 
-## Local Mock SNS end-to-end gate
+The `0.6.0-rc.1` candidate is a CLI-first release: local publishing to Bluesky
+and Threads is the product under test, and the pre-0.6 remote surface (Worker,
+SDK, `doctor`, `posts ...`) is regression-tested because it is retained.
 
-The Mock SNS gate in `e2e/` proves Syndroo's internal integration path without
-contacting a social network:
+A pass at one layer never stands in for another. Local unit tests do not prove
+packaging, packaging does not prove platform behavior, and no layer here proves
+live-account acceptance on Bluesky or Threads.
 
-```text
-HTTP POST /v1/posts -> local D1 -> local Queue or controlled Cron
-  -> real publisher (native Threads adapter, official Bluesky SDK)
-  -> loopback Mock SNS HTTP server
-  -> HTTP status query
-```
+## What each layer proves
 
-Nothing inside Syndroo is replaced. The tests load the bundled production
-Worker, apply the production D1 migrations, drive the real Queue binding and the
-real `scheduled` handler, and use the real adapters. Only the network boundary
-is replaced: an outbound policy forwards the exact SNS endpoints to a Mock SNS
-server that listens on `127.0.0.1`.
+| Layer | Entry point | What a pass means |
+| --- | --- | --- |
+| Workspace units | `npm test` | Per-package behavior: core contracts, adapters, CLI parsing and local use cases, Worker logic, SDK client, repository scripts |
+| Types and bindings | `npm run check` | `tsc` for every workspace plus scripts and e2e types, and regenerated Worker bindings |
+| CLI local end to end | `npm run e2e:cli-local` | The packed CLI installs outside the repository and runs the documented local workflow against fake providers |
+| Remote (Worker) end to end | `npm run e2e:local` | Bundle → D1 → Queue → Cron → adapters → Mock SNS, for the retained remote path |
+| Consumer packages | `npm run e2e:consumer -- --source tarball` | The packed artifacts install outside the repository and the real SDK and CLI run against them |
+| Worker artifact | `npm run verify:package` | Packed Worker artifact, licence notices, isolated install |
+| Release sets | `SYNDROO_RELEASE_SET=cli npm run release:train` | The self-contained CLI candidate is internally consistent and publishable alone |
+| Legacy remote live check | `npm run e2e:live -- --plan <file>` | Only when an operator supplies an approved plan file: `doctor` and `posts ...` against a deployed instance |
 
-This gate does not replace the separate live-account acceptance for Bluesky and
-Threads. It proves wiring, persistence, idempotency, ambiguity handling, and
-scheduling; it cannot prove provider permissions, API compatibility, or rate
-limits.
+## Local CLI coverage
 
-## Gate layers and entry points
+The CLI suite is where the local design is actually proven:
 
-The local gate is the first of three layers. A pass at one layer never stands in
-for another:
+- **Document input**: strict JSON, duplicate keys, escapes, key and content
+  limits, source byte cap, override selection, provider availability.
+- **Planning**: frozen content and payload, deterministic business timestamps,
+  `skip`/`blocked` rehabilitation of existing records, plan signature, 24-hour
+  lifetime, and replay of an admitted plan after expiry.
+- **State**: real files and directories, atomic writes, permission and symlink
+  refusal, HMAC integrity, tombstoned connections, and manifest admission.
+- **Locking and recovery**: competing real processes, owner checks, quarantine,
+  and orphan in-flight intent becoming `unknown`.
+- **Process behavior**: the real binary under signals and broken pipes,
+  including exit `130` and persisted success that could not be reported.
+- **Providers**: protocol fixtures against controlled endpoints, covering
+  identity checks, frozen payloads sent verbatim, timeouts, response caps, and
+  the conservative `unknown` classification.
+- **Guidance consistency**: the bundled Skill's commands, flags, exit codes, and
+  links are checked against the built `--help` output.
+- **Import boundaries**: `@syndroo/core` stays platform-neutral, and the pure
+  local use cases import no filesystem, Worker, SDK, or concrete provider code.
 
-| Layer | Chain | Proves | Entry point |
-| --- | --- | --- | --- |
-| L1 local Mock | bundled Worker -> local D1/Queue/Cron -> real adapters -> Mock SNS | Internal delivery, idempotency, failure, and concurrency behaviour | `npm run e2e:local` |
-| L2 installed artifact | install packed tarballs (or a registry RC) outside the repository -> real SDK and CLI -> L1 | The packages a user installs actually work, without workspace resolution | `npm run e2e:consumer -- --source tarball` |
-| L3 real accounts | local SDK/CLI/Agent -> staging Worker -> real accounts | Real credentials, platform APIs, and the final remote post | `npm run e2e:live -- --plan <file>` |
+## Remote regression scope
 
-`npm run e2e:local` is the same command as `npm run test:e2e`. It builds every
-workspace, bundles the Worker, and then runs the Node-side Vitest project.
+The pre-0.6 surface remains supported and must keep working:
 
-The L1 project also drives the two published client artifacts, not only the
-Worker: `e2e/test/sdk-cli.spec.ts` starts the built SDK and the built `syndroo`
-binary as a real child process against the same in-process Worker, through a
-loopback proxy (`e2e/src/loopback-proxy.ts`) that forwards HTTP into
-`Harness.fetch`. The CLI child is spawned asynchronously on purpose: the Worker
-lives in the test process, so a blocking spawn would deadlock the loop that has
-to answer the child's requests.
+- Worker behavior: request validation, idempotency, claim-before-send, Queue
+  and Cron recovery, D1 migrations, and the 64 KiB body limit.
+- API contract: `POST /v1/posts` returning `202`, the documented statuses and
+  error shapes, and the Bearer-token rule on every `/v1/*` route.
+- Remote CLI commands: `doctor` and `posts validate|create|list|get|wait`,
+  including their exit codes and JSON shapes.
+- Adapters: Bluesky, Threads, X, Tumblr, and LinkedIn, with X, Tumblr, and
+  LinkedIn still marked experimental because their live publishing has not been
+  validated.
 
-`npm run e2e:consumer -- --source tarball` packs `@syndroo/sdk`, `@syndroo/cli`,
-and `@syndroo/cloudflare-worker` with `npm pack`, installs the tarballs into a
-temporary directory outside this repository, and runs
-`e2e/test/consumer.e2e.ts` there with the consumer's own `node_modules`. The
-install uses `--ignore-scripts --offline` (falling back to `--prefer-offline`),
-an `overrides` entry pins the CLI's SDK dependency at the tarball under test,
-and the spec asserts that `import.meta.resolve("@syndroo/sdk")` stays inside the
-consumer directory instead of resolving back into this checkout. The Syndroo
-packages themselves are never fetched from a registry.
+Local publishing never falls back to this surface, and a remote failure is not
+a reason to switch. The two paths share contracts, not code paths.
 
-The same entry point with `--source registry --version <v>` only inspects the
-published versions: a `404` is reported as `not published`, any other registry
-answer fails closed, and an existing version is refused unless
-`SYNDROO_CONSUMER_ALLOW_REGISTRY_INSTALL=true` is set on an approved host. It
-does not install from a real registry by default.
+## Live validation
 
-`npm run e2e:web -- --project=chrome` delegates to the website checkout next to
-this repository (`--root` or `SYNDROO_WEB_ROOT` override the location). It runs
-that repository's own `build`, `check`, and `test` scripts in order and then
-Playwright with the named project. A missing checkout, a missing `node_modules`,
-or a missing Playwright install is a failure with the command to fix it, never a
-silent pass.
+Two different things are called "live", and they are not interchangeable:
 
-`npm run e2e:live -- --plan <absolute path>` is the only entry point that may
-contact a real instance, and it is not part of `npm test` or `e2e:local`. It
-validates the plan (instance, accounts, content, platforms, an absolute time
-with an explicit timezone, an operation count, stop conditions, an approver, and
-`"approved": true`) and then stops: a valid plan exits `3` without contacting
-anything unless `--execute` is passed. Execution also requires
-`SYNDROO_LIVE_CONFIRM` to equal the plan's `planId` and `SYNDROO_API_KEY` in the
-environment. `--execute` alone is read-only (`doctor`); only `--write` reaches a
-create, and it stops at the first failure instead of minting a new idempotency
-key.
+- `npm run e2e:live` is the **legacy remote** check. It runs `doctor` and
+  `posts ...` against a deployed Syndroo instance using an approved plan file,
+  and it validates only the remote path.
+- **Local live acceptance** would publish real text to real Bluesky and Threads
+  accounts through the local CLI. That run **has not been executed** for
+  `0.6.0-rc.1`, and no dedicated runner for it exists yet; it needs a real
+  account and an explicit operator decision. The local providers are covered by
+  fixtures and labelled `fixture-tested`, which is not a substitute for that
+  acceptance.
 
-## Command
+Any command that reaches a real platform, local or remote, does so only under
+the operator's own authorization. No test in this repository contacts a real
+social account.
 
-```bash
-npm install
-npm run test:e2e
-```
-
-`test:e2e` runs `npm run build:package` first and then the Node-side Vitest
-project:
+## Running the gates
 
 ```bash
-npx vitest run --config e2e/vitest.config.ts
+npm ci
+# The candidate versions are split, so the release-set scripts need the CLI set.
+export SYNDROO_RELEASE_SET=cli
+npm test
+npm run check
+npm run e2e:cli-local
+npm run e2e:local
+npm run verify:package
+npm run release:train
 ```
 
-No credentials are required. The harness injects fake `SYNDROO_API_KEY`,
-`THREADS_ACCESS_TOKEN`, `BLUESKY_IDENTIFIER`, and `BLUESKY_PASSWORD` bindings and
-binds loopback ports in the test process. It never reads `.dev.vars` and never
-uses a real account.
+`npm test` and `npm run test:scripts` validate the publishable release set, so
+they need `SYNDROO_RELEASE_SET=cli` while the three candidate versions differ.
+The default set stays `all` and reports that mismatch as a failure until the
+packages share one version.
 
-## Bundled Worker requirement
+Requirements: Node.js 22 or newer, npm, and a POSIX host. Local state
+operations support macOS and Linux; Windows local writes are refused rather
+than approximated.
 
-The gate runs `packages/cloudflare-worker/dist/index.js`, the artifact produced
-by `npm run build:package`. Before starting Miniflare it refuses to run when the
-bundle is:
+Notes for a sandboxed environment: the provider and remote fixtures bind a
+loopback port, so a sandbox that denies `listen` needs those tests to run
+unsandboxed. Worker gates need the bundled Worker and its local services, which
+`npm run e2e:local` starts for the run.
 
-- missing,
-- older than any `packages/*/src` file,
-- missing expected production markers such as `https://graph.threads.net`,
-- inconsistent with `wrangler.jsonc` (compatibility date, Queue binding, Queue
-  name).
+## What is not verified here
 
-The failure message names the command to run. This keeps the gate honest: a
-stale or unrelated bundle fails loudly instead of passing.
-
-## Outbound security model
-
-`e2e/src/outbound-policy.ts` replaces the Worker's internet access and is the
-only egress path in the tests:
-
-- Allowed requests are exactly these three, with an empty query string:
-  `POST https://graph.threads.net/me/threads`,
-  `POST https://bsky.social/xrpc/com.atproto.server.createSession`,
-  `POST https://bsky.social/xrpc/com.atproto.repo.createRecord`.
-- Everything else fails closed with `mock-sns-blocked: <reason>` before any
-  socket is opened: unexpected origin, path, method, query, plaintext scheme, or
-  unrelated host.
-- Allowed requests are forwarded to the literal loopback Mock SNS origin. The
-  forward origin must be exactly `http://127.0.0.1:<port>` with no credentials,
-  path, query, or fragment, so no configuration can aim the harness at a real
-  host.
-- The forward hop uses `redirect: "manual"` and a bounded `AbortSignal`, and a
-  redirect answer is treated as a policy violation instead of being followed,
-  so a hijacked mock cannot bounce the request to a real host. The redirect
-  response body is cancelled before the policy fails.
-- Only the response status and content type travel back into the Worker; mock
-  `location` and `set-cookie` headers are dropped.
-- Fake credentials only. `e2e/src/redact.ts` masks every configured secret and
-  any `Bearer` token before diagnostics or errors are printed.
-- The Miniflare instance sets `cf: false`. Miniflare's `cf: true` (or a string
-  cache path) fetches a real `cf` object from a Cloudflare endpoint and caches
-  it in `node_modules/.mf`; `false` selects Miniflare's documented placeholder
-  object instead, so the harness makes no background network request of its own.
-  Miniflare's telemetry option already defaults to disabled in the pinned
-  version, so the outbound policy remains the only egress path.
-
-`e2e/test/outbound-policy.spec.ts` proves these properties directly, including
-that a redirect target server receives zero requests.
-
-## Coverage
-
-`e2e/test/mock-sns.spec.ts` covers:
-
-- Threads success through HTTP creation, Queue delivery, Mock SNS receipt of the
-  exact form body and bearer token, stored `externalId`, and HTTP status query.
-- Bluesky through the official SDK plus Threads with independent content
-  overrides, where an explicit Threads rejection yields Post status `partial`.
-  The Bluesky publication is asserted through the SDK's real success mapping
-  (`externalId` from the returned CID and the `externalUrl` built from the
-  returned `at://` URI), and link facets are asserted from the recorded
-  `createRecord` body.
-- HTTP idempotency: the same key and body replay the stored result with HTTP
-  `200`, a conflicting body returns `409`, and neither creates a second Post.
-- Duplicate Queue delivery: controlled redelivery of a completed job performs no
-  second remote write.
-- Ambiguous outcome: the Mock SNS records the request and destroys the socket.
-  The publication is stored as `failed` with `errorAmbiguous: true`. Exactly one
-  remote receipt is required, so an adapter-level duplicate write cannot hide
-  behind the ambiguity, and redelivery plus Cron far past the staleness cutoff
-  produce no additional receipt.
-
-  A transport failure injected through the harness surfaces inside workerd as an
-  opaque HTTP 500, so Syndroo records the conservative ambiguous classification
-  (`UNKNOWN` or `PROVIDER_UNAVAILABLE` with `errorAmbiguous: true`) instead of
-  claiming a definite rejection. The asserted contract is ambiguity, one remote
-  receipt, and no automatic republication.
-- Scheduled delivery: Cron one second before the due time publishes nothing;
-  Cron exactly at the controlled due time publishes once through the real Queue.
-  No test waits 15 real minutes.
-
-Status checks use bounded polling with useful diagnostics (`Mock SNS` receipts,
-outbound decisions, and recent Worker logs) and never fixed sleeps.
-
-`e2e/test/sdk-cli.spec.ts` covers the shipped client artifacts through the
-loopback proxy:
-
-- The built SDK performs `health`, `create`, `get`, and `wait` over real HTTP
-  against the bundled Worker, and one logical post produces exactly one Mock SNS
-  receipt.
-- An identical `create` with the same idempotency key returns the same post id
-  and still produces exactly one remote write.
-- The built CLI binary runs `doctor`, `posts validate`, `posts create`, `posts
-  list`, `posts get`, `posts wait`, and `skill path` as a real child process;
-  `posts validate` creates nothing, and a create without `--yes` and a stable
-  `--idempotency-key` exits `2` with zero posts and zero platform calls.
-
-`e2e/test/consumer.e2e.ts` (run only by `npm run e2e:consumer`) repeats the SDK
-and CLI paths from an install outside this repository and asserts that the
-resolved SDK path stays inside the consumer directory.
-
-## Isolation and cleanup
-
-Every test starts a fresh Miniflare instance with a unique D1 database id, a
-fresh loopback Mock SNS server, and a fresh outbound policy. `afterEach` disposes
-both through bounded cleanup. Cleanup failures and timeouts fail the gate
-instead of being logged and ignored, and a startup failure never disposes a
-previous test's instance.
-
-## CI
-
-CI runs `npm run test:e2e` after the existing build and unit test steps, with no
-secrets configured. On Node.js 24 it also runs
-`npm run e2e:consumer -- --source tarball`, which installs only local tarballs.
-The suites fail closed on any outbound attempt outside the allowlist, so no live
-SNS traffic is possible from CI.
-
-## Interpreting failures
-
-Failures print the observed post state plus harness diagnostics with redacted
-secrets. Common causes:
-
-- `The bundled Worker is stale` or `is missing`: run `npm run build:package`.
-- `mock-sns-blocked: unexpected-*`: a publisher tried to reach a new endpoint;
-  update the production adapter or extend the documented allowlist deliberately.
-- `mock-sns-blocked: redirect-response`: the Mock SNS answered with a redirect.
-  The harness refused it by design.
-- A timeout showing `pending` publications: the local Queue consumer did not
-  deliver; check that `queueConsumers` matches the queue name in
-  `wrangler.jsonc`.
+- Live-account publishing for any platform, local or remote.
+- Execution on Linux: local evidence so far is macOS arm64.
+- The Node.js 22 and 24 matrix on both macOS and Linux: CI runs it, but this
+  checkout's own evidence does not include it.
+- Registry installation: not verified; this task built and installed the local
+  tarball only and performed no npm publish.

@@ -23,7 +23,6 @@ packages/sdk               Public HTTP client for one deployed instance
 packages/cli               Public `syndroo` command: local publish/retry/receipts
                            plus the retained remote commands and the bundled Skill
 packages/cloudflare-worker Public bundled Worker, D1, Queue, Cron, orchestration
-experiments/               Isolated compatibility experiments
 scripts/deploy.ts          Cloudflare deployment and D1 recovery
 wrangler.jsonc             Sole production Worker manifest
 ```
@@ -57,21 +56,33 @@ Dependency direction:
 
 ## Platform adapters
 
-Installed adapters: `threads`, `bluesky`, `x`, `tumblr`, and `linkedin`. Threads, Tumblr, and LinkedIn use native HTTP;
-Bluesky and X use official SDKs. X requires all four OAuth 1.0a credentials.
+Installed adapters: `threads`, `bluesky`, `x`, `tumblr`, and `linkedin` (private
+packages). Threads, Tumblr, and LinkedIn use native HTTP; Bluesky and X use
+official SDKs. X requires all four OAuth 1.0a credentials.
 
 Known but uninstalled platforms must return `PLATFORM_NOT_CONFIGURED` at request validation. Never accept work that cannot be dispatched.
 
-To add a platform:
+Local scope is fixed for `0.6`: Bluesky and Threads, plain text, local
+publishing, plus the retained remote commands. The other adapters are preserved
+for the remote path and are not local targets; do not add a platform, a local
+OAuth flow, or a local scheduling path without an explicit requirement. Keep
+every existing adapter's behavior and tests intact when working on the local
+surface.
 
-1. Add `packages/<platform>`.
-2. Implement the core `Publisher` contract.
-3. Normalize provider failures to `PublishError`.
-4. Add adapter unit tests.
-5. Mark the platform available in request validation.
-6. Wire one explicit case in `publisherFor()`.
-7. Add required bindings and regenerate Worker types.
-8. Update README setup, limits, examples, and status behavior.
+## Local invariants
+
+- A local preview writes a signed frozen plan; only executing that same plan
+  sends content. The execution never re-reads the input document.
+- One logical delivery is `(namespace, key, provider, targetId)`. A succeeded
+  delivery replays its original result instead of sending again, and the same
+  key and target with different content conflicts rather than overwriting.
+- An `unknown` target outcome stops blind retries; a retry must select targets
+  whose failure is provably `not_applied`.
+- Every local write happens under the global write lock, and recovery is
+  explicit. A lock whose owner record is missing is fail-closed: never delete or
+  reclaim a lock automatically.
+- State permissions (`0700` directories, `0600` files) limit access; they are
+  not encryption. Local plans and receipts contain post text and account data.
 
 ## Reliability invariants
 
@@ -118,6 +129,8 @@ To add a platform:
 
 ```bash
 npm install
+npm run pack:cli
+npm run e2e:cli-local
 npm run db:migrate:local
 npm test
 npm run check
@@ -127,21 +140,27 @@ npm run build:package
 npm run dev
 ```
 
+The candidate versions are split, so the release-set scripts need
+`SYNDROO_RELEASE_SET=cli`; the default `all` set stays strict and reports that
+mismatch on purpose.
+
 Use focused package tests while iterating. Before handing off code changes:
 
 1. Run relevant tests.
-2. Run `npm test` and `npm run check` for shared contracts, adapters, API, database, or deployment changes.
-3. Run `npm run bundle` for Worker or Wrangler changes.
-4. Run `npm run startup` when Worker imports or startup work changes.
+2. Run `npm test` and `npm run check` (`SYNDROO_RELEASE_SET=cli`) for shared contracts, local use cases, adapters, API, database, or deployment changes.
+3. Run `npm run e2e:cli-local` for CLI packaging or local workflow changes.
+4. Run `npm run bundle` for Worker or Wrangler changes, and `npm run startup` when Worker imports or startup work changes.
 5. Run `git diff --check` and inspect final `git diff`.
 
 After binding changes, run `npm run check`; the Worker workspace regenerates `worker-configuration.d.ts` from `wrangler.jsonc`.
 
 ## Documentation
 
-- Keep README examples executable with the current API.
-- State clearly that v0.1 is an HTTP API service without a web dashboard.
-- Keep supported platforms, required secrets, content limits, Cron cadence, and deployment steps synchronized with code.
+- The root `README.md` is the local CLI operating guide. Keep its examples executable and keep the retained remote path to a short section that links the package documentation: `docs/remote-compatibility.md`, `packages/cloudflare-worker/README.md`, `packages/sdk/README.md`, and `skills/syndroo-connect.md`.
+- Keep `docs/cli-manual.md` and `docs/agent-quickstart.md` aligned with the local CLI, and `docs/testing.md` and `docs/releasing.md` aligned with the real gates, release sets, and unverified areas.
+- Keep the bundled Skill (`packages/cli/skills/syndroo/`) as the single shipped Skill source; the commands, flags, and exit codes it documents must match the built `--help`.
+- State the current candidate versions and what is unverified. Local providers are `fixture-tested`; never describe local publishing as live-validated, and never describe a package as published before it is.
+- Keep supported platforms, required secrets, content limits, Cron cadence, and deployment steps synchronized with code; the remote path is documented in the Worker and SDK package READMEs.
 - Do not claim a platform feature before its adapter, tests, configuration, and documentation all exist.
 - The repository and public Worker package use Apache-2.0. Preserve `LICENSE`,
   `NOTICE`, and required notices in distributions.

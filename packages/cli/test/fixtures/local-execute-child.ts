@@ -135,17 +135,24 @@ export interface SpawnedChild {
   readonly stderr: () => string;
 }
 
-/** Spawns one child process in the given mode; no shell is involved. */
+/**
+ * Spawns one child process in the given mode; no shell is involved.
+ *
+ * `nowIso` is the parent fixture's clock snapshot. The child uses exactly that
+ * instant, so the frozen plan's 24h TTL is evaluated against the clock the plan
+ * was frozen with instead of the wall clock.
+ */
 export function spawnExecutionChild(
   entry: string,
   mode: ChildMode,
   stateHome: string,
   planId: string,
   controlDir: string,
+  nowIso: string,
 ): SpawnedChild {
   const child = spawn(
     process.execPath,
-    [entry, mode, stateHome, planId, controlDir],
+    [entry, mode, stateHome, planId, controlDir, nowIso],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let stderr = "";
@@ -302,12 +309,17 @@ function buildProvider(
 }
 
 async function main(): Promise<void> {
-  const [mode, stateHome, planId, controlDir] = process.argv.slice(2) as [
+  const [mode, stateHome, planId, controlDir, nowIso] = process.argv.slice(2) as [
     ChildMode,
     string,
     string,
     string,
+    string,
   ];
+  // Fixed to the parent's frozen-clock snapshot; an unset or invalid value
+  // fails closed (the store and the plan refuse a non-representable clock)
+  // instead of silently falling back to the wall clock.
+  const now = (): Date => new Date(nowIso);
   const controller = new AbortController();
   const onSignal = (): void => {
     controller.abort(new Error("signal"));
@@ -317,7 +329,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", onSignal);
 
   const counter = { publishCalls: 0, publishedIds: [] as string[] };
-  const store = createLocalFileStore(stateHome);
+  const store = createLocalFileStore(stateHome, { now });
   const providers = {
     bluesky: buildProvider("bluesky", mode, controlDir, counter),
     threads: buildProvider("threads", mode, controlDir, counter),
@@ -345,6 +357,7 @@ async function main(): Promise<void> {
             : { provider: "threads", accessToken: "child-token" },
         signal: controller.signal,
         kind: "publish",
+        now,
       }),
     );
     const exitCode = exitCodeForResult(result);

@@ -11,12 +11,25 @@ Thank you for helping improve Syndroo.
 4. Run:
 
    ```bash
+   export SYNDROO_RELEASE_SET=cli   # candidate versions are split
    npm test
    npm run check
-   npm run bundle
-   npm run startup
+   npm run e2e:cli-local            # local CLI packaging and workflow
+   npm run bundle                   # Worker or Wrangler changes
+   npm run startup                  # Worker imports or startup changes
    git diff --check
    ```
+
+   The default `SYNDROO_RELEASE_SET=all` train stays strict and reports the
+   current version mismatch by design; use the `cli` set while the candidate
+   versions differ.
+
+5. Documentation changes: keep the root `README.md` a local CLI operating guide,
+   keep the retained remote path in
+   [docs/remote-compatibility.md](docs/remote-compatibility.md), and keep
+   [docs/testing.md](docs/testing.md) and
+   [docs/releasing.md](docs/releasing.md) aligned with the real gates. Do not
+   claim live validation or a published package before either exists.
 
 ## Developer Certificate of Origin
 

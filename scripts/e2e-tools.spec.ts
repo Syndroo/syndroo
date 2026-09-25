@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const WEB_SCRIPT = fileURLToPath(new URL("./e2e-web.js", import.meta.url));
 const LIVE_SCRIPT = fileURLToPath(new URL("./e2e-live.js", import.meta.url));
 const CONSUMER_SCRIPT = fileURLToPath(new URL("./e2e-consumer.js", import.meta.url));
 const FIXTURE_ROOT = await mkdtemp(join(tmpdir(), "syndroo-e2e-tools-"));
 
-for (const script of [WEB_SCRIPT, LIVE_SCRIPT, CONSUMER_SCRIPT]) {
+for (const script of [LIVE_SCRIPT, CONSUMER_SCRIPT]) {
   assert.ok(
     existsSync(script),
     `Compiled script missing at ${script}. Run \`npm run build:scripts\` first.`,
@@ -90,118 +89,6 @@ function run(
 
 after(async () => {
   await rm(FIXTURE_ROOT, { recursive: true, force: true });
-});
-
-describe("e2e:web delegation", () => {
-  it("refuses to run when the website checkout is missing", async () => {
-    const absent = join(FIXTURE_ROOT, "absent");
-    const result = run(WEB_SCRIPT, ["--root", absent]);
-
-    assert.equal(result.status, 1);
-    assert.match(String(result.json["error"]), /website repository was not found/u);
-    assert.equal(result.json["lookedFor"], absent);
-  });
-
-  it("refuses a directory that is not the website checkout", async () => {
-    const directory = join(FIXTURE_ROOT, "not-web");
-
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "package.json"),
-      `${JSON.stringify({ name: "something-else", version: "1.0.0" }, null, 2)}\n`,
-      "utf8",
-    );
-
-    const result = run(WEB_SCRIPT, ["--root", directory]);
-
-    assert.equal(result.status, 1);
-    assert.match(String(result.json["error"]), /no "build" script/u);
-  });
-
-  it("asks for an install instead of running one implicitly", async () => {
-    const directory = await createWebFixture("web-no-modules", { nodeModules: false });
-    const result = run(WEB_SCRIPT, ["--root", directory]);
-
-    assert.equal(result.status, 1);
-    assert.match(String(result.json["error"]), /no node_modules/u);
-  });
-
-  it("runs the website build, check, and test in order", async () => {
-    const directory = await createWebFixture("web-happy");
-    const log = join(directory, "invocations.log");
-    const result = run(WEB_SCRIPT, ["--root", directory], { env: { FAKE_WEB_LOG: log } });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readLog(log), ["build", "check", "test"]);
-    assert.equal(result.json["project"], null);
-    assert.match(result.stderr, /no --project given/u);
-  });
-
-  it("omits the unit tests when asked and still records the order", async () => {
-    const directory = await createWebFixture("web-skip-tests");
-    const log = join(directory, "invocations.log");
-    const result = run(WEB_SCRIPT, ["--root", directory, "--skip-tests"], {
-      env: { FAKE_WEB_LOG: log },
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readLog(log), ["build", "check"]);
-  });
-
-  it("stops at the first failing step", async () => {
-    const directory = await createWebFixture("web-failing-check");
-    const log = join(directory, "invocations.log");
-    const result = run(WEB_SCRIPT, ["--root", directory], {
-      env: { FAKE_WEB_LOG: log, FAKE_WEB_FAIL: "check" },
-    });
-
-    assert.equal(result.status, 1);
-    assert.deepEqual(await readLog(log), ["build", "check"]);
-    assert.match(String(result.json["error"]), /"check" failed/u);
-  });
-
-  it("refuses a browser project when Playwright is not installed", async () => {
-    const directory = await createWebFixture("web-no-playwright");
-    const result = run(WEB_SCRIPT, ["--root", directory, "--project", "chrome"], {
-      env: { FAKE_WEB_LOG: join(directory, "invocations.log") },
-    });
-
-    assert.equal(result.status, 1);
-    assert.match(String(result.json["error"]), /Playwright is not installed/u);
-  });
-
-  it("forwards the project name to Playwright", async () => {
-    const directory = await createWebFixture("web-playwright", { playwright: true });
-    const log = join(directory, "invocations.log");
-    const result = run(WEB_SCRIPT, ["--root", directory, "--project", "chrome"], {
-      env: { FAKE_WEB_LOG: log },
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readLog(log), [
-      "build",
-      "check",
-      "test",
-      "playwright test --project=chrome",
-    ]);
-    assert.equal(result.json["project"], "chrome");
-  });
-
-  it("accepts the documented --project=<name> form", async () => {
-    const directory = await createWebFixture("web-playwright-equals", { playwright: true });
-    const log = join(directory, "invocations.log");
-    const result = run(WEB_SCRIPT, [`--root=${directory}`, "--project=chrome"], {
-      env: { FAKE_WEB_LOG: log },
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readLog(log), [
-      "build",
-      "check",
-      "test",
-      "playwright test --project=chrome",
-    ]);
-  });
 });
 
 describe("e2e:live plan gate", () => {
@@ -495,75 +382,6 @@ async function writeRegistryPreload(name: string): Promise<string> {
   await writeFile(path, FAKE_REGISTRY_MODULE, "utf8");
 
   return path;
-}
-
-/**
- * A minimal but real web checkout: `npm run <script>` works and records each
- * invocation, so the delegation order is observable without a network install.
- */
-async function createWebFixture(
-  name: string,
-  options: {
-    readonly nodeModules?: boolean;
-    readonly playwright?: boolean;
-  } = {},
-): Promise<string> {
-  const directory = join(FIXTURE_ROOT, name);
-
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(directory, "record.mjs"),
-    [
-      'import { appendFileSync } from "node:fs";',
-      'appendFileSync(process.env.FAKE_WEB_LOG, process.argv.slice(2).join(" ") + "\\n");',
-      'if (process.env.FAKE_WEB_FAIL === process.argv[2]) { process.exitCode = 1; }',
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    join(directory, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "syndroo-web-fixture",
-        version: "0.0.0",
-        private: true,
-        scripts: {
-          build: "node record.mjs build",
-          check: "node record.mjs check",
-          test: "node record.mjs test",
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  if (options.nodeModules !== false) {
-    await mkdir(join(directory, "node_modules"), { recursive: true });
-  }
-
-  if (options.playwright === true) {
-    const bin = join(directory, "node_modules", ".bin");
-
-    await mkdir(bin, { recursive: true });
-    const path = join(bin, "playwright");
-
-    await writeFile(
-      path,
-      [
-        "#!/usr/bin/env node",
-        'import { appendFileSync } from "node:fs";',
-        'appendFileSync(process.env.FAKE_WEB_LOG, "playwright " + process.argv.slice(2).join(" ") + "\\n");',
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(path, 0o755);
-  }
-
-  return directory;
 }
 
 /**
