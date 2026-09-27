@@ -1,8 +1,8 @@
 # Syndroo
 
 Publish plain text to Bluesky and Threads from your own machine, with no
-server, queue, or database in the path. Nothing is sent until you preview a
-frozen plan and then execute that same plan.
+server, queue, or database in the path. `publish` sends directly after
+confirmation; add `--dry-run` for an optional, read-only preview.
 
 This is the `0.6.0-rc.1` CLI-first candidate. Build and install its local
 tarball for validation; live-account acceptance has not been run for it.
@@ -34,11 +34,10 @@ and must be a plain file only you can read (`chmod 600`). The CLI never reads
 `.env`, never mixes sources, and stores a reference plus a stable account id,
 never the secret.
 
-Write one strict JSON document, preview it, then execute that same plan:
+Save one strict JSON document as `post.json` and publish it:
 
 ```json
 {
-  "schemaVersion": 1,
   "key": "release-announcement-001",
   "content": "Syndroo now publishes from the command line.",
   "platforms": ["bluesky"]
@@ -46,16 +45,29 @@ Write one strict JSON document, preview it, then execute that same plan:
 ```
 
 ```bash
-syndroo publish --input post.json --dry-run --json
-syndroo publish --plan <plan-id> --yes --no-input --json
+syndroo publish --input post.json --yes --no-input --json
 syndroo receipts show <operation-id> --json
 ```
 
-The preview writes a signed plan and makes no platform request. Execution takes
-the local write lock and sends at most one content request per target. Exit `0`
-on a preview means the plan was written; only a full success means everything
-was published. An `unknown` outcome stops blind retries, so read the receipt
-instead of re-sending.
+For generated content, pass serialized JSON directly with `--data`:
+
+```bash
+syndroo publish --data '{"key":"release-announcement-002","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
+syndroo publish --input post.json --dry-run --json
+```
+
+Choose exactly one source: `--data`, `--input <file>`, or `--input -` for stdin.
+`schemaVersion` defaults to `1`. Inline content can appear in shell history and
+process arguments; use stdin for sensitive text and keep credentials out of
+post JSON. Agents should pass serialized JSON as one argument, not build a
+shell command from post text. Run bare `syndroo` or `syndroo -h` for help.
+
+A dry-run creates no state, resolves no credentials, and makes no network
+request. A later publish reads its current input; it is not tied to an earlier
+preview. Within one publish, confirmation and sending use the same snapshot.
+Execution holds the local write lock and sends at most one content request per
+target. Exit `0` on a preview means validation succeeded, not publication.
+An `unknown` outcome stops blind retries: read the receipt instead of re-sending.
 
 Full command reference: [docs/cli-manual.md](docs/cli-manual.md). Agent
 quickstart: [docs/agent-quickstart.md](docs/agent-quickstart.md). The bundled

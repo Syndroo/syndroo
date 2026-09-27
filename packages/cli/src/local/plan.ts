@@ -26,12 +26,14 @@ import {
 import type { LocalPreviewResult } from "./results.js";
 
 /**
- * Offline frozen publish plans.
+ * Offline publish intents.
  *
- * A preview freezes the exact content, payload and target binding, signs the
- * plan under the installation key, and stores it. Nothing here touches the
- * network, a credential source, or a provider session: `provider.freeze` is the
- * only provider call, and it is pure capability validation.
+ * Building an intent freezes the exact content, payload and target binding and
+ * signs it under the installation key. Nothing here touches the network, a
+ * credential source or a provider session. It reads state through the store;
+ * `provider.freeze` is pure capability validation. Persisting
+ * the intent is a separate step so `--dry-run` stays an offline read-only
+ * preview.
  *
  * Every write assumes the caller already holds the global write lock.
  */
@@ -77,13 +79,14 @@ export async function signLocalPlan(
 }
 
 /**
- * Freezes one publish preview and persists it.
+ * Freezes one publish intent without writing anything.
  *
- * The plan is written before any content request can happen; a plan with a
- * `blocked` item is still saved, so the operator can see why and use the
- * original receipt or an explicit retry instead.
+ * The intent is the immutable execution snapshot: it is persisted before any
+ * content request can happen. A `blocked` item is still carried, so the
+ * operator can see why and use the original receipt or an explicit retry
+ * instead.
  */
-export async function planLocalPublish(
+export async function buildLocalPublishIntent(
   document: LocalPublishDocument,
   options: PlanLocalPublishOptions,
 ): Promise<LocalPlan> {
@@ -183,9 +186,17 @@ export async function planLocalPublish(
     parentOperationId: null,
   };
   const { digest, mac } = await signLocalPlan(body, store);
-  const plan: LocalPlan = { ...body, digest, mac };
 
-  await store.putPlan(plan);
+  return { ...body, digest, mac };
+}
+
+export async function planLocalPublish(
+  document: LocalPublishDocument,
+  options: PlanLocalPublishOptions,
+): Promise<LocalPlan> {
+  const plan = await buildLocalPublishIntent(document, options);
+
+  await options.store.putPlan(plan);
 
   return plan;
 }
@@ -241,11 +252,14 @@ export async function loadLocalPlan(
   return plan;
 }
 
-/** The result DTO for `publish --dry-run`, exactly as the schema defines it. */
+/**
+ * The public result DTO for one previewed intent.
+ *
+ * It deliberately carries no plan identity or expiry: the internal execution
+ * snapshot is not part of the public surface.
+ */
 export function previewForPlan(plan: LocalPlan): LocalPreviewResult {
   return {
-    planId: plan.planId,
-    expiresAt: plan.expiresAt,
     digest: plan.digest,
     items: plan.items.map(item => ({
       key: item.delivery.key,

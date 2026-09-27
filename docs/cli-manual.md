@@ -33,8 +33,10 @@ need to publish or install the internal workspace packages first.
 
 ## What the local path does
 
-Plain text to Bluesky and Threads, in the foreground, from this machine. One
-logical post becomes one frozen plan, and that plan is executed explicitly.
+Plain text to Bluesky and Threads, in the foreground, from this machine.
+`publish` sends directly after confirmation; `--dry-run` is an optional preview.
+Bare `syndroo`, `syndroo -h`, and `syndroo --help` show help without config,
+state writes, credential access, or network calls.
 
 Out of scope for this version: scheduling, media, replies or threads, batch and
 watch modes, RSS, platforms other than Bluesky and Threads, local OAuth or
@@ -58,11 +60,12 @@ syndroo providers list
 deduplication domain, not a permission boundary: changing it creates an
 independent identity for the same text, which is why it is not a repair.
 
-The state holds `installation.json`, `integrity.key`, `connections/`, `plans/`,
+The state holds `installation.json`, `integrity.key`, `connections/`, `intents/`,
 `operations/`, `deliveries/`, a write lock, a recovery guard, and quarantine
 evidence. Directories are `0700` and files are `0600`. Those permissions limit
-access; they are not encryption, and plans and receipts contain the post text
-and the account identity.
+access; they are not encryption, and intents and receipts contain the post text
+and the account identity. Older `plans/` records remain readable for existing
+operations; new publishing never writes that directory.
 
 ## Register an account
 
@@ -118,7 +121,6 @@ does not revoke anything at the platform.
 
 ```json
 {
-  "schemaVersion": 1,
   "key": "release-announcement-001",
   "content": "Syndroo now publishes from the command line.",
   "platforms": ["bluesky", "threads"],
@@ -129,30 +131,45 @@ does not revoke anything at the platform.
 `key` is the stable logical identity (1-128 characters from `A-Z a-z 0-9 . _ :
 -`). `content` is non-blank and at most 10000 Unicode code points. `platforms`
 must be non-empty, must not repeat, and may only name `bluesky` or `threads`.
-`overrides` may only name a selected platform.
+`overrides` may only name a selected platform. `schemaVersion` is optional and
+defaults to `1`; explicit null or unsupported versions are refused.
 
-The file is strict JSON: comments, trailing commas, repeated keys, invalid
+Every input is strict JSON: comments, trailing commas, repeated keys, invalid
 UTF-8, and unpaired surrogates are refused, and one leading byte-order mark is
 tolerated. The source limit is 64 KiB before decoding. `--input -` reads stdin.
-There is no text shortcut; a post always starts from this document. The
-provider's own limit still applies after this validation.
+`--data <json>` accepts the same document inline. Choose exactly one source:
+inline JSON, file, or stdin. Conflicts fail before reading input or changing
+state. There is no text shortcut. Provider limits still apply.
 
-## Preview, then execute
+## Publish directly
+
+```bash
+syndroo publish --input post.json --yes --no-input --json
+syndroo publish --data '{"key":"agent-post-001","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
+```
+
+Use reusable files for maintained content, or inline JSON for generated content
+without a temporary file. Inline content may appear in shell history and
+process arguments. Use `--input -` with stdin for sensitive text. Keep
+credentials out of post JSON, and pass generated JSON as one argument rather
+than interpolating post text into a shell command.
+
+To validate and inspect before publishing, add an optional dry-run:
 
 ```bash
 syndroo publish --input post.json --dry-run --json
-syndroo publish --plan <plan-id> --yes --no-input --json
 ```
 
-The preview writes a signed plan and makes no platform request. Read it before
-executing: it shows the frozen text, the target account, the binding revision,
-and the frozen business timestamp. The plan lives 24 hours from creation, and
-execution never re-reads the document, so editing the file afterwards cannot
-change what was frozen.
+The preview requires existing local config and target bindings, but writes no
+state, takes no lock, resolves no credentials, and makes no network request.
+It shows text, accounts, binding revisions, and a business timestamp. A later
+publish reads the current input again; changing the file between commands
+changes that publish. Within one invocation, confirmation and sending use the
+same parsed snapshot, even if the source changes while the prompt is open.
 
 The execution holds the local write lock, re-checks that the account binding is
-still current, and sends at most one content request per target. Replaying an
-operation that already succeeded reports the original result and sends
+still current, and sends at most one content request per target. Publishing a
+delivery that already succeeded reports the original result and sends
 nothing.
 
 When a human can answer a prompt, the CLI asks before sending. When none can,
@@ -179,18 +196,17 @@ and stop. A `null` url means no verified link is known, so do not build one.
 
 ```bash
 syndroo retry <operation-id> --to threads --dry-run --json
-syndroo retry --plan <plan-id> --yes --no-input --json
+syndroo retry <operation-id> --to threads --yes --no-input --json
 ```
 
-Retry is explicit and two-phase, exactly like publish. Only targets whose
+Retry executes directly; its optional dry-run is read-only. Only targets whose
 failure is provably `not_applied` are eligible, and only within three content
 attempts per logical delivery. A selection that includes an `unknown` target
 blocks the whole retry; narrow it to other safe targets instead. A succeeded
 target is never republished.
 
 If credentials were rotated, the retry preview shows the old and the new
-binding, and the same stable account must be re-verified before the plan is
-accepted.
+binding, and the same stable account must be re-verified before retrying.
 
 ## State inspection and recovery
 
@@ -224,7 +240,7 @@ duplicate.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The command finished: a plan was written, a query read successfully, or a run fully succeeded |
+| `0` | The command finished: a preview validated, a query read successfully, or a run fully succeeded |
 | `1` | Local I/O or runtime failure, or a trusted success that could not be persisted |
 | `2` | Admission failure: usage, config, document, confirmation, or binding. No content request |
 | `3` | A remote `posts wait` reached its deadline |
@@ -263,9 +279,9 @@ back to this path, and this path never reads local state.
 syndroo skill path
 ```
 
-The directory holds `SKILL.md` and its references. The skill describes the same
-two-phase workflow for an agent: preview, check authorization, execute the same
-plan, report every target. It is guidance, not an installer and not proof that
+The directory holds `SKILL.md` and its references. The skill describes direct
+publishing for an agent: prepare JSON, check authorization, optionally preview,
+publish, report every target. It is guidance, not an installer and not proof that
 any particular agent client will discover or run it.
 
 ## Evidence and limits

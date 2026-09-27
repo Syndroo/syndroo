@@ -289,8 +289,8 @@ function writeDocument(home: string, content: string, key = "process-fixture-1")
   return file;
 }
 
-/** init → auth set → one dry-run plan, the common setup for execution cases. */
-async function seedPlan(
+/** init → auth set → one source document, the common setup for execution cases. */
+async function seedDocument(
   entry: string,
   home: string,
   content: string,
@@ -322,7 +322,7 @@ async function seedPlan(
   ]);
   expect(preview.run.code).toBe(0);
 
-  return String(preview.envelope.result?.["planId"]);
+  return document;
 }
 
 function compileEntry(outDir: string): string {
@@ -531,7 +531,7 @@ describe("process entry: safe output", () => {
 describe("process entry: closed stdout after a successful publish", () => {
   it("does not resend, keeps the persisted success, and reports no stack", async () => {
     const home = makeHome("epipe-publish");
-    const planId = await seedPlan(ENTRY, home, "closed pipe content");
+    const document = await seedDocument(ENTRY, home, "closed pipe content");
     const control = makeControl("epipe-publish-run");
     const tracked = spawnEntry({
       entry: ENTRY,
@@ -539,8 +539,8 @@ describe("process entry: closed stdout after a successful publish", () => {
       spec: {
         argv: [
           "publish",
-          "--plan",
-          planId,
+          "--input",
+          document,
           "--yes",
           "--no-input",
           "--json",
@@ -589,7 +589,7 @@ describe("process entry: a real signal during a content request", () => {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     it(`stops with 130 on ${signal} and records the true receipt`, async () => {
       const home = makeHome(`signal-${signal}`);
-      const planId = await seedPlan(ENTRY, home, `slow provider under ${signal}`);
+      const document = await seedDocument(ENTRY, home, `slow provider under ${signal}`);
       const control = makeControl(`signal-${signal}-run`);
       const tracked = spawnEntry({
         entry: ENTRY,
@@ -597,8 +597,8 @@ describe("process entry: a real signal during a content request", () => {
         spec: {
           argv: [
             "publish",
-            "--plan",
-            planId,
+            "--input",
+            document,
             "--yes",
             "--no-input",
             "--json",
@@ -708,11 +708,11 @@ describe("process entry: real pty confirmation", () => {
 
   it("declines on a real terminal with exit 5 and no content request", async () => {
     const home = makeHome("pty-decline");
-    const planId = await seedPlan(ENTRY, home, "pty decline content");
+    const document = await seedDocument(ENTRY, home, "pty decline content");
     const control = makeControl("pty-decline-run");
     const result = await runPty(
       home,
-      { argv: ["publish", "--plan", planId, "--json"], controlDir: control },
+      { argv: ["publish", "--input", document, "--json"], controlDir: control },
       "Continue?",
       "n\n",
     );
@@ -723,11 +723,11 @@ describe("process entry: real pty confirmation", () => {
 
   it("accepts on a real terminal, publishes once, and reports ok", async () => {
     const home = makeHome("pty-accept");
-    const planId = await seedPlan(ENTRY, home, "pty accept content");
+    const document = await seedDocument(ENTRY, home, "pty accept content");
     const control = makeControl("pty-accept-run");
     const result = await runPty(
       home,
-      { argv: ["publish", "--plan", planId, "--json"], controlDir: control },
+      { argv: ["publish", "--input", document, "--json"], controlDir: control },
       "Continue?",
       "y\n",
     );
@@ -742,7 +742,7 @@ describe("process entry: real pty confirmation", () => {
 describe("process entry: global write lock across a real content request", () => {
   it("refuses an auth writer while a publish holds the lock, then allows it", async () => {
     const home = makeHome("lock");
-    const planId = await seedPlan(ENTRY, home, "lock holder content");
+    const document = await seedDocument(ENTRY, home, "lock holder content");
     const holderControl = makeControl("lock-holder");
     const holder = spawnEntry({
       entry: ENTRY,
@@ -750,8 +750,8 @@ describe("process entry: global write lock across a real content request", () =>
       spec: {
         argv: [
           "publish",
-          "--plan",
-          planId,
+          "--input",
+          document,
           "--yes",
           "--no-input",
           "--json",

@@ -264,7 +264,7 @@ export function unknownOutcome(): ProviderOutcome {
 }
 
 export function planFilePath(stateHome: string, planId: string): string {
-  return path.join(stateHome, "plans", `${planId}.json`);
+  return path.join(stateHome, "intents", `${planId}.json`);
 }
 
 /**

@@ -235,8 +235,13 @@ export function parseLocalPublishDocument(text: string): LocalPublishDocument {
     }
   }
 
-  if (value["schemaVersion"] !== 1) {
-    throw localError("INVALID_DOCUMENT", "schemaVersion must be the number 1");
+  const schemaVersion = value["schemaVersion"];
+
+  if (schemaVersion !== undefined && schemaVersion !== 1) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      "schemaVersion must be the number 1 when it is present",
+    );
   }
 
   const key = readKey(value["key"]);

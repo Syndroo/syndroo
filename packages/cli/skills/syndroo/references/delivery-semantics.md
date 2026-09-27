@@ -2,9 +2,9 @@
 
 Read this once a preview or a run has returned and you have to explain what happened.
 
-## A plan is not a publication
+## A preview is not a publication
 
-A preview writes a signed local plan and reports it. Nothing was sent. The exit code `0` on a preview says the plan exists, not that anything reached a platform.
+A preview validates input and reads existing local state. It creates no state, takes no write lock, resolves no credentials, and makes no network calls. Exit `0` means the preview succeeded, not that anything reached a platform.
 
 Only an execution sends content, and only its per-target results say what each platform did. A run is complete when every selected target succeeded and the result was persisted (`status: "succeeded"` with `durability: "committed"`).
 
@@ -36,11 +36,11 @@ Exit codes follow the same order: `4` for an unknown write, then `1` for a resul
 
 Report unknown as unknown. A provider that may have accepted the post before the connection dropped is not a clean failure, and treating it as one invites a duplicate.
 
-When a result is unknown, read it back with `syndroo receipts show <operation-id> --json` and stop. Do not send the post again under a new key, a new namespace, or a fresh state directory; that would publish the same text under a new identity. A retry is a separate, explicit decision: preview it with `syndroo retry <operation-id> --to <csv> --dry-run`, and select only targets whose outcome is provably safe.
+When a result is unknown, read it back with `syndroo receipts show <operation-id> --json` and stop. Do not send the post again under a new key, a new namespace, or a fresh state directory; that would publish the same text under a new identity. A retry is a separate, explicit decision: use `syndroo retry <operation-id> --to <csv> --yes --no-input` only for provably safe targets. Add `--dry-run` to preview without retrying.
 
 ## Retry rules
 
-- A succeeded target is never republished. Replaying its plan reports the original result with `reused: true` and sends nothing.
+- A succeeded target is never republished. Repeating the same delivery reports the original result with `reused: true` and sends nothing.
 - Only a definite `not_applied` failure is retryable, and only within the three-attempt budget for that logical delivery.
 - `retryNotBefore`, when present, must have passed.
 - A selection that includes an unknown target blocks the whole retry. The user can narrow the selection to other safe targets; the unknown record stays unknown.
@@ -52,4 +52,4 @@ When a result is unknown, read it back with `syndroo receipts show <operation-id
 
 ## What to report
 
-State the operation id, the plan id, the aggregate status, and the durability, then every target: provider, stable account id, status, attempt count, and remote id when one exists. Name the targets that succeeded before the ones that did not, and keep delivered, not delivered, and unknown in three separate buckets. When a link is `null`, say that no verified link is known rather than constructing one.
+State the operation id, aggregate status, and durability, then every target: provider, stable account id, status, attempt count, and remote id when one exists. Name the targets that succeeded before the ones that did not, and keep delivered, not delivered, and unknown in three separate buckets. When a link is `null`, say that no verified link is known rather than constructing one.

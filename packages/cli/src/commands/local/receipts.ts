@@ -134,7 +134,6 @@ export async function runReceiptsList(
 
     summaries.push({
       operationId: operation.operationId,
-      planId: operation.planId,
       status: operationStatus(operation, records, now),
       admissionState: operation.admissionState,
       durability: durabilityOf(operation, records),
@@ -199,7 +198,6 @@ export async function runReceiptsShow(
     result: {
       operation: {
         operationId: operation.operationId,
-        planId: operation.planId,
         status,
         admissionState: operation.admissionState,
         durability: durabilityOf(operation, records),

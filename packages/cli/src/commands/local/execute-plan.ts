@@ -1,8 +1,9 @@
 import { EXIT_CODE } from "../../exit-codes.js";
 import { credentialResolver, type LocalRuntime } from "../../local/composition.js";
-import type { PlanKind } from "../../local/ports/local-store.js";
+import type { LocalPlan, PlanKind } from "../../local/ports/local-store.js";
 import {
   exitCodeForResult,
+  publicExecutionResult,
   type LocalExecutionResult,
 } from "../../local/results.js";
 import { LocalLockReleaseError } from "../../local/state/lock.js";
@@ -11,28 +12,32 @@ import type { CommandContext } from "../context.js";
 import { safeDiagnostic, type LocalCommandOutcome } from "./shared.js";
 
 /**
- * Executes one already-confirmed frozen plan.
+ * Persists and executes one already-confirmed intent.
  *
  * The global write lock is held for the whole run, so two invocations cannot
- * both admit the same plan. The execution module is imported lazily so the
- * legacy remote commands never load it.
+ * both admit the same intent, and no reader can observe a half-written one. The
+ * intent was built from the in-memory document the operator approved, so the
+ * source file is never read again. The execution module is imported lazily so
+ * the legacy remote commands never load it.
  */
 export async function executeFrozenPlan(
   context: CommandContext,
   runtime: LocalRuntime,
-  planId: string,
-  kind: PlanKind,
+  intent: LocalPlan,
   timeoutMs: number,
 ): Promise<LocalCommandOutcome> {
   const { executeLocalPlan } = await import("../../local/execute.js");
   const resolveCredentials = credentialResolver(context, runtime);
+  const kind = intent.kind;
 
   let result: LocalExecutionResult;
   let lockFailure = false;
 
   try {
-    result = await withLocalWriteLock(runtime.stateHome, () =>
-      executeLocalPlan(planId, {
+    result = await withLocalWriteLock(runtime.stateHome, async () => {
+      await runtime.store.putPlan(intent);
+
+      return executeLocalPlan(intent.planId, {
         store: runtime.store,
         providers: runtime.providers,
         resolveCredentials,
@@ -40,8 +45,8 @@ export async function executeFrozenPlan(
         kind,
         now: runtime.clock,
         timeoutMs,
-      }),
-    );
+      });
+    });
   } catch (error) {
     if (error instanceof LocalLockReleaseError) {
       // The run finished; only the cleanup failed. Keep its evidence and report
@@ -173,9 +178,9 @@ export function executionOutcome(
 
   return {
     ok: ok && diagnosticsOk,
-    result: effective,
+    result: publicExecutionResult(effective),
     human: [
-      `syndroo ${kind} --plan`,
+      `syndroo ${kind}`,
       `  operation  ${effective.operationId}`,
       `  status     ${effective.status}`,
       `  durability ${effective.durability}`,

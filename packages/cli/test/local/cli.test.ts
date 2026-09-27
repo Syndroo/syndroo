@@ -562,7 +562,6 @@ describe("publish, receipts, and retry", () => {
     ).toBe(0);
 
     const preview = envelopeResult(h.lastEnvelope());
-    const planId = preview["planId"] as string;
     const items = preview["items"] as Record<string, unknown>[];
 
     expect(items).toHaveLength(1);
@@ -573,7 +572,7 @@ describe("publish, receipts, and retry", () => {
     h.bluesky.queue(succeeded());
 
     expect(
-      await h.run(["publish", "--plan", planId, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"]),
     ).toBe(0);
 
     const executed = envelopeResult(h.lastEnvelope()) as Record<string, unknown>;
@@ -583,9 +582,9 @@ describe("publish, receipts, and retry", () => {
     expect(results[0]?.["status"]).toBe("succeeded");
     expect(h.bluesky.calls.publish).toBe(1);
 
-    // Replay of an admitted plan reads records and never calls the provider.
+    // The delivery key reuses the recorded success without another content request.
     expect(
-      await h.run(["publish", "--plan", planId, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"]),
     ).toBe(0);
     expect(h.bluesky.calls.publish).toBe(1);
 
@@ -610,12 +609,11 @@ describe("publish, receipts, and retry", () => {
 
     await h.run(["publish", "--input", file, "--dry-run", "--json"]);
 
-    const planId = envelopeResult(h.lastEnvelope())["planId"] as string;
 
     h.bluesky.queue(unknownOutcome());
 
     expect(
-      await h.run(["publish", "--plan", planId, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"]),
     ).toBe(4);
 
     const unknown = envelopeResult(h.lastEnvelope());
@@ -636,12 +634,11 @@ describe("publish, receipts, and retry", () => {
 
     await h.run(["publish", "--input", secondFile, "--dry-run", "--json"]);
 
-    const secondPlan = envelopeResult(h.lastEnvelope())["planId"] as string;
 
     h.bluesky.queue(notApplied());
 
     expect(
-      await h.run(["publish", "--plan", secondPlan, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", secondFile, "--yes", "--no-input", "--json"]),
     ).toBe(6);
     expect(envelopeError(h.lastEnvelope())["code"]).toBe("NOT_DELIVERED");
 
@@ -658,17 +655,16 @@ describe("publish, receipts, and retry", () => {
       ]),
     ).toBe(0);
 
-    const retryPlan = envelopeResult(h.lastEnvelope())["planId"] as string;
 
     h.bluesky.queue(succeeded("at://fixture/retry"));
 
     expect(
-      await h.run(["retry", "--plan", retryPlan, "--yes", "--no-input", "--json"]),
+      await h.run(["retry", secondOperation, "--to", "bluesky", "--yes", "--no-input", "--json"]),
     ).toBe(0);
     expect(h.bluesky.calls.publish).toBe(3);
   });
 
-  it("rejects a namespace that does not own the frozen plan", async () => {
+  it("rejects retry for a namespace that does not own the operation", async () => {
     const h = harness();
 
     await ready(h);
@@ -677,13 +673,17 @@ describe("publish, receipts, and retry", () => {
 
     await h.run(["publish", "--input", file, "--dry-run", "--json"]);
 
-    const planId = envelopeResult(h.lastEnvelope())["planId"] as string;
+
+    h.bluesky.queue(succeeded());
+    expect(await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"])).toBe(0);
+    const operationId = envelopeResult(h.lastEnvelope())["operationId"] as string;
 
     expect(
       await h.run([
-        "publish",
-        "--plan",
-        planId,
+        "retry",
+        operationId,
+        "--to",
+        "bluesky",
         "--namespace",
         "other",
         "--yes",
@@ -692,7 +692,7 @@ describe("publish, receipts, and retry", () => {
       ]),
     ).toBe(2);
     expect(envelopeError(h.lastEnvelope())["code"]).toBe("CONFIG");
-    expect(h.bluesky.calls.publish).toBe(0);
+    expect(h.bluesky.calls.publish).toBe(1);
   });
 });
 
@@ -743,13 +743,12 @@ describe("instruction-like content stays data (SEC-03)", () => {
     expect(h.bluesky.calls.prepare).toBe(0);
     expect(h.bluesky.calls.publish).toBe(0);
 
-    const planId = preview["planId"] as string;
     const verifyBefore = h.bluesky.calls.verifyIdentity;
 
     h.bluesky.queue(succeeded());
 
     expect(
-      await h.run(["publish", "--plan", planId, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"]),
     ).toBe(0);
 
     // The exact frozen text reached exactly one provider call, for the bound
@@ -784,7 +783,6 @@ describe("instruction-like content stays data (SEC-03)", () => {
 
     await h.run(["publish", "--input", file, "--dry-run", "--json"]);
 
-    const planId = envelopeResult(h.lastEnvelope())["planId"] as string;
     const verifyBefore = h.bluesky.calls.verifyIdentity;
 
     h.bluesky.queue(
@@ -794,7 +792,7 @@ describe("instruction-like content stays data (SEC-03)", () => {
     );
 
     expect(
-      await h.run(["publish", "--plan", planId, "--yes", "--no-input", "--json"]),
+      await h.run(["publish", "--input", file, "--yes", "--no-input", "--json"]),
     ).toBe(4);
 
     const envelope = h.lastEnvelope();
@@ -824,19 +822,20 @@ describe("argument strictness", () => {
     const operation = `op_${"b".repeat(64)}`;
 
     const cases: readonly (readonly string[])[] = [
-      ["publish", "--input", "x.json", "--json"],
+      ["publish", "--json"],
       ["publish", "--plan", plan, "--input", "x.json", "--json"],
       ["publish", "--plan", plan, "--dry-run", "--json"],
       ["publish", "--to", "bluesky", "--json"],
       ["publish", "--text", "plain text", "--json"],
       ["retry", operation, "--json"],
-      ["retry", operation, "--to", "bluesky", "--json"],
+      ["retry", "--to", "bluesky", "--json"],
       ["retry", "--plan", plan, "--to", "bluesky", "--json"],
       ["retry", "--key", "batch", "--json"],
     ];
 
     for (const argv of cases) {
       expect(await h.run(argv), argv.join(" ")).toBe(2);
+      expect(envelopeError(h.lastEnvelope())["code"]).toBe("USAGE");
     }
   });
 
@@ -888,7 +887,6 @@ describe("argument strictness", () => {
 
     await h.run(["publish", "--input", file, "--dry-run", "--json"]);
 
-    const planId = envelopeResult(h.lastEnvelope())["planId"] as string;
 
     h.bluesky.queue(succeeded());
     h.setStdoutFails(true);
@@ -896,8 +894,8 @@ describe("argument strictness", () => {
     const before = h.writes.stdout;
     const code = await h.run([
       "publish",
-      "--plan",
-      planId,
+      "--input",
+      file,
       "--yes",
       "--no-input",
       "--json",

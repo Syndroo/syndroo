@@ -93,6 +93,7 @@ import {
 export const INSTALLATION_FILE_NAME = "installation.json";
 export const INTEGRITY_KEY_FILE_NAME = "integrity.key";
 export const CONNECTIONS_DIR_NAME = "connections";
+export const INTENTS_DIR_NAME = "intents";
 export const PLANS_DIR_NAME = "plans";
 export const OPERATIONS_DIR_NAME = "operations";
 export const DELIVERIES_DIR_NAME = "deliveries";
@@ -123,10 +124,14 @@ const MAX_CONTENT_CHARS = MAX_LOCAL_CONTENT_CODE_POINTS * 2;
 /** Fixed collection directories every initialized state owns. */
 const COLLECTION_DIR_NAMES = [
   CONNECTIONS_DIR_NAME,
-  PLANS_DIR_NAME,
   OPERATIONS_DIR_NAME,
   DELIVERIES_DIR_NAME,
   QUARANTINE_DIR_NAME,
+] as const;
+
+const OPTIONAL_COLLECTION_DIR_NAMES = [
+  INTENTS_DIR_NAME,
+  PLANS_DIR_NAME,
 ] as const;
 
 /** Static code for an `in_flight` record that recovery turned into `unknown`. */
@@ -951,7 +956,33 @@ async function readPlanRecord(
   key: Buffer,
   planId: string,
 ): Promise<LocalPlan | null> {
+  const intentDir = path.join(root, INTENTS_DIR_NAME);
+
+  if (await pathExists(intentDir)) {
+    await assertControlledDirectory(intentDir);
+
+    const intentBytes = await readControlledFile(
+      path.join(intentDir, `${planId}.json`),
+    );
+
+    if (intentBytes !== null) {
+      const intent = readPlanShape(parseStateValue(intentBytes));
+
+      if (intent.planId !== planId) {
+        corrupt("the intent record", "does not match its file name");
+      }
+
+      await verifyPlanSignature(installation, key, intent);
+
+      return intent;
+    }
+  }
+
   const dir = path.join(root, PLANS_DIR_NAME);
+
+  if (!(await pathExists(dir))) {
+    return null;
+  }
 
   await assertControlledDirectory(dir);
 
@@ -1070,6 +1101,7 @@ async function assertFreshState(root: string): Promise<void> {
     INSTALLATION_FILE_NAME,
     INTEGRITY_KEY_FILE_NAME,
     CONNECTIONS_DIR_NAME,
+    INTENTS_DIR_NAME,
     PLANS_DIR_NAME,
     OPERATIONS_DIR_NAME,
     DELIVERIES_DIR_NAME,
@@ -1087,8 +1119,16 @@ async function assertFreshState(root: string): Promise<void> {
     }
   }
 
-  for (const name of COLLECTION_DIR_NAMES) {
-    if ((await fs.readdir(path.join(root, name))).length > 0) {
+  for (const name of [...COLLECTION_DIR_NAMES, ...OPTIONAL_COLLECTION_DIR_NAMES]) {
+    const directory = path.join(root, name);
+
+    if (!(await pathExists(directory))) {
+      continue;
+    }
+
+    await assertControlledDirectory(directory);
+
+    if ((await fs.readdir(directory)).length > 0) {
       throw stateFailure(
         "STATE_CORRUPT",
         "the state directory already holds history",
@@ -1101,6 +1141,21 @@ async function assertFreshState(root: string): Promise<void> {
 async function assertCompleteLayout(root: string): Promise<void> {
   for (const name of COLLECTION_DIR_NAMES) {
     await assertControlledDirectory(path.join(root, name));
+  }
+
+  let hasIntents = false;
+
+  for (const name of OPTIONAL_COLLECTION_DIR_NAMES) {
+    const directory = path.join(root, name);
+
+    if (await pathExists(directory)) {
+      await assertControlledDirectory(directory);
+      hasIntents = true;
+    }
+  }
+
+  if (!hasIntents) {
+    throw stateFailure("STATE_CORRUPT", "the execution intent collection is missing");
   }
 }
 
@@ -1128,6 +1183,8 @@ async function initializeStore(context: StoreContext): Promise<void> {
   for (const name of COLLECTION_DIR_NAMES) {
     await ensureChildDirectory(root, name);
   }
+
+  await ensureChildDirectory(root, INTENTS_DIR_NAME);
 
   await assertFreshState(root);
 
@@ -1267,9 +1324,7 @@ async function putPlan(
 
   await verifyPlanSignature(installation, key, validated);
 
-  const dir = path.join(root, PLANS_DIR_NAME);
-
-  await assertControlledDirectory(dir);
+  const dir = await ensureChildDirectory(root, INTENTS_DIR_NAME);
 
   const existing = await readPlanRecord(root, installation, key, validated.planId);
 
@@ -1277,7 +1332,7 @@ async function putPlan(
     if (canonicalJson(existing) !== canonicalJson(validated)) {
       throw admissionFailure(
         "IDEMPOTENCY_CONFLICT",
-        "a different plan is already stored under this plan id",
+        "a different intent is already stored under this plan id",
       );
     }
 
@@ -2292,6 +2347,13 @@ export async function inspectLocalState(
     }
   }
 
+  if (
+    !(await pathExists(path.join(absolute, INTENTS_DIR_NAME))) &&
+    !(await pathExists(path.join(absolute, PLANS_DIR_NAME)))
+  ) {
+    defect(INTENTS_DIR_NAME, "directory");
+  }
+
   const lock = await readLockState(absolute);
 
   lockHeld = lock.held;
@@ -2337,6 +2399,31 @@ export async function inspectLocalState(
     },
   });
 
+  const visitPlanRecord = (label: string) =>
+    async (value: unknown, id: string): Promise<void> => {
+      const plan = readPlanShape(value);
+
+      if (plan.planId !== id) {
+        corrupt(label, "does not match its file name");
+      }
+
+      if (installation !== null && key !== null) {
+        await verifyPlanSignature(installation, key, plan);
+      }
+    };
+
+  await inspectCollection({
+    root: absolute,
+    dirName: INTENTS_DIR_NAME,
+    pattern: LOCAL_ID_PATTERN.planId,
+    key,
+    defect,
+    temporaryFiles,
+    envelope: false,
+    optional: true,
+    visit: visitPlanRecord("the intent record"),
+  });
+
   await inspectCollection({
     root: absolute,
     dirName: PLANS_DIR_NAME,
@@ -2345,17 +2432,8 @@ export async function inspectLocalState(
     defect,
     temporaryFiles,
     envelope: false,
-    visit: async (value, id) => {
-      const plan = readPlanShape(value);
-
-      if (plan.planId !== id) {
-        corrupt("the plan record", "does not match its file name");
-      }
-
-      if (installation !== null && key !== null) {
-        await verifyPlanSignature(installation, key, plan);
-      }
-    },
+    optional: true,
+    visit: visitPlanRecord("the plan record"),
   });
 
   await inspectCollection({
@@ -2384,12 +2462,17 @@ interface InspectCollectionOptions {
   readonly visit: (value: unknown, id: string) => void | Promise<void>;
   /** Records here are `{schemaVersion,data,mac}` envelopes; plans are not. */
   readonly envelope: boolean;
+  readonly optional?: boolean;
 }
 
 async function inspectCollection(
   options: InspectCollectionOptions,
 ): Promise<void> {
   const dir = path.join(options.root, options.dirName);
+
+  if (options.optional === true && !(await pathExists(dir))) {
+    return;
+  }
 
   // The directory is validated before it is listed, so a symlinked or unsafe
   // collection is reported instead of followed.

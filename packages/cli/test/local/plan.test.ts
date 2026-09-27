@@ -132,7 +132,7 @@ describe("planLocalPublish", () => {
 
     expect(added).toHaveLength(1);
     expect(added[0]).toMatch(
-      new RegExp(`^plans/${plan.planId}\\.json:`),
+      new RegExp(`^intents/${plan.planId}\\.json:`),
     );
     expect(await state.store.getDelivery(item.delivery.deliveryId)).toBeNull();
 
@@ -144,8 +144,6 @@ describe("planLocalPublish", () => {
 
     expect(loaded).toEqual(plan);
     expect(previewForPlan(loaded)).toEqual({
-      planId: plan.planId,
-      expiresAt: plan.expiresAt,
       digest: plan.digest,
       items: [
         {
@@ -445,7 +443,7 @@ describe("loadLocalPlan", () => {
       now: source.clock.now,
     });
 
-    // Give the target state its own plan, so the plans directory exists.
+    // Give the target state its own plan, so the intents directory exists.
     await planLocalPublish(documentOf({ key: "other-key" }), {
       store: target.store,
       providers: set.providers,

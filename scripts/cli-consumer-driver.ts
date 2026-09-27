@@ -354,7 +354,6 @@ try {
     "--dry-run",
     "--json",
   ]);
-  let planId: string | undefined;
 
   if (preview.code !== EXIT_CODE.SUCCESS) {
     fail(`preview exited ${preview.code}: ${preview.stdout.slice(0, 300)}`);
@@ -362,22 +361,22 @@ try {
     const result = resultOf(assertEnvelope("publish"));
     const items = result["items"];
 
-    planId = typeof result["planId"] === "string" ? result["planId"] : undefined;
-
-    if (planId === undefined) fail("preview did not return a planId");
+    if ("planId" in result || "expiresAt" in result) {
+      fail("preview exposed internal execution intent fields");
+    }
     if (!Array.isArray(items) || items.length !== 1) {
-      fail("preview did not freeze exactly one target");
+      fail("preview did not include exactly one target");
     } else if ((items[0] as JsonObject)["content"] !== content) {
-      fail("preview did not freeze the document content");
+      fail("preview did not include the document content");
     }
     if (publishCalls.length !== 0) fail("preview executed a content request");
   }
 
-  if (planId !== undefined) {
+  if (preview.code === EXIT_CODE.SUCCESS) {
     const executed = await invoke([
       "publish",
-      "--plan",
-      planId,
+      "--input",
+      documentPath,
       "--yes",
       "--no-input",
       "--json",
@@ -408,8 +407,8 @@ try {
 
     const replay = await invoke([
       "publish",
-      "--plan",
-      planId,
+      "--input",
+      documentPath,
       "--yes",
       "--no-input",
       "--json",
@@ -429,7 +428,7 @@ try {
   } else {
     const operations = resultOf(assertEnvelope("receipts.list"))["operations"];
 
-    if (!Array.isArray(operations) || operations.length !== 1) {
+    if (!Array.isArray(operations) || operations.length !== 2) {
       fail(
         `receipts list reported ${Array.isArray(operations) ? operations.length : "no"} operation(s)`,
       );

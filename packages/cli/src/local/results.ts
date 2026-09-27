@@ -13,7 +13,7 @@ export interface LocalResultBinding {
   readonly bindingRevision: number;
 }
 
-/** One previewed target of a frozen plan. */
+/** One previewed target of an execution intent. */
 export interface LocalPlanItemResult {
   readonly key: string;
   readonly provider: LocalProviderId;
@@ -24,10 +24,13 @@ export interface LocalPlanItemResult {
   readonly previousBinding: LocalResultBinding | null;
 }
 
-/** `publish --dry-run` / `retry --dry-run` payload. */
+/**
+ * `publish --dry-run` / `retry --dry-run` payload.
+ *
+ * The public preview has no plan identity and no expiry: the execution snapshot
+ * behind it is internal.
+ */
 export interface LocalPreviewResult {
-  readonly planId: string;
-  readonly expiresAt: string;
   readonly digest: string;
   readonly items: readonly LocalPlanItemResult[];
 }
@@ -90,6 +93,18 @@ export interface LocalExecutionResult {
   readonly durability: "committed" | "failed";
   readonly interrupted?: boolean;
   readonly results: readonly LocalTargetResult[];
+}
+
+export type PublicExecutionResult = Omit<LocalExecutionResult, "planId">;
+
+export function publicExecutionResult(
+  result: LocalExecutionResult,
+): PublicExecutionResult {
+  const { planId, ...rest } = result;
+
+  void planId;
+
+  return rest;
 }
 
 /**

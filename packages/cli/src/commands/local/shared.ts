@@ -271,8 +271,6 @@ export function previewHumanLines(
 ): readonly string[] {
   const lines: string[] = [
     `syndroo ${command}`,
-    `  plan      ${preview.planId}`,
-    `  expires   ${preview.expiresAt}`,
     `  digest    ${preview.digest}`,
   ];
 

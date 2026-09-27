@@ -139,10 +139,10 @@ export const LOCAL_FLAGS: readonly FlagDefinition[] = [
     placeholder: "<path>",
   },
   {
-    name: "plan",
+    name: "data",
     kind: "value",
-    description: "Frozen local plan id to execute.",
-    placeholder: "<plan-id>",
+    description: "Inline publish JSON. Use --input - to keep content out of argv; never include credentials.",
+    placeholder: "<json>",
   },
   {
     name: "to",
@@ -290,14 +290,14 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: "publish",
     words: ["publish"],
-    summary: "Preview a local publish plan, or execute one frozen plan.",
+    summary: "Publish directly from a local document, or preview without writing.",
     usage:
-      "syndroo publish (--input <path|-> --dry-run | --plan <plan-id>) [--yes] [--no-input] [--timeout <duration>] [--state-home <path>] [--namespace <name>] [--json]",
+      "syndroo publish (--input <path|-> | --data <json>) [--dry-run] [--yes] [--no-input] [--timeout <duration>] [--state-home <path>] [--namespace <name>] [--json]",
     minPositionals: 0,
     maxPositionals: 0,
     flags: [
       "input",
-      "plan",
+      "data",
       "dry-run",
       "yes",
       "no-input",
@@ -310,13 +310,12 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: "retry",
     words: ["retry"],
-    summary: "Preview a safe explicit retry plan, or execute one frozen retry plan.",
+    summary: "Retry explicitly selected safe targets from a local operation.",
     usage:
-      "syndroo retry (<operation-id> --to <csv> --dry-run | --plan <plan-id>) [--yes] [--no-input] [--timeout <duration>] [--state-home <path>] [--namespace <name>] [--json]",
-    minPositionals: 0,
+      "syndroo retry <operation-id> --to <csv> [--dry-run] [--yes] [--no-input] [--timeout <duration>] [--state-home <path>] [--namespace <name>] [--json]",
+    minPositionals: 1,
     maxPositionals: 1,
     flags: [
-      "plan",
       "to",
       "dry-run",
       "yes",
@@ -435,7 +434,7 @@ function positionalWords(argv: readonly string[]): readonly string[] {
   const words: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] as string;
+    const token = argv[index] === "-h" ? "--help" : argv[index] as string;
 
     if (token === "--") {
       words.push(...argv.slice(index + 1));
@@ -532,7 +531,7 @@ export function parseArgs(argv: readonly string[]): ParsedCommand {
   const repeated = new Set<string>();
 
   for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] as string;
+    const token = argv[index] === "-h" ? "--help" : argv[index] as string;
 
     if (token === "--") {
       positionals.push(...argv.slice(index + 1));
@@ -662,9 +661,7 @@ function resolveSpec(positionals: readonly string[]): CommandSpec {
   const [first] = positionals;
 
   if (first === undefined) {
-    throw usageError("No command given. Run `syndroo help`.", {
-      usage: "syndroo <command> [options]",
-    });
+    return ALL_SPECS.find(spec => spec.name === "help") as CommandSpec;
   }
 
   const exact = ALL_SPECS.find(

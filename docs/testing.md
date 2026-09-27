@@ -25,11 +25,13 @@ live-account acceptance on Bluesky or Threads.
 
 The CLI suite is where the local design is actually proven:
 
-- **Document input**: strict JSON, duplicate keys, escapes, key and content
-  limits, source byte cap, override selection, provider availability.
-- **Planning**: frozen content and payload, deterministic business timestamps,
-  `skip`/`blocked` rehabilitation of existing records, plan signature, 24-hour
-  lifetime, and replay of an admitted plan after expiry.
+- **Document input**: inline JSON, file, and stdin; strict JSON, duplicate keys,
+  escapes, key and content limits, source byte cap, default schema version,
+  source conflicts, override selection, and provider availability.
+- **Direct publishing**: read-only dry-run, confirmation over one input snapshot,
+  source changes during confirmation, signed internal intents, `skip`/`blocked`
+  handling, and legacy state compatibility. Internal signature and expiry
+  checks remain covered without exposing a public Plan workflow.
 - **State**: real files and directories, atomic writes, permission and symlink
   refusal, HMAC integrity, tombstoned connections, and manifest admission.
 - **Locking and recovery**: competing real processes, owner checks, quarantine,

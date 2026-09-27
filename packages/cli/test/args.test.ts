@@ -77,7 +77,7 @@ describe("parseArgs", () => {
   });
 
   it("rejects an unknown command or subcommand", () => {
-    expectUsageError(() => parseArgs([]));
+    expect(parseArgs([]).command).toBe("help");
     expectUsageError(() => parseArgs(["nope"]));
     expectUsageError(() => parseArgs(["posts", "nope"]));
     expectUsageError(() => parseArgs(["posts"]));

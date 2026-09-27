@@ -13,17 +13,17 @@ platform-specific overrides. A publication schedule belongs to the retained
 remote path only; local publishing is immediate.
 _Avoid_: Publication when referring to the whole multi-platform request
 
-**Frozen plan**:
-A signed local record of exactly what a preview showed: the final text, the
-target binding, the payload version, and a content digest. Executing a plan is
-the only way local publishing sends anything, and the plan is never rebuilt
-from the input file.
-_Avoid_: Draft, preview when referring to the stored plan itself
+**Internal execution intent**:
+A signed snapshot of final text, target binding, payload version, and content
+digest. A direct publish confirms it in memory, then stores it under the write
+lock before sending. Dry-run never stores an intent. Input is not re-read after
+confirmation within that invocation.
+_Avoid_: User-facing Plan, draft, or a required preview artifact
 
 **Local delivery**:
-One frozen plan item's progress for one provider and one stable target id,
+One publishing item's progress for one provider and one stable target id,
 identified by `(namespace, key, provider, targetId)` and counted across every
-plan and operation.
+intent and operation.
 _Avoid_: Job, task when the identity matters
 
 **Binding**:

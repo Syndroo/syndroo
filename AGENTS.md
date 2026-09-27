@@ -71,8 +71,11 @@ surface.
 
 ## Local invariants
 
-- A local preview writes a signed frozen plan; only executing that same plan
-  sends content. The execution never re-reads the input document.
+- Local publish parses once, confirms an in-memory snapshot, then persists its
+  signed execution intent and sends under the write lock. It never re-reads the
+  input after confirmation. Dry-run is read-only: no lock, credential resolution,
+  network calls, or state writes. New intents use `intents/`; legacy `plans/`
+  remains read-only compatibility input.
 - One logical delivery is `(namespace, key, provider, targetId)`. A succeeded
   delivery replays its original result instead of sending again, and the same
   key and target with different content conflicts rather than overwriting.
@@ -82,7 +85,7 @@ surface.
   explicit. A lock whose owner record is missing is fail-closed: never delete or
   reclaim a lock automatically.
 - State permissions (`0700` directories, `0600` files) limit access; they are
-  not encryption. Local plans and receipts contain post text and account data.
+  not encryption. Local intents and receipts contain post text and account data.
 
 ## Reliability invariants
 

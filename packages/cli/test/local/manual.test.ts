@@ -284,8 +284,8 @@ describe("the documented local workflow", () => {
       const executed = await runPublish(
         harness.context([
           "publish",
-          "--plan",
-          preview.planId,
+          "--input",
+          path.join(harness.root, "post.json"),
           "--yes",
           "--no-input",
           "--json",
@@ -315,8 +315,8 @@ describe("the documented local workflow", () => {
       const replay = await runPublish(
         harness.context([
           "publish",
-          "--plan",
-          preview.planId,
+          "--input",
+          path.join(harness.root, "post.json"),
           "--yes",
           "--no-input",
           "--json",
@@ -351,10 +351,10 @@ describe("the documented local workflow", () => {
         harness.overrides,
       );
 
-      const preview = await planFor(harness, "Manual fixture text.");
+      await planFor(harness, "Manual fixture text.");
       const error = await rejectionOf(() =>
         runPublish(
-          harness.context(["publish", "--plan", preview.planId, "--json"]),
+          harness.context(["publish", "--input", path.join(harness.root, "post.json"), "--json"]),
           harness.overrides,
         ),
       );

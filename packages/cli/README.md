@@ -5,14 +5,15 @@ machine it runs on. This is the CLI-first `0.6.0-rc.1` candidate: a local path
 with no server, no queue, and no database, plus the retained remote path for a
 deployed Syndroo instance.
 
-Local publishing is two commands over one frozen plan:
+Local publishing takes one command:
 
 ```text
-document.json --dry-run--> signed local plan --plan <id>--> provider calls + receipts
+syndroo publish --input post.json --yes --no-input --json
 ```
 
-Nothing reaches a platform during the preview. The execution runs that same
-frozen plan, never re-reads your input file, and reports one result per target.
+An optional `--dry-run` validates and previews without state writes, credential
+resolution, or network calls. Actual publishing parses once, confirms that
+snapshot, then sends it and reports one result per target.
 
 ## Status
 
@@ -64,8 +65,8 @@ syndroo auth status --local
 a reference plus a stable account id, never the secret.
 
 Bind only the providers you will actually publish to: every platform named in
-`platforms` needs an active binding, or the preview is refused before it writes
-anything. The document below selects `bluesky` alone, so one binding is enough;
+`platforms` needs an active binding, even for a read-only preview.
+The document below selects `bluesky` alone, so one binding is enough;
 add `"threads"` to `platforms` only when a Threads binding exists.
 
 A credential file must be a plain file the current user owns, readable only by
@@ -80,11 +81,10 @@ The CLI refuses a file that is group- or world-readable, a symbolic link, or a
 directory, and it reads the whole group once to take a snapshot. Fix the
 permissions yourself; the CLI does not relax them for you.
 
-Write a strict JSON document, then preview it:
+Save a strict JSON document as `post.json`:
 
 ```json
 {
-  "schemaVersion": 1,
   "key": "release-announcement-001",
   "content": "Syndroo now publishes from the command line.",
   "platforms": ["bluesky"]
@@ -93,14 +93,29 @@ Write a strict JSON document, then preview it:
 
 ```bash
 syndroo publish --input post.json --dry-run --json
-syndroo publish --plan <plan-id> --yes --no-input --json
+syndroo publish --input post.json --yes --no-input --json
 syndroo receipts show <operation-id> --json
 ```
 
-The preview prints the frozen text, the target accounts, the binding
-revisions, and the frozen business timestamp. The execution needs both `--yes`
-and `--no-input` when no human can answer a prompt. Exit code `0` on a preview
-means the plan was written; only a full success means everything published.
+The first command is optional. It prints the text, target accounts, binding
+revisions, and business timestamp, without changing state. Publish reads the
+current file, so edits between these commands change the next publish. Within
+one invocation, it never re-reads the input after confirmation. Non-interactive
+publishing requires both `--yes` and `--no-input`. Preview exit `0` means
+validation succeeded, not publication.
+
+Agents can skip temporary files and supply serialized JSON as one argument:
+
+```bash
+syndroo publish --data '{"key":"agent-post-001","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
+```
+
+Use exactly one of `--data <json>`, `--input <file>`, or `--input -` (stdin).
+Omitted `schemaVersion` defaults to `1`; explicit unsupported values fail.
+Inline content may appear in shell history and process arguments; use stdin
+for sensitive text. Never put credentials in post JSON or interpolate generated
+content into a shell command. Bare `syndroo`, `syndroo -h`, and `syndroo --help`
+show help without reading config or contacting a provider.
 
 ## What the local path does not do
 
@@ -117,7 +132,7 @@ switch to the remote path. `scheduledAt` is a remote document field only.
 
 Both are created by `syndroo init`. Directories are `0700` and files are
 `0600`; `--state-home <path>` overrides the location for one run. Permissions
-limit access, they are not encryption: plans and receipts hold the post text
+limit access, they are not encryption: execution intents and receipts hold the post text
 and the account identity.
 
 One logical delivery is identified by `(namespace, key, provider, targetId)`.
@@ -131,12 +146,12 @@ rather than silently republished.
 
 ```bash
 syndroo retry <operation-id> --to threads --dry-run --json
-syndroo retry --plan <plan-id> --yes --no-input --json
+syndroo retry <operation-id> --to threads --yes --no-input --json
 syndroo state inspect
 syndroo state recover --confirm-no-writers --yes
 ```
 
-Only targets whose failure is provably `not_applied` are retryable, within
+The preview is optional and read-only. Only targets whose failure is provably `not_applied` are retryable, within
 three content attempts per logical delivery. An `unknown` outcome is never
 retried blindly. `state recover` is maintenance for a machine whose writers
 have stopped: it quarantines a stale lock, keeps evidence, and turns orphaned
@@ -159,7 +174,7 @@ syndroo posts get <post-id>
 ## The bundled skill
 
 `syndroo skill path` prints the directory of the bundled Agent Skill. The skill
-is guidance for a local, confirmed, two-phase publish; it grants no permission
+is guidance for local, confirmed, direct publishing; it grants no permission
 and proves nothing about any particular agent client.
 
 ## More

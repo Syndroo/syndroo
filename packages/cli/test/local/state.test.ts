@@ -169,7 +169,7 @@ describe("STO-01 controlled layout", () => {
 
     for (const name of [
       "connections",
-      "plans",
+      "intents",
       "operations",
       "deliveries",
       "quarantine",
@@ -455,7 +455,7 @@ describe("STO-05 corruption and versions", () => {
 
   it("verifies the plan digest and MAC on read", async () => {
     const { stateHome, store, plan } = await seededState();
-    const file = path.join(stateHome, "plans", `${plan.planId}.json`);
+    const file = path.join(stateHome, "intents", `${plan.planId}.json`);
     const stored = JSON.parse(readFileSync(file, "utf8")) as {
       items: { delivery: { content: string } }[];
     };
@@ -735,7 +735,7 @@ describe("STO-03 multi-file admission", () => {
     await recoverLocalState(stateHome, { confirmNoWriters: true, yes: true });
 
     const store = createLocalFileStore(stateHome);
-    const planId = readdirSync(path.join(stateHome, "plans"))[0]?.replace(
+    const planId = readdirSync(path.join(stateHome, "intents"))[0]?.replace(
       ".json",
       "",
     ) as string;
@@ -778,7 +778,7 @@ describe("STO-03 multi-file admission", () => {
     await recoverLocalState(stateHome, { confirmNoWriters: true, yes: true });
 
     const store = createLocalFileStore(stateHome);
-    const planId = readdirSync(path.join(stateHome, "plans"))[0]?.replace(
+    const planId = readdirSync(path.join(stateHome, "intents"))[0]?.replace(
       ".json",
       "",
     ) as string;
@@ -1460,6 +1460,21 @@ describe("inspection", () => {
     expect(inspection.corrupt).toEqual([]);
     expect(inspection.installationId).toMatch(/^inst_[0-9a-f]{32}$/);
     expect(snapshot(stateHome)).toEqual(before);
+  });
+
+  it("reports a missing intent collection instead of a healthy empty history", async () => {
+    const { stateHome } = await seededState();
+
+    rmSync(path.join(stateHome, "intents"), { recursive: true });
+
+    const inspection = await inspectLocalState(stateHome);
+
+    expect(inspection.safe).toBe(false);
+    expect(inspection.corrupt).toContainEqual({
+      collection: "intents",
+      id: "directory",
+      code: "STATE_CORRUPT",
+    });
   });
 
   it("reports a missing required directory and an unsafe identity", async () => {

@@ -20,7 +20,7 @@ import {
 } from "./ports/local-store.js";
 
 /**
- * Explicit, safe retry previews.
+ * Explicit, safe retry intents.
  *
  * A retry starts from the parent operation's authoritative records, never from
  * the original input file: the payload, its hash, and the attempt count are the
@@ -29,7 +29,8 @@ import {
  * new plan can never launder an uncertain result into a resend.
  *
  * Nothing here resolves a credential, opens a session, or reaches the network;
- * `provider.freeze` is pure capability validation only.
+ * `provider.freeze` is pure capability validation only. Building an intent does
+ * not write either, so `retry --dry-run` stays read-only.
  */
 
 /** Retry plans live as long as publish plans; the window is the same contract. */
@@ -52,14 +53,14 @@ export interface PlanLocalRetryOptions {
 }
 
 /**
- * Builds and persists one signed retry plan.
+ * Builds one signed retry intent without writing anything.
  *
  * Every selected provider must be a target of the parent operation. The result
- * is a frozen `retry` plan whose items reuse the authoritative delivery
- * identities and payloads; `retry --plan` admits it through the same store
+ * is a frozen `retry` intent whose items reuse the authoritative delivery
+ * identities and payloads; the execution path admits it through the same store
  * matrix, so attempt limits and windows are re-checked when it is executed.
  */
-export async function planLocalRetry(
+export async function buildLocalRetryIntent(
   operationId: string,
   selection: readonly LocalProviderId[],
   options: PlanLocalRetryOptions,
@@ -143,9 +144,18 @@ export async function planLocalRetry(
     parentOperationId: operation.operationId,
   };
   const { digest, mac } = await signLocalPlan(body, store);
-  const plan: LocalPlan = { ...body, digest, mac };
 
-  await store.putPlan(plan);
+  return { ...body, digest, mac };
+}
+
+export async function planLocalRetry(
+  operationId: string,
+  selection: readonly LocalProviderId[],
+  options: PlanLocalRetryOptions,
+): Promise<LocalPlan> {
+  const plan = await buildLocalRetryIntent(operationId, selection, options);
+
+  await options.store.putPlan(plan);
 
   return plan;
 }

@@ -40,7 +40,7 @@ const LOCAL_CONFIG_HELP: readonly string[] = [
 
 const LOCAL_EXIT_CODE_HELP: readonly string[] = [
   "Exit codes (local)",
-  "  0   a preview wrote its plan, a query read successfully, or a run fully succeeded",
+  "  0   a read-only preview or query succeeded, or a publish/retry fully succeeded",
   "  1   local I/O or runtime failure; a trusted success that could not be persisted also exits 1",
   "  2   admission failure: usage, config, document, confirmation, or binding; no content request",
   "  4   an unknown platform write result; stop and read the receipt before retrying",
@@ -79,7 +79,7 @@ const LOCAL_FLAG_HELP: Readonly<Record<string, string>> = {
   json: "Write exactly one local envelope object to stdout; diagnostics go to stderr.",
   yes: "Confirm without prompting. A non-interactive run also needs --no-input.",
   "dry-run":
-    "Preview only: freeze and save a local plan. Nothing is sent to a platform.",
+    "Validate and preview only. No content is sent and no execution state is written.",
   timeout:
     "Command budget, for example 120s or 15000ms. Default 120s, maximum 600s.",
   limit: "Maximum local operations to list, 1-100. Default 20.",
