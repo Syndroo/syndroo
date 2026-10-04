@@ -88,6 +88,7 @@ export const COMMAND_FLAGS: readonly FlagDefinition[] = [
  * None of them selects an endpoint, a credential value, or a fallback route.
  */
 export const LOCAL_FLAGS: readonly FlagDefinition[] = [
+  { name: "managed", kind: "boolean", description: "Unsupported: connect runs locally and rejects this flag." },
   {
     name: "local",
     kind: "boolean",
@@ -147,7 +148,7 @@ export const LOCAL_FLAGS: readonly FlagDefinition[] = [
   {
     name: "to",
     kind: "value",
-    description: "Explicit retry targets, comma separated.",
+    description: "Explicit retry targets (comma separated), or the state schema `state upgrade` targets.",
     placeholder: "<csv>",
   },
   {
@@ -155,9 +156,33 @@ export const LOCAL_FLAGS: readonly FlagDefinition[] = [
     kind: "boolean",
     description: "Confirm every other writer has stopped.",
   },
+  {
+    name: "oauth",
+    kind: "boolean",
+    description: "Authorize locally with the platform's browser flow. Mastodon only.",
+  },
+  {
+    name: "instance",
+    kind: "value",
+    description: "Mastodon instance origin for --oauth, for example https://mastodon.social.",
+    placeholder: "<url>",
+  },
+  {
+    name: "save-credential-file",
+    kind: "value",
+    description: "Create a new credential file at this path. Never overwrites.",
+    placeholder: "<path>",
+  },
 ];
 
 export const COMMAND_SPECS: readonly CommandSpec[] = [
+  {
+    name: "connect", words: ["connect"],
+    summary: "Guide credentials or verify and bind them locally. No Syndroo server needed.",
+    usage: "syndroo connect <provider> [--local] [--from-env | --credential-file <path> | --oauth --instance <url>] [--save-credential-file <path>] [--expect-account <id>] [--yes] [--no-input] [--timeout <duration>] [--state-home <path>] [--json]",
+    minPositionals: 1, maxPositionals: 1, local: true,
+    flags: ["local", "managed", "from-env", "credential-file", "oauth", "instance", "save-credential-file", "expect-account", "yes", "no-input", "timeout", "state-home"],
+  },
   {
     name: "doctor",
     words: ["doctor"],
@@ -256,6 +281,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
       "local",
       "from-env",
       "credential-file",
+      "save-credential-file",
       "expect-account",
       "yes",
       "no-input",
@@ -369,6 +395,17 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     flags: ["confirm-no-writers", "yes", "state-home"],
     local: true,
   },
+  {
+    name: "state.upgrade",
+    words: ["state", "upgrade"],
+    summary: "Explicitly upgrade local state to a new schema. No content or network work.",
+    usage:
+      "syndroo state upgrade --to 2 --confirm-no-writers --yes [--no-input] [--state-home <path>] [--json]",
+    minPositionals: 0,
+    maxPositionals: 0,
+    flags: ["to", "confirm-no-writers", "yes", "state-home"],
+    local: true,
+  },
 ];
 
 export const SPECIAL_COMMANDS: readonly CommandSpec[] = [
@@ -416,6 +453,7 @@ const LOCAL_GLOBAL_FLAG_NAMES: readonly string[] = ["no-input"];
 
 /** Local command word prefixes, longest match first for `detectLocalCommand`. */
 const LOCAL_COMMAND_WORDS: readonly (readonly string[])[] = [
+  ["connect"],
   ["init"],
   ["providers", "list"],
   ["auth", "set"],
@@ -427,6 +465,7 @@ const LOCAL_COMMAND_WORDS: readonly (readonly string[])[] = [
   ["receipts", "show"],
   ["state", "inspect"],
   ["state", "recover"],
+  ["state", "upgrade"],
 ];
 
 /** Non-flag words of an argv, skipping the value of a known value flag. */
@@ -558,7 +597,12 @@ export function parseArgs(argv: readonly string[]): ParsedCommand {
         );
       }
 
-      throw usageError(`Unknown flag "${token}".`, { flag: name });
+      // The raw token is never repeated: an unknown name can itself be a
+      // secret (`--sk-live-...`). Only allowlisted command words above may be
+      // echoed.
+      throw usageError(
+        "Unknown flag. Run `syndroo help` for the accepted commands and flags.",
+      );
     }
 
     if (definition.kind === "boolean") {
@@ -677,9 +721,10 @@ function resolveSpec(positionals: readonly string[]): CommandSpec {
   );
 
   if (nested.length === 0) {
-    throw usageError(`Unknown command "${first}". Run \`syndroo help\`.`, {
-      command: first,
-    });
+    // A raw positional can be a secret; the message stays static.
+    throw usageError(
+      "Unknown command. Run `syndroo help` for the accepted commands.",
+    );
   }
 
   const second = positionals[1];
@@ -687,10 +732,9 @@ function resolveSpec(positionals: readonly string[]): CommandSpec {
 
   if (match === undefined) {
     throw usageError(
-      `Unknown command "${first} ${second ?? ""}". Expected ${nested
+      `Unknown command. Expected ${nested
         .map(spec => `"${spec.words.join(" ")}"`)
         .join(", ")}.`,
-      { command: `${first} ${second ?? ""}`.trim() },
     );
   }
 

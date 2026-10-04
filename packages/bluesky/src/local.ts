@@ -2,6 +2,8 @@ import { Agent } from "@atproto/api";
 
 import {
   LocalProviderError,
+  localDisplayName,
+  type LocalIdentity,
   type FrozenDelivery,
   type LocalCredentials,
   type LocalProvider,
@@ -65,6 +67,7 @@ interface BlueskyAuth {
 
 interface BlueskySession {
   readonly did: string;
+  readonly displayName?: string;
   readonly accessJwt: string;
 }
 
@@ -132,11 +135,11 @@ export class BlueskyLocalProvider implements LocalProvider {
   async verifyIdentity(
     credentials: LocalCredentials,
     signal: AbortSignal,
-  ): Promise<{ targetId: string }> {
+  ): Promise<LocalIdentity> {
     const auth = readBlueskyCredentials(credentials);
     const session = await this.createSession(auth, signal);
 
-    return { targetId: session.did };
+    return { targetId: session.did, ...(session.displayName === undefined ? {} : { displayName: session.displayName }) };
   }
 
   async prepare(
@@ -195,7 +198,7 @@ export class BlueskyLocalProvider implements LocalProvider {
         identifier: auth.identifier,
         password: auth.password,
       });
-      const data = result.data as { did?: unknown; accessJwt?: unknown };
+      const data = result.data as { did?: unknown; accessJwt?: unknown; handle?: unknown };
       const did = typeof data?.did === "string" ? data.did : null;
       const accessJwt =
         typeof data?.accessJwt === "string" && data.accessJwt.length > 0
@@ -206,7 +209,8 @@ export class BlueskyLocalProvider implements LocalProvider {
         throw new LocalProviderError("PROVIDER_UNAVAILABLE");
       }
 
-      return { did, accessJwt };
+      const displayName = localDisplayName(data.handle);
+      return { did, accessJwt, ...(displayName === undefined ? {} : { displayName }) };
     } catch (error) {
       throw admissionFailure(rejection ?? error, signal);
     } finally {

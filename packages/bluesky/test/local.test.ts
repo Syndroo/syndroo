@@ -219,6 +219,7 @@ describe("BlueskyLocalProvider", () => {
 
     await expect(provider.verifyIdentity(credentials(), signal())).resolves.toEqual({
       targetId: DID,
+      displayName: "alice.bsky.social",
     });
     expect(server.requestCount()).toBe(1);
 
@@ -324,7 +325,7 @@ describe("BlueskyLocalProvider", () => {
 
     await expect(
       provider.verifyIdentity(credentials("BSKY.SOCIAL"), signal()),
-    ).resolves.toEqual({ targetId: DID });
+    ).resolves.toEqual({ targetId: DID, displayName: "alice.bsky.social" });
   });
 
   it("publishes the frozen record with the prepared repo DID in one request", async () => {

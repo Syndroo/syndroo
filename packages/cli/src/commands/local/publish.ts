@@ -8,6 +8,7 @@ import { decodeLocalSource, parseLocalPublishDocument } from "../../local/docume
 import {
   buildLocalPublishIntent,
   frozenBusinessTime,
+  previewCapabilitiesFor,
   previewForPlan,
 } from "../../local/plan.js";
 import { readLocalInputBytes } from "../../local/source.js";
@@ -51,16 +52,19 @@ export async function runPublish(
     namespace,
     now: runtime.clock,
   });
+  const capabilities = await previewCapabilitiesFor(runtime.store, intent);
+  const previewOptions =
+    capabilities === undefined ? {} : { capabilities };
 
   if (dryRun) {
-    return previewOutcome(context, "publish --dry-run", intent);
+    return previewOutcome(context, "publish --dry-run", intent, capabilities);
   }
 
   await confirmLocalWrite(
     context,
     previewHumanLines(
       "publish",
-      previewForPlan(intent),
+      previewForPlan(intent, previewOptions),
       intent.items.map(item => frozenBusinessTime(item.delivery)),
     ),
   );

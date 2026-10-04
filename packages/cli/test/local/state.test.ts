@@ -301,7 +301,9 @@ describe("STO-01 controlled layout", () => {
 
     await initialize(store, stateHome);
 
-    expect((await store.getInstallation()).schemaVersion).toBe(1);
+    // New installs use schema 2 so the article/observation fields have a home;
+    // dedicated legacy fixtures below still cover the read-compatible schema 1.
+    expect((await store.getInstallation()).schemaVersion).toBe(2);
   });
 
   it("refuses an existing state root with group or other bits", async () => {

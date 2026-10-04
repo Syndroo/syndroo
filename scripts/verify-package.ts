@@ -28,10 +28,15 @@ import {
 } from "./package-support.js";
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(-rc\.\d+)?$/;
+// Every migration the Worker ships. The list is the tracked inventory: the
+// credentials and OAuth-state migrations exist in the baseline repository and
+// must travel in the package exactly like the earlier ones.
 const EXPECTED_MIGRATIONS = [
   "0001_init.sql",
   "0002_idempotency.sql",
   "0003_retry_timing.sql",
+  "0004_credentials.sql",
+  "0005_oauth_state_data.sql",
 ] as const;
 const REQUIRED_PACKED_FILES = [
   "package.json",

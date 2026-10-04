@@ -13,6 +13,20 @@ export interface LocalResultBinding {
   readonly bindingRevision: number;
 }
 
+/** The complete article one preview must show before the operator confirms. */
+export interface LocalArticlePreview {
+  readonly title: string;
+  /** Ordered exactly as approved; never reordered or deduplicated. */
+  readonly tags: readonly string[];
+  readonly canonicalUrl: string | null;
+}
+
+/** Where a cached instance capability snapshot came from and when. */
+export interface LocalCapabilityPreview {
+  readonly source: string | null;
+  readonly checkedAt: string | null;
+}
+
 /** One previewed target of an execution intent. */
 export interface LocalPlanItemResult {
   readonly key: string;
@@ -22,6 +36,13 @@ export interface LocalPlanItemResult {
   readonly content: string;
   readonly binding: LocalResultBinding;
   readonly previousBinding: LocalResultBinding | null;
+  /**
+   * Optional metadata. Old text outputs keep the exact shape they had before
+   * this version, so these fields stay absent when they carry no information.
+   */
+  readonly visibility?: "public";
+  readonly article?: LocalArticlePreview;
+  readonly capabilities?: LocalCapabilityPreview | null;
 }
 
 /**

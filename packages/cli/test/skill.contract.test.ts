@@ -3,8 +3,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { parsePostDocument } from "../src/document.js";
+import { DocumentError, parsePostDocument } from "../src/document.js";
 import { EXIT_CODE } from "../src/exit-codes.js";
+import { parseLocalPublishDocument } from "../src/local/document.js";
 import { CLI_ROOT, runCli } from "./support/harness.js";
 
 /**
@@ -47,18 +48,29 @@ function readSkillFiles(): SkillFile[] {
   return files.sort((left, right) => left.relative.localeCompare(right.relative));
 }
 
-/** Lines of a help section, between its header and the next known header. */
-function section(help: string, header: string, stop: string): string[] {
-  const lines = help.split("\n");
+/** Lines between exact headers in built help or the shipped reference. */
+function section(text: string, header: string, stop: string): string[] {
+  const lines = text.split("\n");
   const start = lines.indexOf(header);
 
-  expect(start, `help output is missing the "${header}" section`).toBeGreaterThanOrEqual(0);
+  expect(start, `missing the "${header}" section`).toBeGreaterThanOrEqual(0);
 
   const end = lines.indexOf(stop, start);
 
-  expect(end, `help output has no "${stop}" after "${header}"`).toBeGreaterThan(start);
+  expect(end, `no "${stop}" after "${header}"`).toBeGreaterThan(start);
 
   return lines.slice(start + 1, end);
+}
+
+function documentedPlatforms(reference: string, header: string, stop: string): string[] {
+  const rows = section(reference, header, stop)
+    .filter(line => line.startsWith("| `platforms` |"));
+
+  expect(rows, `${header} documents exactly one platforms field`).toHaveLength(1);
+
+  const rule = rows[0]?.split("|")[2] ?? "";
+
+  return [...rule.matchAll(/`([a-z0-9-]+)`/gu)].map(match => match[1] as string);
 }
 
 function flagsIn(help: string): string[] {
@@ -274,25 +286,68 @@ describe("the bundled Skill matches the CLI it ships with", () => {
     );
   });
 
-  it("documents only platforms the document validator accepts", () => {
-    const reference = readFileSync(CLI_REFERENCE, "utf8");
-    const row = reference
-      .split("\n")
-      .find(line => line.startsWith("| `platforms` |"));
+  it("documents all five local platforms with their local document schemas", () => {
+    const names = documentedPlatforms(
+      readFileSync(CLI_REFERENCE, "utf8"),
+      "## Local surface",
+      "## Remote surface (retained)",
+    );
 
-    expect(row, "cli.md documents the platforms field").toBeDefined();
-
-    const names = [
-      ...((row as string).split("one of")[1] ?? "").matchAll(/`([a-z0-9-]+)`/gu),
-    ].map(match => match[1] as string);
-
-    expect(names.length).toBeGreaterThan(0);
+    expect([...names].sort()).toEqual(["bluesky", "devto", "linkedin", "mastodon", "threads"]);
 
     for (const platform of names) {
-      expect(
-        () => parsePostDocument(JSON.stringify({ content: "x", platforms: [platform] }), "test"),
-        `cli.md names the platform ${platform}`,
-      ).not.toThrow();
+      for (const schemaVersion of platform === "devto" ? [2] : [1, 2]) {
+        const document = {
+          schemaVersion,
+          key: `skill-platform-contract-${platform}`,
+          content: "Summary for text providers.",
+          platforms: [platform],
+          ...(platform === "devto" ? {
+            overrides: {
+              devto: {
+                content: "# Article\n\nFull Markdown body for DEV.to.",
+                article: {
+                  title: "Documented local article",
+                  tags: ["typescript"],
+                  canonicalUrl: "https://example.com/posts/skill-contract",
+                },
+              },
+            },
+          } : {}),
+        };
+
+        expect(
+          parseLocalPublishDocument(JSON.stringify(document)),
+          `local cli.md platform ${platform} under schema ${schemaVersion}`,
+        ).toEqual(document);
+      }
     }
+  });
+
+  it("documents the retained remote schema platforms and rejects DEV.to remotely", () => {
+    const names = documentedPlatforms(
+      readFileSync(CLI_REFERENCE, "utf8"),
+      "## Remote surface (retained)",
+      "## Exit codes",
+    );
+
+    // Schema acceptance is independent of the adapters configured on an instance.
+    expect([...names].sort()).toEqual([
+      "bluesky", "linkedin", "mastodon", "nostr", "threads", "tumblr", "x",
+    ]);
+
+    for (const platform of names) {
+      const document = { content: "Remote text.", platforms: [platform] };
+
+      expect(
+        parsePostDocument(JSON.stringify(document), "cli.md remote surface"),
+        `remote cli.md platform ${platform}`,
+      ).toEqual({ input: document, warnings: [] });
+    }
+
+    expect(() => parsePostDocument(
+      JSON.stringify({ content: "Remote text.", platforms: ["devto"] }),
+      "cli.md remote surface",
+    )).toThrow(DocumentError);
   });
 });

@@ -1,11 +1,11 @@
 ---
 name: syndroo
-description: Use when the user asks to publish or preview plain text on Bluesky or Threads through the local Syndroo CLI, retry a local delivery, or read its receipts.
+description: Use when the user asks to publish or preview text or a DEV.to article through the local Syndroo CLI on any of its five providers, connect an account, upgrade local state, retry a delivery, or read receipts.
 ---
 
 # Syndroo
 
-The Syndroo CLI publishes plain text to Bluesky and Threads from this machine. It runs in the foreground, talks to the platforms directly, and keeps its state in a local directory. There is no server in this path.
+The Syndroo CLI publishes plain text to Bluesky, Threads, LinkedIn, and Mastodon, and DEV.to articles, from this machine. It runs in the foreground, talks to the platforms directly, and keeps its state in a local directory. There is no server in this path.
 
 `publish` sends directly after confirmation. An optional `--dry-run` validates and previews without state writes, credential resolution, or network calls. Within one publish, confirmation and sending use the same input snapshot.
 
@@ -19,10 +19,10 @@ Read the one that matches the current branch:
 
 ## Workflow
 
-1. **Confirm the environment.** Run `syndroo version`, `syndroo skill path`, `syndroo doctor --local`, and `syndroo auth status --local`. These read only: `doctor --local` reports config, state, permissions, and bindings, and `auth status --local` is offline unless you add `--verify`.
-   Done when `doctor --local` reports no failing check and you know which providers have an active binding.
+1. **Confirm execution access and the environment.** You need permission and the ability to execute the CLI on the same machine that holds the user's credentials and state. A chat-only cloud agent cannot directly access those local resources. Reading this Skill grants no execution or publishing permission; rely on the user's existing authorization and ask only for permission that is missing. If execution access is unavailable, stop before running commands and explain the limitation. With authorized access, run `syndroo version`, `syndroo skill path`, `syndroo doctor --local`, and `syndroo auth status --local`. These read only: `doctor --local` reports config, state, permissions, and bindings, and `auth status --local` is offline unless you add `--verify`.
+   Done when authorized local execution is available, `doctor --local` reports no failing check, and you know which providers have an active binding.
 
-2. **Assemble one strict JSON document.** It needs a stable `key`, `content`, and an explicit `platforms` list. Omitted `schemaVersion` defaults to `1`. There is no default target: if you do not name a provider, it is not part of the post.
+2. **Assemble one strict JSON document.** It needs a stable `key`, `content`, and an explicit `platforms` list. Omitted `schemaVersion` defaults to `1`; a DEV.to article uses explicit `schemaVersion: 2` with `overrides.devto.content` and `article.title` (title 1-128 code points, at most 4 lowercase-alphanumeric tags, HTTPS canonical URL, body at most 10000 code points; front matter and Liquid are refused). There is no default target: if you do not name a provider, it is not part of the post.
    Done when the document parses as strict JSON and `key` identifies this logical post for its whole life.
 
 3. **Preview only when needed.** Add `--dry-run --json` to the publish command to inspect every item: text, target account, binding revision, and `previousBinding` for retries. Existing local config and bindings are required, but the preview changes nothing. It does not reserve the input for a later command.
@@ -36,6 +36,10 @@ Read the one that matches the current branch:
 
 6. **Report every target.** State the operation id, each provider's status, its attempt count, its remote id when there is one, and the durability of the result. Keep delivered, not delivered, and unknown apart. A zero exit for a preview means validation succeeded; only a full success means everything was published.
    Done when every selected target has an honest outcome, including the ones that failed.
+
+## Account connection
+
+Use `syndroo connect <provider>` for local account setup. Without a source, an interactive terminal offers a source choice; a non-interactive or no-TTY run refuses with source-selection guidance. A missing source is never guessed, and guidance is not proof of a connection. Bind with the user's chosen source only after confirming the stable account identity; non-interactive binding still requires `--yes --no-input --expect-account <verified-id>`. Existing auth commands retain their explicit `--local` requirement. Never ask the user to paste a token into the conversation. `--managed` is rejected; do not switch to a hosted service.
 
 ## Retry
 

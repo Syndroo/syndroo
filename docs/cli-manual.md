@@ -1,7 +1,7 @@
 # Syndroo CLI manual
 
-This manual covers the `syndroo` command in the CLI-first `0.6.0-rc.1`
-candidate: local publishing to Bluesky and Threads, plus the retained remote
+This manual covers the `syndroo` command in the CLI-first `0.7.0-rc.1`
+candidate: local publishing to Bluesky, Threads, LinkedIn, Mastodon, and DEV.to, plus the retained remote
 path for a deployed Syndroo instance.
 
 The candidate is not published to npm and has no live-account acceptance. The
@@ -15,14 +15,14 @@ repository builds. From the repository root:
 
 ```bash
 npm run pack:cli
-npm install --global ./artifacts/syndroo-cli-0.6.0-rc.1.tgz
+npm install --global ./artifacts/syndroo-cli-0.7.0-rc.1.tgz
 syndroo version
 ```
 
 Install a tarball someone handed you directly:
 
 ```bash
-npm install --global /path/to/syndroo-cli-0.6.0-rc.1.tgz
+npm install --global /path/to/syndroo-cli-0.7.0-rc.1.tgz
 ```
 
 `npm pack` inside `packages/cli` is not the release path; `pack:cli` produces
@@ -33,13 +33,14 @@ need to publish or install the internal workspace packages first.
 
 ## What the local path does
 
-Plain text to Bluesky and Threads, in the foreground, from this machine.
+Publish plain text to Bluesky, Threads, LinkedIn, and Mastodon, and articles to
+DEV.to, in the foreground from this machine.
 `publish` sends directly after confirmation; `--dry-run` is an optional preview.
 Bare `syndroo`, `syndroo -h`, and `syndroo --help` show help without config,
 state writes, credential access, or network calls.
 
 Out of scope for this version: scheduling, media, replies or threads, batch and
-watch modes, RSS, platforms other than Bluesky and Threads, local OAuth or
+watch modes, RSS, local OAuth on instances that do not advertise S256, or
 token refresh, and any automatic fallback to the remote path.
 
 ## Set up local state
@@ -68,6 +69,22 @@ and the account identity. Older `plans/` records remain readable for existing
 operations; new publishing never writes that directory.
 
 ## Register an account
+
+The `connect` entrypoint defaults to local mode and reuses the existing auth
+binding. `--local` remains accepted, but is not required for `connect`:
+
+```bash
+syndroo connect bluesky
+syndroo connect bluesky --from-env --expect-account <verified-id> --yes --no-input
+```
+
+On an interactive terminal, the first command offers a credential-source
+choice; without a TTY or with `--no-input`, it refuses with source-selection
+guidance. It never guesses a source. The second command verifies and binds the
+explicitly selected account. Binding requires prior `syndroo init`. Remote
+instance environment variables cannot switch this command to a server. `--managed` is rejected
+before side effects; it does not enable a hosted service. The older `auth`
+commands below still require `--local`.
 
 ```bash
 syndroo auth set bluesky --local --from-env
@@ -123,16 +140,20 @@ does not revoke anything at the platform.
 {
   "key": "release-announcement-001",
   "content": "Syndroo now publishes from the command line.",
-  "platforms": ["bluesky", "threads"],
+  "platforms": ["bluesky", "threads", "linkedin", "mastodon"],
   "overrides": { "bluesky": { "content": "Shorter version for Bluesky." } }
 }
 ```
 
 `key` is the stable logical identity (1-128 characters from `A-Z a-z 0-9 . _ :
 -`). `content` is non-blank and at most 10000 Unicode code points. `platforms`
-must be non-empty, must not repeat, and may only name `bluesky` or `threads`.
-`overrides` may only name a selected platform. `schemaVersion` is optional and
-defaults to `1`; explicit null or unsupported versions are refused.
+must be non-empty, must not repeat, and may name `bluesky`, `threads`,
+`linkedin`, or `mastodon` for text, plus `devto` only for an explicit
+`schemaVersion: 2` article with `overrides.devto.content` and
+`overrides.devto.article.title` (see the article example below). `overrides`
+may only name a selected platform. `schemaVersion` is optional and defaults to
+`1`; explicit `2` also accepts text-only documents. Explicit null or unsupported
+versions are refused.
 
 Every input is strict JSON: comments, trailing commas, repeated keys, invalid
 UTF-8, and unpaired surrogates are refused, and one leading byte-order mark is
@@ -295,6 +316,143 @@ tarball installs outside the repository and runs the documented local workflow
 against fake providers, without reaching a real platform. That is packaging and
 plumbing evidence, not platform acceptance.
 
-Still not performed for `0.6.0-rc.1`: live-account acceptance on Bluesky or
-Threads, execution on Linux (the evidence above is macOS arm64), and release
-publication to npm.
+Limited Linux verification passed on Node.js 22.23.3 as uid 1000 with networking
+disabled: offline old and new CLI installs, explicit schema-1-to-2 state
+upgrade, actual old 0.6 CLI refusal without changing schema-2 state, 0700/0600
+permissions, and unsafe-state-file refusal. Evidence is recorded in
+`root-linux-state-verification.log` for prior candidate SHA-256
+`86c7bdf538db4c63bb67252b70b88086fae67b8b46f9f874e1a82af9b102ac12`.
+This proves state compatibility and permissions for that candidate, not the
+full Linux publishing flow. Root will verify the final repacked candidate
+separately.
+
+Still unverified: the full packaged-platform locality gate (its fixture errors
+remain unresolved), full Linux publishing, the complete macOS/Linux Node.js
+matrix, and live-account acceptance on any of the five providers. No npm
+publication has occurred.
+
+## R3 local release: commands, limits, and evidence
+
+### Commands
+
+```bash
+syndroo connect <provider> [--local] [--from-env | --credential-file <path> | --oauth --instance <url>]
+syndroo connect <provider> --from-env --save-credential-file <new-path> --yes --no-input --expect-account <id>
+syndroo state upgrade --to 2 --confirm-no-writers --yes --no-input
+syndroo state inspect
+```
+
+- `connect` is local-only. `--managed` and remote endpoint flags are refused before
+  any credential read, network call, or state write. `auth set/status/remove`
+  keep their explicit `--local` requirement.
+- `--credential-file` imports an existing file read-only. `--save-credential-file`
+  creates a **new** file: exclusive create, mode 0600, parent directory must
+  already be 0700 (never chmodded), no overwrite, symlinks refused. If the file
+  is written but the binding revision changed, the result reports
+  `credentialFileSaved:true, bindingChanged:false`; the file stays, nothing is
+  deleted, and no path or secret is printed.
+- `--oauth` is Mastodon-only and needs `--instance` plus
+  `--save-credential-file`. It registers one local app on that instance after
+  explicit approval, uses a one-shot loopback callback with PKCE S256, verifies
+  the real account, and then binds. An instance without S256 is refused with a
+  static message; importing a BYO user token is a separate, explicitly chosen
+  `--credential-file` command, never an automatic downgrade. No app secret is
+  cached or reused.
+- `state upgrade` is the only migration. `publish`/`dry-run` never upgrade.
+  Both confirmations are mandatory; an interrupted upgrade leaves a marker that
+  old and new binaries refuse, and rerunning the command resumes it.
+
+### DEV.to article document (v2)
+```json
+{
+  "schemaVersion": 2,
+  "key": "article-2026-10-04",
+  "content": "Summary for the text providers.",
+  "platforms": ["bluesky", "mastodon", "devto"],
+  "overrides": {
+    "devto": {
+      "content": "# Heading\n\nFull Markdown body.",
+      "article": {
+        "title": "A verified publishing workflow",
+        "tags": ["typescript", "opensource"],
+        "canonicalUrl": "https://example.com/posts/safe-publishing"
+      }
+    }
+  }
+}
+```
+Four providers take plain text (`bluesky`, `threads`, `linkedin`, `mastodon`);
+only `devto` takes the v2 article. A v2 document that does not select `devto`
+is still a valid text document. Mastodon env: `MASTODON_INSTANCE`,
+`MASTODON_ACCESS_TOKEN`. DEV.to env: `DEVTO_API_KEY`. Mastodon publishes public
+statuses only; DEV.to publishes individual public articles only, with no media,
+series, organization, or scheduling fields.
+
+### Interactive connect
+`connect` without a credential source on a real terminal prints the platform
+guidance and offers env, an existing file, hidden local entry, or Mastodon
+OAuth. Non-interactive or no-TTY runs refuse immediately with the actionable
+usage error; a missing source is never guessed.
+
+### Limits and guarantees
+
+- Five local providers: Bluesky, Threads, LinkedIn, Mastodon (plain text),
+  DEV.to (articles). Every provider publishes publicly in the foreground; there
+  is no scheduler, daemon, media upload, series, or organization article.
+- Article input is an explicit `schemaVersion: 2` document with
+  `overrides.devto.content` and `article.title`. Product limits: title 1-128
+  code points, at most 4 unique lowercase-alphanumeric tags of 1-30 characters,
+  canonical URL an HTTPS URL of at most 2048 characters, body at most 10000
+  code points, 64 KiB source, YAML front matter and Liquid directives refused.
+  These are Syndroo product limits, not platform-official limits.
+- A frozen plan is the approved bytes. The preview shows the account, title,
+  full Markdown, ordered tags, canonical URL, and public visibility; the
+  execution path re-checks the frozen payload and the current account, and a
+  successful target replays from its receipt with zero credential or network
+  work.
+- Machine off means no publishing. There is no automatic token refresh or
+  revocation; `auth remove` writes a local tombstone and the token must be
+  revoked in the platform settings. State is one active ledger on one machine;
+  backups and the integrity key are the operator's responsibility, and
+  restoring an old ledger or copying state to a second machine is not a
+  deduplication boundary. Switching to the remote API is a different
+  deduplication authority, not a fallback.
+- Never paste a token into a chat or a document. Agents need command execution
+  on this device and explicit publish authorization; an unknown result is never
+  retried automatically, never re-keyed, and never routed through another
+  channel.
+- Third-party services and platforms can change their APIs, limits, and prices;
+  this release makes no availability, delivery, or cost promise.
+
+### Fixture-tested release notes
+
+`0.7.0-rc.1` is fixture-tested: five providers are wired with controlled
+fixtures, the CLI bundles its internal adapters with no bare `@syndroo/*`
+runtime dependency, and the local state upgrade has executed fault-injection
+and real-old-binary evidence. No live account was connected and no real post
+was published for this candidate; live validation stays a separate, authorized
+gate.
+
+### Voluntary U0 trial (proposed, not recruited)
+
+Design values only: five technical users who publish repeatedly, each on their
+own device, over two weeks. Each participant runs connect, a dry-run preview,
+an authorized publish, and a receipt read-back on their own account; they
+record what broke, how they recovered, and whether they used it again. Records
+are supplied voluntarily and redacted by the participant. This release neither
+recruits participants, automates the trial, nor collects telemetry.
+
+### Voluntary U0 record template
+Each participant supplies this voluntarily; never include tokens, secrets, real
+account identifiers, or post contents.
+```
+record-version:
+os-and-node:
+task (connect | preview | publish | receipt | retry):
+date-started: / date-finished:
+time-to-connect-minutes:
+errors (static code + what you saw):
+recovery (what fixed it):
+reused-within-two-weeks (yes/no + how often):
+notes:
+```

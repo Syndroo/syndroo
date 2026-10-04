@@ -163,3 +163,24 @@ export function requireVersion(value: unknown, what: string): 1 {
 
   corrupt(what, "has an unsupported schema version");
 }
+
+/**
+ * Requires one of the schema versions this build writes.
+ *
+ * A newer version is refused as unsupported; anything else is corruption. The
+ * caller decides which of the accepted versions is allowed for a given record.
+ */
+export function requireVersion2(value: unknown, what: string): 1 | 2 {
+  if (value === 1 || value === 2) {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isInteger(value) && value > 2) {
+    throw stateFailure(
+      "STATE_VERSION_UNSUPPORTED",
+      `${what} was written by a newer version`,
+    );
+  }
+
+  corrupt(what, "has an unsupported schema version");
+}

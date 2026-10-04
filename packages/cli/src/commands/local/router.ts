@@ -7,13 +7,14 @@ import type { LocalRunOverrides } from "../../local/composition.js";
 import type { LocalEnvelopeError, Reporter } from "../../output.js";
 import type { CommandContext } from "../context.js";
 import { runAuthRemove, runAuthSet, runAuthStatus } from "./auth.js";
+import { runConnect } from "./connect.js";
 import { runDoctorLocal } from "./doctor.js";
 import { runInit } from "./init.js";
 import { runProvidersList } from "./providers.js";
 import { runPublish } from "./publish.js";
 import { runReceiptsList, runReceiptsShow } from "./receipts.js";
 import { runRetry } from "./retry.js";
-import { runStateInspect, runStateRecover } from "./state.js";
+import { runStateInspect, runStateRecover, runStateUpgrade } from "./state.js";
 import type { LocalCommandOutcome } from "./shared.js";
 
 type Handler = (
@@ -23,6 +24,7 @@ type Handler = (
 
 const HANDLERS: Readonly<Record<string, Handler>> = {
   init: runInit,
+  connect: runConnect,
   doctor: runDoctorLocal,
   "providers.list": runProvidersList,
   "auth.set": runAuthSet,
@@ -34,6 +36,7 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
   "receipts.show": runReceiptsShow,
   "state.inspect": runStateInspect,
   "state.recover": runStateRecover,
+  "state.upgrade": runStateUpgrade,
 };
 
 /**

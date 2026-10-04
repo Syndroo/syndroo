@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cli",
-  "version": "0.6.0-rc.1",
+  "version": "0.7.0-rc.1",
   "type": "module",
   "description": "Local-first Syndroo CLI: publish text to Bluesky and Threads, with the retained remote command surface.",
   "license": "Apache-2.0",
@@ -44,6 +44,9 @@
   "devDependencies": {
     "@syndroo/bluesky": "0.1.0",
     "@syndroo/core": "0.1.0",
+    "@syndroo/devto": "0.1.0",
+    "@syndroo/linkedin": "0.1.0",
+    "@syndroo/mastodon": "0.1.0",
     "@syndroo/sdk": "0.4.0-rc.1",
     "@syndroo/threads": "0.1.0",
     "esbuild": "0.28.1",

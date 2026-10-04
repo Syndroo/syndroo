@@ -86,7 +86,8 @@ describe("legacy remote surface", () => {
     expect(result.stdout).not.toContain("skill install");
     expect(result.stdout).not.toContain("allow-experimental");
     // No OAuth capability is advertised, because none exists.
-    expect(result.stdout).not.toContain("connect");
+    expect(result.stdout).not.toContain("auth connect");
+    expect(result.stdout).toContain("connect <provider> [--local]");
   });
 
   it("refuses a local OAuth request without registering it as a command", async () => {

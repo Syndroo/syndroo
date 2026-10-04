@@ -4,7 +4,11 @@ import {
   requireNamespace,
   type LocalRunOverrides,
 } from "../../local/composition.js";
-import { frozenBusinessTime, previewForPlan } from "../../local/plan.js";
+import {
+  frozenBusinessTime,
+  previewCapabilitiesFor,
+  previewForPlan,
+} from "../../local/plan.js";
 import { flagValue, hasFlag, type CommandContext } from "../context.js";
 import { executeFrozenPlan } from "./execute-plan.js";
 import {
@@ -44,16 +48,19 @@ export async function runRetry(
     namespace,
     now: runtime.clock,
   });
+  const capabilities = await previewCapabilitiesFor(runtime.store, intent);
+  const previewOptions =
+    capabilities === undefined ? {} : { capabilities };
 
   if (dryRun) {
-    return previewOutcome(context, "retry --dry-run", intent);
+    return previewOutcome(context, "retry --dry-run", intent, capabilities);
   }
 
   await confirmLocalWrite(
     context,
     previewHumanLines(
       "retry",
-      previewForPlan(intent),
+      previewForPlan(intent, previewOptions),
       intent.items.map(item => frozenBusinessTime(item.delivery)),
     ),
   );

@@ -157,7 +157,15 @@ export interface PlatformAdapter {
 
 export type {
   FrozenDelivery,
+  LegacyLocalProviderId,
+  LocalArticleOptions,
+  LocalAuthMethod,
   LocalCredentials,
+  LocalContentOptions,
+  LocalContentType,
+  LocalIdentity,
+  LocalInstanceCapabilities,
+  LocalInstanceObservation,
   LocalProvider,
   LocalProviderDescription,
   LocalProviderId,
@@ -168,4 +176,9 @@ export type {
   TargetStatus,
 } from "./local-publishing.js";
 
-export { LocalProviderError } from "./local-publishing.js";
+export {
+  LEGACY_LOCAL_PROVIDER_IDS,
+  LocalProviderError,
+  isLegacyLocalProvider,
+  localDisplayName,
+} from "./local-publishing.js";

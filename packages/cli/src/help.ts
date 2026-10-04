@@ -128,7 +128,7 @@ export function generalHelp(): string {
   const render = (rows: readonly HelpRow[]): string[] =>
     rows.map(row => `  ${row.label.padEnd(labelWidth)}${row.summary}`);
   const lines: string[] = [
-    `syndroo ${cliVersion()} - local-first publishing for Bluesky and Threads`,
+    `syndroo ${cliVersion()} - local-first publishing for Bluesky, Threads and LinkedIn personal accounts`,
     "",
     "Usage",
     "  syndroo <command> [options]",

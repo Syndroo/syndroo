@@ -1,17 +1,23 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import type {
-  FrozenDelivery,
-  LocalProvider,
-  LocalProviderId,
-  TargetBinding,
+import {
+  LocalProviderError,
+  type FrozenDelivery,
+  type LocalContentOptions,
+  type LocalInstanceObservation,
+  type LocalProvider,
+  type LocalProviderId,
+  type TargetBinding,
 } from "@syndroo/core";
 
-import { configError, usageError } from "../cli-error.js";
+import { CliError, configError, usageError } from "../cli-error.js";
 import { EXIT_CODE } from "../exit-codes.js";
 import {
   canonicalDeliveryPayload,
   canonicalJson,
+  contentOptionsFor,
+  frozenPayloadHash,
+  requiresSchema2Record,
   type LocalPublishDocument,
 } from "./document.js";
 import { localError } from "./errors.js";
@@ -24,6 +30,7 @@ import {
   type PlanKind,
 } from "./ports/local-store.js";
 import type { LocalPreviewResult } from "./results.js";
+import type { StateSchemaVersion } from "./ports/local-store.js";
 
 /**
  * Offline publish intents.
@@ -49,7 +56,7 @@ export type LocalPlanBody = Omit<LocalPlan, "digest" | "mac">;
 
 export interface PlanLocalPublishOptions {
   readonly store: LocalStore;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly namespace: string;
   readonly now?: () => Date;
 }
@@ -103,7 +110,7 @@ export async function buildLocalPublishIntent(
   const items: PlanItem[] = [];
 
   for (const providerId of document.platforms) {
-    const provider = providers[providerId] as LocalProvider | undefined;
+    const provider = providers[providerId];
 
     if (provider === undefined) {
       throw localError(
@@ -123,11 +130,16 @@ export async function buildLocalPublishIntent(
 
     const target = connection.target;
     const content = finalContent(document, providerId);
-    const frozen = provider.freeze(content, createdAt);
+    const contentOptions = contentOptionsFor(document, providerId);
+    const frozen =
+      contentOptions === undefined
+        ? provider.freeze(content, createdAt)
+        : provider.freeze(content, createdAt, contentOptions);
     const delivery = canonicalDeliveryPayload(document, target, {
       namespace,
       payloadVersion: frozen.payloadVersion,
       payload: frozen.payload,
+      ...(contentOptions === undefined ? {} : { contentOptions }),
     });
 
     if (delivery.content !== content) {
@@ -140,6 +152,7 @@ export async function buildLocalPublishIntent(
     const existing = await store.getDelivery(delivery.deliveryId);
 
     if (existing === null) {
+      requireMastodonCapabilities(provider, connection.observation, content);
       items.push({ delivery, action: "publish", previousBinding: null });
       continue;
     }
@@ -147,14 +160,18 @@ export async function buildLocalPublishIntent(
     assertSameLogicalDelivery(document, namespace, providerId, target, existing);
 
     const reusable = reusableExisting(
-      provider,
-      document,
-      target,
-      namespace,
       existing,
       content,
+      contentOptions,
       createdAt,
+      provider,
     );
+
+    if (!reusable) {
+      // The frozen record stays authoritative; an unsent item is blocked until
+      // the operator reads the receipt or retries explicitly.
+      requireMastodonCapabilities(provider, connection.observation, content);
+    }
 
     items.push({
       // The plan carries the current active binding; the content, payload and
@@ -165,6 +182,9 @@ export async function buildLocalPublishIntent(
         namespace,
         target,
         content: existing.delivery.content,
+        ...(existing.delivery.contentOptions === undefined
+          ? {}
+          : { contentOptions: existing.delivery.contentOptions }),
         payloadVersion: existing.delivery.payloadVersion,
         payloadHash: existing.delivery.payloadHash,
         payload: existing.delivery.payload,
@@ -174,8 +194,18 @@ export async function buildLocalPublishIntent(
     });
   }
 
+  const schemaVersion: StateSchemaVersion = items.some(item =>
+    requiresSchema2Record(item.delivery.target.provider, item.delivery.contentOptions),
+  )
+    ? 2
+    : 1;
+
+  if (schemaVersion === 2 && installation.schemaVersion < 2) {
+    throw schema2Required();
+  }
+
   const body: LocalPlanBody = {
-    schemaVersion: 1,
+    schemaVersion,
     installationId: installation.installationId,
     planId: `plan_${randomBytes(16).toString("hex")}`,
     kind: "publish",
@@ -258,7 +288,28 @@ export async function loadLocalPlan(
  * It deliberately carries no plan identity or expiry: the internal execution
  * snapshot is not part of the public surface.
  */
-export function previewForPlan(plan: LocalPlan): LocalPreviewResult {
+/** Cached capability source/time per provider for a static preview. */
+export type LocalCapabilityViews = Readonly<
+  Partial<
+    Record<
+      LocalProviderId,
+      { readonly source: string | null; readonly checkedAt: string | null } | null
+    >
+  >
+>;
+
+export interface LocalPreviewOptions {
+  /**
+   * Cached capability source/time per provider. Absent means "not known",
+   * never "verified just now".
+   */
+  readonly capabilities?: LocalCapabilityViews;
+}
+
+export function previewForPlan(
+  plan: LocalPlan,
+  options: LocalPreviewOptions = {},
+): LocalPreviewResult {
   return {
     digest: plan.digest,
     items: plan.items.map(item => ({
@@ -278,7 +329,93 @@ export function previewForPlan(plan: LocalPlan): LocalPreviewResult {
               connectionId: item.previousBinding.connectionId,
               bindingRevision: item.previousBinding.bindingRevision,
             },
+      ...previewMetadataFor(item.delivery),
+      ...(item.delivery.target.provider === "mastodon"
+        ? { capabilities: options.capabilities?.["mastodon"] ?? null }
+        : {}),
     })),
+  };
+}
+
+/**
+ * Reads the cached capability source/time a static preview must report.
+ *
+ * This is a read-only state lookup: it never verifies an identity and never
+ * reaches the network.
+ */
+export async function previewCapabilitiesFor(
+  store: LocalStore,
+  plan: LocalPlan,
+): Promise<LocalCapabilityViews> {
+  const capabilities: Record<
+    LocalProviderId,
+    { readonly source: string | null; readonly checkedAt: string | null } | null
+  > = {
+    bluesky: null,
+    threads: null,
+    linkedin: null,
+    mastodon: null,
+    devto: null,
+  };
+  const seen = new Set<LocalProviderId>();
+
+  for (const item of plan.items) {
+    const provider = item.delivery.target.provider;
+
+    if (provider !== "mastodon" || seen.has(provider)) {
+      continue;
+    }
+
+    seen.add(provider);
+
+    const connection = await store.getConnection(provider);
+    const observation = connection?.observation;
+
+    capabilities[provider] =
+      observation === undefined
+        ? null
+        : {
+            source: observation.capabilitySource,
+            checkedAt: observation.capabilityCheckedAt,
+          };
+  }
+
+  return capabilities;
+}
+
+/** The public visibility every frozen target in this version publishes with. */
+function isPublicProvider(provider: LocalProviderId): boolean {
+  return provider === "mastodon" || provider === "devto";
+}
+
+/**
+ * Article metadata and visibility for one previewed target.
+ *
+ * Legacy text providers add no field at all, so their preview JSON stays byte
+ * compatible with the previous version.
+ */
+function previewMetadataFor(delivery: FrozenDelivery): {
+  readonly visibility?: "public";
+  readonly article?: {
+    readonly title: string;
+    readonly tags: readonly string[];
+    readonly canonicalUrl: string | null;
+  };
+} {
+  const provider = delivery.target.provider;
+  const article = delivery.contentOptions?.article;
+
+  return {
+    ...(isPublicProvider(provider) ? { visibility: "public" as const } : {}),
+    ...(article === undefined
+      ? {}
+      : {
+          article: {
+            title: article.title,
+            tags: article.tags ?? [],
+            canonicalUrl: article.canonicalUrl ?? null,
+          },
+        }),
   };
 }
 
@@ -305,31 +442,105 @@ export function frozenBusinessTime(delivery: FrozenDelivery): string | null {
  * rewritten.
  */
 function reusableExisting(
-  provider: LocalProvider,
-  document: LocalPublishDocument,
-  target: TargetBinding,
-  namespace: string,
   existing: DeliveryRecord,
   content: string,
+  contentOptions: LocalContentOptions | undefined,
   createdAt: string,
+  provider: LocalProvider,
 ): boolean {
   if (existing.status !== "succeeded" || existing.delivery.content !== content) {
     return false;
   }
 
-  const preserved = provider.freeze(
-    existing.delivery.content,
-    frozenBusinessTime(existing.delivery) ?? createdAt,
-  );
-  const recheck = canonicalDeliveryPayload(document, target, {
-    namespace,
-    payloadVersion: preserved.payloadVersion,
-    payload: preserved.payload,
-  });
+  // Metadata is part of the approved input: a changed title, tag order or
+  // canonical URL is a different delivery, never a silent reuse.
+  if (
+    canonicalJson(existing.delivery.contentOptions ?? null) !==
+    canonicalJson(contentOptions ?? null)
+  ) {
+    return false;
+  }
+
+  const preserved =
+    existing.delivery.contentOptions === undefined
+      ? provider.freeze(
+          existing.delivery.content,
+          frozenBusinessTime(existing.delivery) ?? createdAt,
+        )
+      : provider.freeze(
+          existing.delivery.content,
+          frozenBusinessTime(existing.delivery) ?? createdAt,
+          existing.delivery.contentOptions,
+        );
 
   return (
     preserved.payloadVersion === existing.delivery.payloadVersion &&
-    recheck.payloadHash === existing.delivery.payloadHash
+    frozenPayloadHash(
+      preserved.payloadVersion,
+      preserved.payload,
+      existing.delivery.contentOptions,
+    ) === existing.delivery.payloadHash
+  );
+}
+
+/**
+ * The plan-time gate for a Mastodon target that would actually be sent.
+ *
+ * A succeeded replay needs nothing; a new or unpublished target needs a cached
+ * instance capability snapshot, and the frozen text must fit it. The current
+ * limit is re-checked in `prepare`; this is the offline, preview-time check.
+ */
+function requireMastodonCapabilities(
+  provider: LocalProvider,
+  observation: LocalInstanceObservation | undefined,
+  content: string,
+): void {
+  if (provider.provider !== "mastodon") {
+    return;
+  }
+
+  const capabilities = observation?.capabilities ?? null;
+  const checkedAt = observation?.capabilityCheckedAt ?? null;
+
+  if (capabilities === null || checkedAt === null) {
+    throw localError(
+      "PROVIDER_LOCAL_UNAVAILABLE",
+      "this instance has no cached capability snapshot; verify the account before previewing",
+    );
+  }
+
+  const validate = provider.validateCachedContent;
+
+  // The platform-specific algorithm lives in the adapter package. Until it is
+  // registered, the cached snapshot is required but the length check itself is
+  // the adapter integration hook (A3); nothing here guesses a URL algorithm.
+  if (validate === undefined) {
+    return;
+  }
+
+  try {
+    validate.call(provider, content, capabilities);
+  } catch (error) {
+    if (error instanceof LocalProviderError && error.code === "INVALID_CONTENT") {
+      throw localError(
+        "INVALID_DOCUMENT",
+        "the frozen text exceeds the cached instance limit",
+      );
+    }
+
+    throw localError(
+      "PROVIDER_LOCAL_UNAVAILABLE",
+      "the cached instance limit could not be checked",
+    );
+  }
+}
+
+/** A schema-2 plan needs an explicitly upgraded state; nothing migrates here. */
+function schema2Required(): CliError {
+  return localError(
+    "STATE_VERSION_UNSUPPORTED",
+    "this plan needs state schema 2; run `syndroo state upgrade --to 2` first",
+    EXIT_CODE.FAILURE,
   );
 }
 

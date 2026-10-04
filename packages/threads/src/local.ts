@@ -1,5 +1,7 @@
 import {
   LocalProviderError,
+  localDisplayName,
+  type LocalIdentity,
   type FrozenDelivery,
   type LocalCredentials,
   type LocalProvider,
@@ -21,7 +23,7 @@ import {
 
 /** The only production destination a local Threads credential may reach. */
 const API_ORIGIN = "https://graph.threads.net";
-const IDENTITY_PATH = "/me?fields=id";
+const IDENTITY_PATH = "/me?fields=id,username";
 const PUBLISH_PATH = "/me/threads";
 const PAYLOAD_VERSION = 1;
 
@@ -114,11 +116,9 @@ export class ThreadsLocalProvider implements LocalProvider {
   async verifyIdentity(
     credentials: LocalCredentials,
     signal: AbortSignal,
-  ): Promise<{ targetId: string }> {
+  ): Promise<LocalIdentity> {
     const accessToken = readAccessToken(credentials);
-    const targetId = await this.fetchIdentity(accessToken, signal);
-
-    return { targetId };
+    return this.fetchIdentity(accessToken, signal);
   }
 
   async prepare(
@@ -131,9 +131,9 @@ export class ThreadsLocalProvider implements LocalProvider {
     }
 
     const accessToken = readAccessToken(credentials);
-    const targetId = await this.fetchIdentity(accessToken, signal);
+    const identity = await this.fetchIdentity(accessToken, signal);
 
-    if (targetId !== target.targetId) {
+    if (identity.targetId !== target.targetId) {
       throw new LocalProviderError("ACCOUNT_MISMATCH");
     }
 
@@ -151,7 +151,7 @@ export class ThreadsLocalProvider implements LocalProvider {
   private async fetchIdentity(
     accessToken: string,
     signal: AbortSignal,
-  ): Promise<string> {
+  ): Promise<LocalIdentity> {
     if (signal.aborted) {
       throw new LocalProviderError("ABORTED");
     }
@@ -180,7 +180,8 @@ export class ThreadsLocalProvider implements LocalProvider {
           throw new LocalProviderError("PROVIDER_UNAVAILABLE");
         }
 
-        return id;
+        const displayName = localDisplayName(isRecord(response.body) ? response.body.username : undefined);
+        return { targetId: id, ...(displayName === undefined ? {} : { displayName }) };
       }
 
       throw new LocalProviderError(

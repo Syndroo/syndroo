@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   LocalProviderError,
   type LocalCredentials,
+  type LocalInstanceObservation,
   type LocalProvider,
   type LocalProviderDescription,
   type LocalProviderId,
@@ -86,12 +87,19 @@ export class FakeLocalStore implements LocalStore {
   }> = [];
   readonly installationKey: string;
   readonly auditDir: string | null;
+  /** The state schema this fake reports. Defaults to legacy schema 1. */
+  readonly installationSchemaVersion: 1 | 2;
   /** Runs inside `putConnection` before the revision check (simulates a race). */
   beforePutConnection: (() => Promise<void> | void) | null = null;
 
-  constructor(options: { auditDir?: string; installationKey?: string } = {}) {
+  constructor(options: {
+    auditDir?: string;
+    installationKey?: string;
+    installationSchemaVersion?: 1 | 2;
+  } = {}) {
     this.auditDir = options.auditDir ?? null;
     this.installationKey = options.installationKey ?? FAKE_INSTALLATION_KEY;
+    this.installationSchemaVersion = options.installationSchemaVersion ?? 1;
   }
 
   get writes(): number {
@@ -135,6 +143,36 @@ export class FakeLocalStore implements LocalStore {
     await this.persistAudit();
   }
 
+  /** The narrow observation CAS: revision-checked, binding revision unchanged. */
+  async putObservation(
+    provider: LocalProviderId,
+    observation: LocalInstanceObservation,
+    expectedRevision: number,
+  ): Promise<void> {
+    const current = this.connections.get(provider) ?? null;
+
+    if (current === null || current.removed) {
+      throw new CliError(
+        "BINDING_CHANGED: there is no active local binding for this provider",
+        { code: "BINDING_CHANGED", exitCode: EXIT_CODE.USAGE },
+      );
+    }
+
+    if (current.target.bindingRevision !== expectedRevision) {
+      throw new CliError(
+        "BINDING_CHANGED: the account binding changed before the observation was written",
+        { code: "BINDING_CHANGED", exitCode: EXIT_CODE.USAGE },
+      );
+    }
+
+    this.connections.set(provider, {
+      ...current,
+      schemaVersion: 2,
+      observation,
+    });
+    await this.persistAudit();
+  }
+
   private async persistAudit(): Promise<void> {
     if (this.auditDir === null) {
       return;
@@ -152,8 +190,14 @@ export class FakeLocalStore implements LocalStore {
     throw new Error("FakeLocalStore.initialize is not used by T04");
   }
 
-  async getInstallation(): Promise<{ schemaVersion: 1; installationId: string }> {
-    throw new Error("FakeLocalStore.getInstallation is not used by T04");
+  async getInstallation(): Promise<{
+    schemaVersion: 1 | 2;
+    installationId: string;
+  }> {
+    return {
+      schemaVersion: this.installationSchemaVersion,
+      installationId: `inst_${"a".repeat(32)}`,
+    };
   }
 
   async getPlan(): Promise<never> {

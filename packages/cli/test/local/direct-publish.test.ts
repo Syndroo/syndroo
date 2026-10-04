@@ -214,7 +214,7 @@ function harness(
     threads,
     run: argv =>
       run(argv, io, {
-        providers: { bluesky: bluesky.provider, threads: threads.provider },
+        providers: { bluesky: bluesky.provider, threads: threads.provider, linkedin: fakeProvider("linkedin", "urn:li:person:fixturealice").provider },
       }),
     lastEnvelope: () => {
       const lines = stdout.join("").split("\n").filter(line => line.length > 0);
@@ -445,7 +445,7 @@ describe("direct input adapters", () => {
     expect(fixture.bluesky.published[0]?.content).toBe("direct inline content");
   });
 
-  it("accepts an omitted schemaVersion and still refuses an explicit one", async () => {
+  it("accepts an omitted schemaVersion and a v2 text document", async () => {
     const fixture = harness();
 
     await ready(fixture);
@@ -462,7 +462,27 @@ describe("direct input adapters", () => {
       ]),
     ).toBe(0);
 
-    for (const bad of [null, 2, "1"]) {
+    // v2 is a valid explicit version; a text-only v2 document is still text.
+    fixture.bluesky.queue(succeeded());
+
+    expect(
+      await fixture.run([
+        "publish",
+        "--data",
+        documentJson({ schemaVersion: 2, key: "direct-v2", content: "v2 text" }),
+        "--yes",
+        "--no-input",
+        "--json",
+      ]),
+    ).toBe(0);
+  });
+
+  it("refuses an unsupported schemaVersion", async () => {
+    const fixture = harness();
+
+    await ready(fixture);
+
+    for (const bad of [null, 3, "1"]) {
       const code = await fixture.run([
         "publish",
         "--data",

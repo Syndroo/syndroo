@@ -72,8 +72,8 @@ known instead of constructing one.
 
 ## Limits
 
-The `0.6.0-rc.1` candidate publishes plain text to Bluesky and Threads only, in
-the foreground, with no scheduling, media, batch mode, or local OAuth. Provider
+The `0.7.0-rc.1` candidate publishes plain text and DEV.to articles to five local providers, in
+the foreground, with no scheduling, media, batch mode, or automatic token refresh; Mastodon OAuth is an explicit, separately approved connect flow. Provider
 maturity is `fixture-tested`; there is no live-account acceptance for this
 candidate. Packaged end-to-end checks use fake providers, not live accounts.
 

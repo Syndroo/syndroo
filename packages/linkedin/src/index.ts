@@ -14,12 +14,8 @@ export function isLinkedInConfigurationValid(accessToken: string | undefined, au
     apiVersion && /^20\d{2}(?:0[1-9]|1[0-2])$/.test(apiVersion));
 }
 
-// Posts commentary uses LinkedIn's "little" grammar, not raw plain text.
-// Escape every reserved character so user text cannot introduce mentions or
-// formatting, or be truncated by unbalanced delimiters. JSON escaping follows.
-function plainCommentary(text: string): string {
-  return text.replace(/[|{}@\[\]()<>#\\*_~]/g, "\\$&");
-}
+import { plainCommentary } from "./text.js";
+export { LinkedInLocalProvider } from "./local.js";
 
 export class LinkedInPublisher implements Publisher {
   readonly name = "linkedin-native";

@@ -398,6 +398,6 @@ describe("help and version", () => {
     // The literal is deliberate: `syndroo version` must report the candidate
     // version from the manifest, so a version bump has to be an explicit edit
     // here rather than passing automatically.
-    expect(payload["version"]).toBe("0.6.0-rc.1");
+    expect(payload["version"]).toBe("0.7.0-rc.1");
   });
 });

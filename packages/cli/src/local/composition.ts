@@ -23,7 +23,9 @@ import { createLocalFileStore } from "./state/store.js";
 
 export interface LocalRunOverrides {
   /** Test-only provider set. Replaces both providers together. */
-  readonly providers?: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers?: Readonly<
+    Partial<Record<LocalProviderId, LocalProvider>>
+  >;
   /** Test-only clock, shared with the store so TTLs are deterministic. */
   readonly clock?: () => Date;
 }
@@ -34,7 +36,12 @@ export interface LocalRuntime {
   /** The explicit `--namespace` override, when the command was given one. */
   readonly explicitNamespace: string | undefined;
   readonly store: LocalStore;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  /**
+   * The providers this build actually wires. A provider this version advertises
+   * but does not register is absent, and every consumer refuses it explicitly
+   * instead of dispatching through an undefined entry.
+   */
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly clock: () => Date;
 }
 
@@ -57,27 +64,40 @@ function localClock(overrides: LocalRunOverrides): () => Date {
 }
 
 /**
- * Constructs the two local providers.
+ * Constructs the five local providers.
  *
  * The provider packages are imported lazily so a legacy remote command does not
  * pay for them, and so a broken optional install cannot take down `syndroo
- * version`. Construction itself is zero-network.
+ * version`. Construction itself is zero-network: Mastodon only stores the
+ * injected safe transport and DEV.to only stores its bounded fetch.
  */
 export async function localProviders(
   overrides: LocalRunOverrides,
-): Promise<Readonly<Record<LocalProviderId, LocalProvider>>> {
+): Promise<Readonly<Partial<Record<LocalProviderId, LocalProvider>>>> {
   if (overrides.providers !== undefined) {
     return overrides.providers;
   }
 
-  const [bluesky, threads] = await Promise.all([
+  const [bluesky, threads, linkedin, mastodon, devto, transport] = await Promise.all([
     import("@syndroo/bluesky"),
     import("@syndroo/threads"),
+    import("@syndroo/linkedin"),
+    import("@syndroo/mastodon"),
+    import("@syndroo/devto"),
+    import("./http/safe-instance-transport.js"),
   ]);
 
   return {
     bluesky: new bluesky.BlueskyLocalProvider(),
     threads: new threads.ThreadsLocalProvider(),
+    linkedin: new linkedin.LinkedInLocalProvider(),
+    // Mastodon requires an explicitly injected safe transport: the adapter has
+    // no default fetch, so production must pass the bounded instance fetch.
+    mastodon: new mastodon.MastodonLocalProvider({
+      fetch: transport.createSafeInstanceFetch(),
+    }),
+    // DEV.to has one fixed, hardcoded origin and a bounded native fetch.
+    devto: new devto.DevtoLocalProvider(),
   };
 }
 

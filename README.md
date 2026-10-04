@@ -1,10 +1,10 @@
 # Syndroo
 
-Publish plain text to Bluesky and Threads from your own machine, with no
+Publish plain text and articles to Bluesky, Threads, LinkedIn, Mastodon, and DEV.to from your own machine, with no
 server, queue, or database in the path. `publish` sends directly after
 confirmation; add `--dry-run` for an optional, read-only preview.
 
-This is the `0.6.0-rc.1` CLI-first candidate. Build and install its local
+This is the `0.7.0-rc.1` CLI-first candidate. Build and install its local
 tarball for validation; live-account acceptance has not been run for it.
 
 ## Quickstart
@@ -17,7 +17,7 @@ Linux; Windows local writes are refused rather than approximated.
 npm ci
 npm run build          # workspace types must exist in dist before bundling
 npm run pack:cli
-npm install --global ./artifacts/syndroo-cli-0.6.0-rc.1.tgz
+npm install --global ./artifacts/syndroo-cli-0.7.0-rc.1.tgz
 syndroo version
 
 # create local config and state

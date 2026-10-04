@@ -117,7 +117,7 @@ Worker package README linked above.
 `npm run e2e:live -- --plan <file>` is the **legacy remote** live check: it runs
 `doctor` and `posts ...` against a deployed instance from an approved plan file.
 It does not exercise local publishing. Local live acceptance would publish real
-text through the local CLI and has not been run for `0.6.0-rc.1`.
+text through the local CLI and has not been run for `0.7.0-rc.1`.
 
 For the full gate matrix, see [testing.md](testing.md). For the release
 process, see [releasing.md](releasing.md).

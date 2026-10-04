@@ -274,7 +274,7 @@ describe("executeLocalPlan", () => {
 
     const error = await rejectionOf(() =>
       executeLocalPlan(plan.planId, optionsOf(state, {
-        providers: { bluesky: bumped.provider, threads: state.threads.provider },
+        providers: { ...state.providers, bluesky: bumped.provider, threads: state.threads.provider },
       })),
     );
 
@@ -294,7 +294,7 @@ describe("executeLocalPlan", () => {
 
     const error = await rejectionOf(() =>
       executeLocalPlan(plan.planId, optionsOf(state, {
-        providers: {
+        providers: { ...state.providers,
           bluesky: state.bluesky.provider,
           threads: refusing.provider,
         },
@@ -580,7 +580,7 @@ describe("executeLocalPlan", () => {
 
     const error = await rejectionOf(() =>
       executeLocalPlan(plan.planId, optionsOf(state, {
-        providers: {
+        providers: { ...state.providers,
           bluesky: hanging.provider,
           threads: state.threads.provider,
         },
@@ -626,7 +626,7 @@ describe("executeLocalPlan", () => {
 
     const error = await rejectionOf(() =>
       executeLocalPlan(plan.planId, optionsOf(state, {
-        providers: {
+        providers: { ...state.providers,
           bluesky: ignoring.provider,
           threads: state.threads.provider,
         },

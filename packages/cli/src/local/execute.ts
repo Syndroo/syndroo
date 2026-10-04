@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   LocalProviderError,
   type FrozenDelivery,
@@ -13,7 +11,7 @@ import {
 
 import { CliError, configError } from "../cli-error.js";
 import { EXIT_CODE } from "../exit-codes.js";
-import { canonicalJson } from "./document.js";
+import { frozenPayloadHash } from "./document.js";
 import { localError } from "./errors.js";
 import { frozenBusinessTime, loadLocalPlan } from "./plan.js";
 import type {
@@ -64,7 +62,7 @@ export type CredentialResolver = (
 
 export interface ExecuteLocalPlanOptions {
   readonly store: LocalStore;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly resolveCredentials: CredentialResolver;
   readonly signal: AbortSignal;
   /** The command that owns this plan; the other kind is refused. */
@@ -161,7 +159,10 @@ export function assertPayloadMatchesProvider(
   };
 
   try {
-    frozen = provider.freeze(delivery.content, createdAt);
+    frozen =
+      delivery.contentOptions === undefined
+        ? provider.freeze(delivery.content, createdAt)
+        : provider.freeze(delivery.content, createdAt, delivery.contentOptions);
   } catch {
     throw localError(
       "INVALID_DOCUMENT",
@@ -171,7 +172,11 @@ export function assertPayloadMatchesProvider(
 
   if (
     frozen.payloadVersion !== delivery.payloadVersion ||
-    payloadHash(frozen.payloadVersion, frozen.payload) !== delivery.payloadHash
+    frozenPayloadHash(
+      frozen.payloadVersion,
+      frozen.payload,
+      delivery.contentOptions,
+    ) !== delivery.payloadHash
   ) {
     throw localError(
       "IDEMPOTENCY_CONFLICT",
@@ -224,7 +229,7 @@ function startCommandBudget(
 
 interface AdmissionContext {
   readonly store: LocalStore;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly resolveCredentials: CredentialResolver;
   readonly now: () => Date;
   readonly budget: CommandBudget;
@@ -324,6 +329,7 @@ async function admitAndDispatch(
         resolved,
         item.delivery.target,
         budget.signal,
+        item.delivery,
       );
 
       if (budget.signal.aborted) {
@@ -600,7 +606,7 @@ async function commitQuietly(
 }
 
 function providerFor(
-  providers: Readonly<Record<LocalProviderId, LocalProvider>>,
+  providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>,
   providerId: LocalProviderId,
 ): LocalProvider {
   const provider = providers[providerId];
@@ -767,13 +773,4 @@ function resultFromOutcome(
     outcome,
     now: now(),
   });
-}
-
-function payloadHash(
-  payloadVersion: number,
-  payload: Readonly<Record<string, unknown>>,
-): string {
-  return createHash("sha256")
-    .update(canonicalJson({ payloadVersion, payload }))
-    .digest("hex");
 }

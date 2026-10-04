@@ -358,7 +358,7 @@ async function checkInstalledTree(): Promise<void> {
   checks["runtime-dependencies"] =
     runtimeDependencies.length === 0 ? "none" : runtimeDependencies.join(", ");
 
-  for (const name of ["@syndroo/bluesky", "@syndroo/core", "@syndroo/sdk", "@syndroo/threads"]) {
+  for (const name of ["@syndroo/bluesky", "@syndroo/core", "@syndroo/sdk", "@syndroo/threads", "@syndroo/linkedin", "@syndroo/mastodon", "@syndroo/devto"]) {
     if (existsSync(join(app, "node_modules", ...name.split("/")))) {
       fail(`${name} was installed alongside the self-contained CLI`);
     }

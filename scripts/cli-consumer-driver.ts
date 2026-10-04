@@ -146,6 +146,11 @@ const overrides: LocalRunOverrides = {
   providers: {
     bluesky: fakeProvider("bluesky", publishCalls),
     threads: fakeProvider("threads", publishCalls),
+    linkedin: fakeProvider("linkedin", publishCalls),
+    // The installed-CLI check reports every advertised provider; the fake map
+    // must cover all five or doctor rightly fails an absent provider.
+    mastodon: fakeProvider("mastodon", publishCalls),
+    devto: fakeProvider("devto", publishCalls),
   },
 };
 
@@ -248,7 +253,7 @@ try {
           .sort()
       : [];
 
-    if (names.join(",") !== "bluesky,threads") {
+    if (names.join(",") !== "bluesky,devto,linkedin,mastodon,threads") {
       fail(`providers list reported ${names.join(",")}`);
     }
   }

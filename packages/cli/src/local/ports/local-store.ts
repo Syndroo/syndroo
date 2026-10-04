@@ -1,5 +1,6 @@
 import type {
   FrozenDelivery,
+  LocalInstanceObservation,
   LocalProviderId,
   ProviderOutcome,
   TargetBinding,
@@ -27,6 +28,9 @@ export type PlanAction = "publish" | "retry" | "skip" | "blocked";
 
 export type AdmissionState = "preparing" | "ready";
 
+/** State schema versions this build understands. */
+export type StateSchemaVersion = 1 | 2;
+
 /**
  * One registered account binding.
  *
@@ -34,12 +38,18 @@ export type AdmissionState = "preparing" | "ready";
  * file and never claims to revoke a remote token.
  */
 export interface ConnectionRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: StateSchemaVersion;
   readonly target: TargetBinding;
   readonly source: CredentialReference;
   /** Installation-keyed HMAC of the resolved credential group; never a raw hash. */
   readonly fingerprint: string;
   readonly removed: boolean;
+  readonly verification?: { readonly displayName: string | null; readonly lastVerifiedAt: string };
+  /**
+   * Cached, non-secret instance observation. Only a schema-2 record carries it,
+   * and writing one never changes the binding revision.
+   */
+  readonly observation?: LocalInstanceObservation;
 }
 
 /** One frozen target inside a plan. */
@@ -59,7 +69,7 @@ export interface PlanItem {
  * whole-state copies and restored backups have no cross-device protection.
  */
 export interface LocalPlan {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: StateSchemaVersion;
   readonly installationId: string;
   readonly planId: string;
   readonly kind: PlanKind;
@@ -79,7 +89,7 @@ export interface LocalPlan {
  * operation manifests keep their own delivery references.
  */
 export interface DeliveryRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: StateSchemaVersion;
   readonly delivery: FrozenDelivery;
   readonly status: TargetStatus;
   readonly attempts: number;
@@ -116,13 +126,25 @@ export interface OperationRecord {
  */
 export interface LocalStore {
   initialize(): Promise<void>;
-  getInstallation(): Promise<{ schemaVersion: 1; installationId: string }>;
+  getInstallation(): Promise<{
+    schemaVersion: StateSchemaVersion;
+    installationId: string;
+  }>;
   /** HMAC under the installation key; the key itself never leaves the store. */
   authenticate(value: string): Promise<string>;
   getConnection(provider: LocalProviderId): Promise<ConnectionRecord | null>;
   putConnection(
     record: ConnectionRecord,
     expectedRevision: number | null,
+  ): Promise<void>;
+  /**
+   * Replaces the cached observation without touching the binding revision,
+   * fingerprint, history, or any secret. Schema 2 only.
+   */
+  putObservation(
+    provider: LocalProviderId,
+    observation: LocalInstanceObservation,
+    expectedRevision: number,
   ): Promise<void>;
   getPlan(planId: string): Promise<LocalPlan | null>;
   putPlan(plan: LocalPlan): Promise<void>;

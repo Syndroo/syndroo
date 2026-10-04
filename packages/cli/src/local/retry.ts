@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 
-import type {
+import {
+  LocalProviderError,
+  type LocalInstanceObservation,
   LocalProvider,
   LocalProviderId,
 } from "@syndroo/core";
@@ -9,6 +11,7 @@ import { configError, usageError } from "../cli-error.js";
 import { EXIT_CODE } from "../exit-codes.js";
 import { localError } from "./errors.js";
 import { assertPayloadMatchesProvider, sameTargetBinding } from "./execute.js";
+import { requiresSchema2Record } from "./document.js";
 import { signLocalPlan, type LocalPlanBody } from "./plan.js";
 import {
   LOCAL_ID_PATTERN,
@@ -17,6 +20,7 @@ import {
   type LocalStore,
   type PlanAction,
   type PlanItem,
+  type StateSchemaVersion,
 } from "./ports/local-store.js";
 
 /**
@@ -42,11 +46,17 @@ const NAMESPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** Content attempts one logical delivery may ever use, shared with the store. */
 const MAX_ATTEMPTS = 3;
 
-const LOCAL_PROVIDERS: readonly LocalProviderId[] = ["bluesky", "threads"];
+const LOCAL_PROVIDERS: readonly LocalProviderId[] = [
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+];
 
 export interface PlanLocalRetryOptions {
   readonly store: LocalStore;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   /** Must be the namespace that owns the parent operation. */
   readonly namespace: string;
   readonly now?: () => Date;
@@ -132,8 +142,22 @@ export async function buildLocalRetryIntent(
 
   const installation = await store.getInstallation();
   const createdAt = isoTime(now);
+  const schemaVersion: StateSchemaVersion = items.some(item =>
+    requiresSchema2Record(item.delivery.target.provider, item.delivery.contentOptions),
+  )
+    ? 2
+    : 1;
+
+  if (schemaVersion === 2 && installation.schemaVersion < 2) {
+    throw localError(
+      "STATE_VERSION_UNSUPPORTED",
+      "this retry needs state schema 2; run `syndroo state upgrade --to 2` first",
+      EXIT_CODE.FAILURE,
+    );
+  }
+
   const body: LocalPlanBody = {
-    schemaVersion: 1,
+    schemaVersion,
     installationId: installation.installationId,
     planId: `plan_${randomBytes(16).toString("hex")}`,
     kind: "retry",
@@ -169,7 +193,7 @@ export async function planLocalRetry(
  */
 async function retryItem(
   store: LocalStore,
-  providers: Readonly<Record<LocalProviderId, LocalProvider>>,
+  providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>,
   parentItem: PlanItem,
   parent: LocalPlan,
   now: () => Date,
@@ -222,6 +246,12 @@ async function retryItem(
     }
 
     assertPayloadMatchesProvider(provider, record.delivery, parent.createdAt);
+
+    requireMastodonCapabilities(
+      provider,
+      connection.observation,
+      record.delivery.content,
+    );
   }
 
   const previousBinding = sameTargetBinding(
@@ -309,4 +339,53 @@ function isoTime(now: () => Date): string {
   }
 
   return date.toISOString();
+}
+
+/**
+ * The retry-time gate for a Mastodon target that would be sent again.
+ *
+ * A cached success is a skip and needs nothing; an unsent target needs the same
+ * cached capability snapshot the original preview used.
+ */
+function requireMastodonCapabilities(
+  provider: LocalProvider,
+  observation: LocalInstanceObservation | undefined,
+  content: string,
+): void {
+  if (provider.provider !== "mastodon") {
+    return;
+  }
+
+  const capabilities = observation?.capabilities ?? null;
+  const checkedAt = observation?.capabilityCheckedAt ?? null;
+
+  if (capabilities === null || checkedAt === null) {
+    throw localError(
+      "PROVIDER_LOCAL_UNAVAILABLE",
+      "this instance has no cached capability snapshot; verify the account before retrying",
+    );
+  }
+
+  const validate = provider.validateCachedContent;
+
+  // Adapter-owned platform algorithm; see the A3 integration note.
+  if (validate === undefined) {
+    return;
+  }
+
+  try {
+    validate.call(provider, content, capabilities);
+  } catch (error) {
+    if (error instanceof LocalProviderError && error.code === "INVALID_CONTENT") {
+      throw localError(
+        "INVALID_DOCUMENT",
+        "the frozen text exceeds the cached instance limit",
+      );
+    }
+
+    throw localError(
+      "PROVIDER_LOCAL_UNAVAILABLE",
+      "the cached instance limit could not be checked",
+    );
+  }
 }

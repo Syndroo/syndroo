@@ -8,7 +8,13 @@ import {
 import type { CommandContext } from "../context.js";
 import type { LocalCommandOutcome } from "./shared.js";
 
-const ORDER: readonly LocalProviderId[] = ["bluesky", "threads"];
+const ORDER: readonly LocalProviderId[] = [
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+];
 
 /**
  * `syndroo providers list` — read-only and offline.
@@ -22,9 +28,15 @@ export async function runProvidersList(
 ): Promise<LocalCommandOutcome> {
   void context;
 
-  const providers: Readonly<Record<LocalProviderId, LocalProvider>> =
-    await localProviders(overrides);
-  const list = ORDER.map(id => providers[id].describe());
+  const providers: Readonly<
+    Partial<Record<LocalProviderId, LocalProvider>>
+  > = await localProviders(overrides);
+  // A provider this build does not register is not listed as available.
+  const list = ORDER.flatMap(id => {
+    const provider = providers[id];
+
+    return provider === undefined ? [] : [provider.describe()];
+  });
 
   return {
     ok: true,

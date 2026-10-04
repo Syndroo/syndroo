@@ -23,6 +23,10 @@ State directories are `0700` and state files are `0600`. Those permissions limit
 | `syndroo init [--namespace <name>]` | Create the local config and state. Repeats safely with the same namespace |
 | `syndroo doctor --local` | Check config, state, permissions, and bindings. Read-only, no network |
 | `syndroo providers list` | List the local providers with maturity, `localPublish`, and `unavailableReason` |
+| `syndroo connect <provider> [--local]` | Offer an interactive credential-source choice; without a TTY, refuse with guidance. With an explicit source, verify and bind using the local auth store |
+| `syndroo connect <provider> --from-env --save-credential-file <new-path> --yes --no-input --expect-account <id>` | Create one new 0600 credential file after confirmation, then bind under a revision check |
+| `syndroo connect mastodon --oauth --instance <url> --save-credential-file <new-path> ...` | Local browser authorization with PKCE S256, then verify the real account and bind |
+| `syndroo state upgrade --to 2 --confirm-no-writers --yes --no-input` | The only local state migration; resumes a recognized interrupted marker |
 | `syndroo auth set <provider> --local (--from-env \| --credential-file <path>)` | Verify one account and register a credential reference |
 | `syndroo auth status [<provider>] --local` | Show the local bindings. Offline unless `--verify` is added |
 | `syndroo auth remove <provider> --local` | Remove one binding and keep a tombstone |
@@ -48,6 +52,19 @@ Remote: `--base-url <url>`, `--file <path>`, `--idempotency-key <key>`, `--limit
 
 A local command refuses a repeated flag. `--timeout` is accepted only for execution or for `auth status --verify`, and accepts a positive whole number of seconds or milliseconds up to 600s. A local run needs both `--yes` and `--no-input` when no human can answer a prompt.
 
+### Connect without a Syndroo server
+
+`syndroo connect <provider>` defaults to local mode; `--local` is optional for this command only. Without an explicit source, an interactive terminal offers environment variables, an existing file, hidden entry, or Mastodon OAuth. Hidden entry requires `--save-credential-file`; choosing OAuth directs the user to rerun with its explicit flags. Without a TTY or with `--no-input`, the command refuses with source-selection guidance before reading credentials or contacting a provider. It never guesses a source. Guidance is not an account connection. With one source, it verifies the platform account and uses the same binding and safety checks as `auth set --local`.
+
+```bash
+syndroo connect bluesky   # interactive: TTY offers env/file/hidden entry; non-interactive refuses
+syndroo init
+syndroo connect bluesky --from-env --expect-account <verified-id> --yes --no-input
+syndroo auth status --local
+```
+
+`--managed` is recognized only to return a local usage error before credential access, network calls, or state changes. It does not enable a service. Remote instance variables do not select a different route. The existing auth commands still require `--local`. A connection timeout can be supplied when binding with an explicit source, not when printing guidance.
+
 ### Publish document
 
 ```json
@@ -62,11 +79,11 @@ A local command refuses a repeated flag. `--timeout` is accepted only for execut
 
 | Field | Rule |
 | --- | --- |
-| `schemaVersion` | Optional; defaults to `1`. If present, must be exactly `1` |
+| `schemaVersion` | Optional; defaults to `1`. Accepts `1` or `2`; selecting `devto` requires explicit `2`, a full body at `overrides.devto.content`, and `overrides.devto.article.title`. Version `2` also accepts text-only documents |
 | `key` | Stable logical identity, 1-128 characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or digit |
 | `content` | Non-blank text of at most 10000 Unicode code points |
-| `platforms` | Non-empty array with no repeats; each entry one of `bluesky`, `threads` |
-| `overrides` | Optional object naming only selected platforms; each entry allows `content` only |
+| `platforms` | Non-empty array with no repeats; each entry one of `bluesky`, `threads`, `linkedin`, `mastodon` (text) or `devto` (v2 article only) |
+| `overrides` | Optional object naming only selected platforms; `content` for text, and under `schemaVersion: 2` the `devto` entry also carries `article.title/tags/canonicalUrl` |
 
 Every source is strict JSON: comments, trailing commas, repeated keys (including escaped equivalents), invalid UTF-8, and unpaired surrogates are refused. One leading byte-order mark is tolerated. The source is limited to 64 KiB before decoding. Select exactly one source: `--data <json>`, `--input <path>`, or `--input -` (stdin). Input conflicts fail before reads or state work. No temporary file is required for generated content. Inline JSON may appear in shell history and process arguments; use stdin for sensitive text. Pass serialized JSON as one argument, never shell-interpolate post text. Credentials do not belong in post JSON. There is no text shortcut. `scheduledAt` belongs to the remote surface only and is refused locally.
 
@@ -133,6 +150,8 @@ This is the pre-0.6 HTTP path. It stays available and unchanged, and it is never
 | `platforms` | Non-empty array with no repeats; each entry one of `x`, `threads`, `bluesky`, `tumblr`, `mastodon`, `linkedin`, `nostr` |
 | `overrides` | Optional; keys must already be selected, and each entry allows `content` only |
 | `scheduledAt` | Optional ISO 8601 instant; a past instant warns and publishes as soon as the instance can |
+
+This platform list describes document-schema acceptance; an instance must also have the selected adapter installed and configured before it can publish. DEV.to is local-only and is rejected by the remote document parser.
 
 Unknown top-level fields are warnings here, not errors. `--idempotency-key <key>` is required together with `--yes` for a non-interactive create, and reusing the same key with the same body replays the original result.
 

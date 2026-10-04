@@ -305,14 +305,51 @@ export interface WriterOptions {
   readonly stateHome: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
+  /** When set, the caller owns the report path and can wait for entry. */
+  readonly reportPath?: string;
+}
+
+/** A fresh report path beside one state home. */
+export function writerReportPath(stateHome: string): string {
+  return path.join(
+    path.dirname(stateHome),
+    `report-${randomBytes(6).toString("hex")}.json`,
+  );
+}
+
+/**
+ * Waits until the child has written its report from *inside* its lock callback.
+ *
+ * That write is the only sound readiness signal: `owner.json` is published
+ * before `withLocalWriteLock` checks the recovery guard, so a parent that waits
+ * for the owner can observe a writer that is about to refuse and release.
+ */
+export async function waitForWriterReport(
+  reportPath: string,
+  limitMs = 10_000,
+): Promise<unknown> {
+  const deadline = Date.now() + limitMs;
+
+  while (Date.now() < deadline) {
+    if (existsSync(reportPath)) {
+      try {
+        return JSON.parse(readFileSync(reportPath, "utf8")) as unknown;
+      } catch {
+        // A partially written report is retried until the deadline.
+      }
+    }
+
+    await new Promise(resolve => {
+      setTimeout(resolve, 25);
+    });
+  }
+
+  throw new Error("the writer never reported entry into its lock callback");
 }
 
 /** Runs one real node child against the compiled fixture. */
 export function runWriter(options: WriterOptions): Promise<WriterRun> {
-  const reportPath = path.join(
-    path.dirname(options.stateHome),
-    `report-${randomBytes(6).toString("hex")}.json`,
-  );
+  const reportPath = options.reportPath ?? writerReportPath(options.stateHome);
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [options.entry, options.mode], {

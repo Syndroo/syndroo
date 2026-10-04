@@ -174,7 +174,9 @@ describe("parseLocalPublishDocument", () => {
       [],
       ["bluesky", "bluesky"],
       ["bluesky", 7],
-      ["mastodon"],
+      ["nostr"],
+      // DEV.to needs the explicit v2 article document, never a v1 text list.
+      ["devto"],
     ]) {
       expect(
         codeOf(() =>
@@ -186,8 +188,30 @@ describe("parseLocalPublishDocument", () => {
     }
   });
 
+  it("accepts mastodon as a v1 text provider", () => {
+    const document = parseLocalPublishDocument(
+      documentText({ platforms: ["bluesky", "mastodon"], overrides: undefined }),
+    );
+
+    expect(document.schemaVersion).toBe(1);
+    expect(document.platforms).toEqual(["bluesky", "mastodon"]);
+  });
+
+  it("accepts a v2 text-only document that does not select devto", () => {
+    const document = parseLocalPublishDocument(
+      documentText({
+        schemaVersion: 2,
+        platforms: ["bluesky", "mastodon"],
+        overrides: undefined,
+      }),
+    );
+
+    expect(document.schemaVersion).toBe(2);
+    expect(document.platforms).toEqual(["bluesky", "mastodon"]);
+  });
+
   it("reports known remote-only platforms as locally unavailable", () => {
-    for (const platform of ["x", "tumblr", "linkedin"]) {
+    for (const platform of ["x", "tumblr"]) {
       const error = errorOf(() =>
         parseLocalPublishDocument(
           documentText({ platforms: [platform], overrides: undefined }),

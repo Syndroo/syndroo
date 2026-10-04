@@ -53,7 +53,9 @@ describe("parseArgs", () => {
     const error = expectUsageError(() => parseArgs(["posts", "list", "--nope"]));
 
     expect(error.code).toBe("USAGE");
-    expect(error.message).toContain("--nope");
+    // A raw unknown flag can itself be a secret; it is never echoed.
+    expect(error.message).not.toContain("--nope");
+    expect(error.message).toContain("Unknown flag");
   });
 
   it("rejects a flag the command does not accept", () => {

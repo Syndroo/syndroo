@@ -62,12 +62,12 @@ official SDKs. X requires all four OAuth 1.0a credentials.
 
 Known but uninstalled platforms must return `PLATFORM_NOT_CONFIGURED` at request validation. Never accept work that cannot be dispatched.
 
-Local scope is fixed for `0.6`: Bluesky and Threads, plain text, local
-publishing, plus the retained remote commands. The other adapters are preserved
-for the remote path and are not local targets; do not add a platform, a local
-OAuth flow, or a local scheduling path without an explicit requirement. Keep
-every existing adapter's behavior and tests intact when working on the local
-surface.
+Local scope for `0.7.0-rc.1` is five providers: Bluesky, Threads, LinkedIn, and
+Mastodon (plain text) plus DEV.to (explicit `schemaVersion: 2` articles), with
+the retained remote commands. Mastodon local OAuth is an explicit, separately
+approved connect flow; scheduling and media remain out of scope. Preserve every
+existing adapter's behavior and tests when working on the local surface, and
+keep the remote path's contracts unchanged.
 
 ## Local invariants
 

@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -76,6 +82,29 @@ export async function openState(
       rmSync(stateHome, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Turns one freshly initialized state into a legacy schema-1 state.
+ *
+ * The integrity key and the installation id are preserved, so this is a real
+ * pre-upgrade state, not a corrupt one.
+ */
+export function makeLegacyState(fixture: StateFixture): void {
+  const file = path.join(fixture.stateHome, "installation.json");
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+    installationId: string;
+  };
+
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      { schemaVersion: 1, installationId: parsed.installationId },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
 }
 
 export function documentOf(
@@ -196,14 +225,15 @@ export function staticProvider(
   };
 }
 
+interface ProviderCalls {
+  readonly freeze: number;
+  readonly prepare: number;
+  readonly verifyIdentity: number;
+}
+
 export interface ProviderSet {
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
-  readonly calls: Readonly<
-    Record<
-      LocalProviderId,
-      { readonly freeze: number; readonly prepare: number; readonly verifyIdentity: number }
-    >
-  >;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
+  readonly calls: Readonly<Record<LocalProviderId, ProviderCalls>>;
 }
 
 export function providerSet(
@@ -211,10 +241,34 @@ export function providerSet(
 ): ProviderSet {
   const bluesky = overrides.bluesky ?? staticProvider("bluesky");
   const threads = overrides.threads ?? staticProvider("threads");
+  const linkedin = overrides.linkedin ?? staticProvider("linkedin");
+  const absent = (): ProviderCalls => ({
+    freeze: 0,
+    prepare: 0,
+    verifyIdentity: 0,
+  });
 
   return {
-    providers: { bluesky: bluesky.provider, threads: threads.provider },
-    calls: { bluesky: bluesky.calls, threads: threads.calls },
+    providers: {
+      bluesky: bluesky.provider,
+      threads: threads.provider,
+      linkedin: linkedin.provider,
+      // A provider is registered only when the test asks for it, so an absent
+      // provider stays absent instead of being masked by a fake.
+      ...(overrides.mastodon === undefined
+        ? {}
+        : { mastodon: overrides.mastodon.provider }),
+      ...(overrides.devto === undefined
+        ? {}
+        : { devto: overrides.devto.provider }),
+    },
+    calls: {
+      bluesky: bluesky.calls,
+      threads: threads.calls,
+      linkedin: linkedin.calls,
+      mastodon: overrides.mastodon?.calls ?? absent(),
+      devto: overrides.devto?.calls ?? absent(),
+    },
   };
 }
 

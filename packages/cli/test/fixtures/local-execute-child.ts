@@ -333,6 +333,7 @@ async function main(): Promise<void> {
   const providers = {
     bluesky: buildProvider("bluesky", mode, controlDir, counter),
     threads: buildProvider("threads", mode, controlDir, counter),
+    linkedin: buildProvider("linkedin", mode, controlDir, counter),
   };
   const write = (evidence: Partial<ChildEvidence> & { exitCode: number }): void => {
     writeFileSync(

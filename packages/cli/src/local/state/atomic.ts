@@ -40,7 +40,12 @@ export type StoreFaultPoint =
   | "before-rename"
   | "after-rename"
   | "before-directory-sync"
-  | "before-outcome-commit";
+  | "before-outcome-commit"
+  // The two persistent boundaries of the explicit state upgrade.
+  | "before-upgrade-marker"
+  | "after-upgrade-marker"
+  | "before-upgrade-final"
+  | "after-upgrade-final";
 
 export type FaultInjector = (point: StoreFaultPoint) => void | Promise<void>;
 

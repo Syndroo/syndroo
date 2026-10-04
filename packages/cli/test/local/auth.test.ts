@@ -670,6 +670,8 @@ describe("bindLocalAccount", () => {
       connectionId: expect.stringMatching(/^conn_[0-9a-f]{32}$/) as unknown as string,
       bindingRevision: 1,
       verified: true,
+      displayName: null,
+      lastVerifiedAt: expect.any(String),
     });
     expect(provider.verifyIdentityCalls).toHaveLength(1);
     expect(store.putConnectionCalls[0]?.expectedRevision).toBeNull();

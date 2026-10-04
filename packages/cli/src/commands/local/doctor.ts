@@ -25,7 +25,13 @@ interface DoctorCheck {
   readonly code?: string;
 }
 
-const PROVIDERS: readonly LocalProviderId[] = ["bluesky", "threads"];
+const PROVIDERS: readonly LocalProviderId[] = [
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+];
 
 /**
  * `syndroo doctor --local` — read-only.
@@ -134,7 +140,22 @@ export async function runDoctorLocal(
   const providers = await localProviders(overrides);
 
   for (const provider of PROVIDERS) {
-    const description = providers[provider].describe();
+    const registered = providers[provider];
+
+    if (registered === undefined) {
+      // A provider this build does not register is reported, never dispatched
+      // through an undefined entry.
+      checks.push({
+        name: `provider ${provider}`,
+        status: "fail",
+        detail: "this build does not register the provider",
+        code: "PROVIDER_LOCAL_UNAVAILABLE",
+      });
+
+      continue;
+    }
+
+    const description = registered.describe();
 
     checks.push({
       name: `provider ${provider}`,

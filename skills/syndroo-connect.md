@@ -4,7 +4,7 @@ Legacy remote flow: connect social platforms to a **running Syndroo instance**
 and publish through it. The Worker and SDK are retained and unchanged, so this
 guidance still applies to that path.
 
-For local publishing from this machine — the `0.6.0-rc.1` CLI-first path with
+For local publishing from this machine — the `0.7.0-rc.1` CLI-first path with
 frozen plans, receipts, and explicit retry — use the bundled Skill instead
 (`syndroo skill path`) and read
 [docs/cli-manual.md](../docs/cli-manual.md) or

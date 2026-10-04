@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 
 import {
   LocalProviderError,
+  isLegacyLocalProvider,
+  localDisplayName,
+  type LocalIdentity,
   type LocalCredentials,
+  type LocalInstanceObservation,
   type LocalProvider,
   type LocalProviderId,
 } from "@syndroo/core";
@@ -13,6 +17,7 @@ import {
   credentialFingerprint,
   resolveCredentialSource,
 } from "./credentials.js";
+import { saveCredentialFile } from "./credential-save.js";
 import { localError } from "./errors.js";
 import type { CredentialReference } from "./ports/credentials.js";
 import type { ConnectionRecord, LocalStore } from "./ports/local-store.js";
@@ -37,6 +42,70 @@ export interface LocalAuthPreview {
 /** The safe `auth set` / `auth status --verify` result. */
 export interface LocalBindingResult extends LocalAuthPreview {
   readonly verified: true;
+  readonly displayName: string | null;
+  readonly lastVerifiedAt: string;
+  /** Present only when this run created a new credential file. */
+  readonly credentialFileSaved?: boolean;
+}
+
+/** What one verification learned, including a cacheable observation. */
+export interface VerifiedLocalAccount extends LocalBindingResult {
+  readonly observation?: LocalInstanceObservation;
+}
+
+/**
+ * Everything a binding needs except where it will read credentials from.
+ *
+ * Built without the global write lock: the network lookup, the TTY
+ * confirmation, and the browser wait all happen before this exists. The source
+ * is resolved at commit time because a newly saved file becomes the source.
+ */
+export interface PreparedLocalBinding {
+  readonly provider: LocalProviderId;
+  readonly preview: LocalAuthPreview;
+  readonly record: Omit<ConnectionRecord, "source">;
+  readonly expectedRevision: number | null;
+  readonly verification: {
+    readonly displayName: string | null;
+    readonly lastVerifiedAt: string;
+  };
+  readonly observation: LocalInstanceObservation | undefined;
+}
+
+export interface PreparedLocalBindingWithCredentials {
+  readonly prepared: PreparedLocalBinding;
+  /** In-memory only; never serialized, printed, or written to state. */
+  readonly credentials: LocalCredentials;
+}
+
+export interface PrepareLocalBindingOptions {
+  readonly store: LocalStore;
+  readonly provider: LocalProvider;
+  readonly env: NodeJS.ProcessEnv;
+  readonly signal: AbortSignal;
+  readonly expectedTargetId?: string | undefined;
+  readonly confirm: (preview: LocalAuthPreview) => Promise<boolean>;
+  readonly clock?: () => Date;
+  /**
+   * The binding snapshot taken before any wait.
+   *
+   * A caller that prompts, browses, or reaches the network before preparing
+   * must capture this first and pass it; it is never re-read after a wait.
+   */
+  readonly current?: ConnectionRecord | null | undefined;
+  /** Scopes the source reported (for example the OAuth token response). */
+  readonly reportedScopes?: readonly string[] | undefined;
+}
+
+export interface CommitLocalBindingOptions {
+  readonly store: LocalStore;
+  readonly credentials: LocalCredentials;
+  /** The source this binding reads from when no new file is saved. */
+  readonly source?: CredentialReference | undefined;
+  /** When set, the group is written to this new file and becomes the source. */
+  readonly saveCredentialFile?:
+    | { readonly file: string; readonly cwd: string }
+    | undefined;
 }
 
 /** The safe `auth remove` result: a tombstone, not a remote revoke. */
@@ -80,10 +149,10 @@ function providerFailure(error: unknown): CliError {
   if (error instanceof LocalProviderError) {
     switch (error.code) {
       case "AUTH":
-        return localError(
-          "AUTH_SOURCE_UNAVAILABLE",
-          "the provider rejected the credentials",
-        );
+        return new CliError("AUTH_SOURCE_UNAVAILABLE: the provider rejected the credentials", {
+          code: "AUTH_SOURCE_UNAVAILABLE", exitCode: EXIT_CODE.USAGE,
+          details: { readiness: "reconnect_required", nextAction: "reconnect" },
+        });
       case "ACCOUNT_MISMATCH":
         return localError(
           "ACCOUNT_MISMATCH",
@@ -130,33 +199,58 @@ function assertReferenceMatchesProvider(
 }
 
 /**
- * Verifies an account and registers it as this provider's active binding.
+ * Verifies an account and builds the binding this run would commit.
  *
  * The current revision is read *before* the identity lookup, so a writer that
  * changes the slot during the network call or the confirmation makes the
- * compare-and-set below fail instead of silently overwriting it.
+ * compare-and-set at commit time fail instead of silently overwriting it. No
+ * lock is held here and nothing is written: the caller runs this outside the
+ * global write lock and commits separately.
  */
-export async function bindLocalAccount(
+export async function prepareLocalBindingFromSource(
   source: CredentialReference,
-  options: {
-    readonly store: LocalStore;
-    readonly provider: LocalProvider;
-    readonly env: NodeJS.ProcessEnv;
-    readonly signal: AbortSignal;
-    readonly expectedTargetId?: string | undefined;
-    readonly confirm: (preview: LocalAuthPreview) => Promise<boolean>;
-  },
-): Promise<LocalBindingResult> {
+  options: PrepareLocalBindingOptions,
+): Promise<PreparedLocalBindingWithCredentials> {
   const providerId = options.provider.provider;
   assertReferenceMatchesProvider(source, providerId);
 
-  const current = await options.store.getConnection(providerId);
   const credentials = await resolveCredentialSource(source, {
     env: options.env,
   });
+
+  return prepareLocalBindingWithCredentials(credentials, options);
+}
+
+/** The same preparation, when the credentials already exist in memory. */
+export async function prepareLocalBindingWithCredentials(
+  credentials: LocalCredentials,
+  options: PrepareLocalBindingOptions,
+): Promise<PreparedLocalBindingWithCredentials> {
+  const providerId = options.provider.provider;
+
+  if (credentials.provider !== providerId) {
+    throw localError(
+      "ACCOUNT_MISMATCH",
+      "the credential source belongs to a different provider",
+    );
+  }
+
+  const installation = await options.store.getInstallation();
+
+  // A provider this version adds cannot exist in a schema-1 state; refuse
+  // before any network call, confirmation, or file creation. Nothing migrates
+  // implicitly.
+  if (!isLegacyLocalProvider(providerId) && installation.schemaVersion < 2) {
+    throw schema2Required();
+  }
+
+  const current =
+    options.current === undefined
+      ? await options.store.getConnection(providerId)
+      : options.current;
   const fingerprint = await credentialFingerprint(credentials, options.store);
 
-  let identity: { targetId: string };
+  let identity: LocalIdentity;
 
   try {
     identity = await options.provider.verifyIdentity(
@@ -166,6 +260,13 @@ export async function bindLocalAccount(
   } catch (error) {
     throw providerFailure(error);
   }
+
+  const now = (options.clock ?? (() => new Date()))();
+  const canaries = secretCanaries(credentials);
+  const verification = {
+    displayName: safeDisplayName(identity.displayName, canaries),
+    lastVerifiedAt: now.toISOString(),
+  };
 
   if (
     options.expectedTargetId !== undefined &&
@@ -194,25 +295,291 @@ export async function bindLocalAccount(
     throw aborted();
   }
 
-  const record: ConnectionRecord = {
-    schemaVersion: 1,
+  // A schema-1 state stays legacy-compatible: no observation is written and
+  // no implicit upgrade happens just because a provider reported capabilities.
+  const observation =
+    installation.schemaVersion < 2
+      ? undefined
+      : observationFromIdentity(identity, now, canaries, options.reportedScopes);
+  const record: Omit<ConnectionRecord, "source"> = {
+    schemaVersion:
+      isLegacyLocalProvider(providerId) && observation === undefined ? 1 : 2,
     target: {
       provider: providerId,
       targetId: identity.targetId,
       connectionId,
       bindingRevision,
     },
-    source,
     fingerprint,
     removed: false,
+    verification,
+    ...(observation === undefined ? {} : { observation }),
   };
 
-  await options.store.putConnection(
-    record,
-    current === null ? null : current.target.bindingRevision,
+  return {
+    credentials,
+    prepared: {
+      provider: providerId,
+      preview,
+      record,
+      expectedRevision: current === null ? null : current.target.bindingRevision,
+      verification,
+      observation,
+    },
+  };
+}
+
+/**
+ * Commits one prepared binding under the caller's short global write lock.
+ *
+ * A newly saved credential file is written first; if the compare-and-set then
+ * fails, the file stays and the failure reports that partial result without a
+ * path, fingerprint, or secret. Nothing here deletes or overwrites the file.
+ */
+export async function commitLocalBinding(
+  prepared: PreparedLocalBinding,
+  options: CommitLocalBindingOptions,
+): Promise<LocalBindingResult> {
+  let source = options.source;
+  let saved = false;
+
+  if (options.saveCredentialFile !== undefined) {
+    const savedFile = await saveCredentialFile({
+      file: options.saveCredentialFile.file,
+      cwd: options.saveCredentialFile.cwd,
+      credentials: options.credentials,
+    });
+
+    source = {
+      kind: "file",
+      provider: prepared.provider,
+      path: savedFile.path,
+    };
+    saved = true;
+  }
+
+  if (source === undefined) {
+    throw localError(
+      "AUTH_SOURCE_UNAVAILABLE",
+      "the credential source is not usable",
+    );
+  }
+
+  const record: ConnectionRecord = { ...prepared.record, source };
+
+  try {
+    await options.store.putConnection(record, prepared.expectedRevision);
+  } catch (error) {
+    if (!saved) {
+      throw error;
+    }
+
+    const code = error instanceof CliError ? error.code : "BINDING_CHANGED";
+    const exitCode =
+      error instanceof CliError ? error.exitCode : EXIT_CODE.USAGE;
+
+    throw new CliError(
+      `${code}: the credential file was saved, but the account binding changed before it was written`,
+      {
+        code,
+        exitCode,
+        details: {
+          credentialFileSaved: true,
+          bindingChanged: false,
+          nextAction: "retry_binding",
+        },
+      },
+    );
+  }
+
+  return {
+    ...prepared.preview,
+    verified: true,
+    ...prepared.verification,
+    ...(saved ? { credentialFileSaved: true } : {}),
+  };
+}
+
+/**
+ * Verifies an account and registers it as this provider's active binding.
+ *
+ * Kept as the single-call form for existing callers; the command surface uses
+ * the prepare/commit split so no network or TTY wait holds the write lock.
+ */
+export async function bindLocalAccount(
+  source: CredentialReference,
+  options: PrepareLocalBindingOptions,
+): Promise<LocalBindingResult> {
+  // Snapshot the current binding before the source is read or verified.
+  const current =
+    options.current === undefined
+      ? await options.store.getConnection(options.provider.provider)
+      : options.current;
+  const { prepared, credentials } = await prepareLocalBindingFromSource(
+    source,
+    { ...options, current },
   );
 
-  return { ...preview, verified: true };
+  return commitLocalBinding(prepared, {
+    store: options.store,
+    credentials,
+    source,
+  });
+}
+
+/**
+ * A cacheable, non-secret observation from one identity lookup.
+ *
+ * Only what the provider actually reported is recorded; a provider that
+ * reports neither capabilities nor scopes produces no observation at all.
+ */
+function observationFromIdentity(
+  identity: LocalIdentity,
+  now: Date,
+  canaries: readonly string[],
+  reportedScopes?: readonly string[] | undefined,
+): LocalInstanceObservation | undefined {
+  const scopesValue = identity.scopes ?? reportedScopes;
+
+  if (identity.capabilities === undefined && scopesValue === undefined) {
+    return undefined;
+  }
+
+  const verifiedAt = now.toISOString();
+  const capabilities = identity.capabilities ?? null;
+  const scopes = scopesValue === undefined
+    ? null
+    : sanitizeScopes(scopesValue, canaries);
+
+  return {
+    displayName: safeDisplayName(identity.displayName, canaries),
+    lastVerifiedAt: verifiedAt,
+    scopes,
+    capabilities,
+    capabilitySource: capabilities === null ? null : "instance",
+    capabilityCheckedAt: capabilities === null ? null : verifiedAt,
+    writePermission: "unknown",
+  };
+}
+
+/**
+ * Bounded, format-checked scope strings.
+ *
+ * A remote response is data: anything outside the fixed scope shape is dropped,
+ * and a value that carries (or percent-decodes to) a resolved secret is never
+ * stored or printed.
+ */
+export function sanitizeScopes(
+  scopes: readonly unknown[],
+  canaries: readonly string[],
+): readonly string[] {
+  const safe: string[] = [];
+
+  for (const scope of scopes) {
+    if (typeof scope !== "string" || !/^[A-Za-z0-9._:-]{1,64}$/.test(scope)) {
+      continue;
+    }
+
+    if (containsCanary(scope, canaries)) {
+      continue;
+    }
+
+    let decoded = scope;
+
+    try {
+      decoded = decodeURIComponent(scope);
+    } catch {
+      continue;
+    }
+
+    if (containsCanary(decoded, canaries)) {
+      continue;
+    }
+
+    if (!safe.includes(scope)) {
+      safe.push(scope);
+    }
+
+    if (safe.length >= 64) {
+      break;
+    }
+  }
+
+  return safe;
+}
+
+/** A schema-2 state is required for a new provider; nothing migrates here. */
+function schema2Required(): CliError {
+  return localError(
+    "STATE_VERSION_UNSUPPORTED",
+    "this provider needs state schema 2; run `syndroo state upgrade --to 2` first",
+    EXIT_CODE.FAILURE,
+  );
+}
+
+/**
+ * Every secret value that must never be reflected by a remote response.
+ *
+ * Short values are skipped: they would match too much unrelated text, and a
+ * real token or password is never that short.
+ */
+export function secretCanaries(
+  credentials: LocalCredentials,
+): readonly string[] {
+  const values =
+    credentials.provider === "bluesky"
+      ? [credentials.identifier, credentials.password]
+      : credentials.provider === "linkedin"
+        ? [credentials.accessToken]
+        : credentials.provider === "mastodon"
+          ? [credentials.accessToken]
+          : credentials.provider === "devto"
+            ? [credentials.apiKey]
+            : [credentials.accessToken];
+
+  return values.filter(value => typeof value === "string" && value.length >= 8);
+}
+
+function containsCanary(value: string, canaries: readonly string[]): boolean {
+  return canaries.some(canary => value.includes(canary));
+}
+
+/**
+ * Display text with the terminal-safety check plus the secret filter.
+ *
+ * A provider that echoes the token into its display name gets `null`, never a
+ * token in a receipt, log, or state record.
+ */
+function safeDisplayName(
+  value: unknown,
+  canaries: readonly string[],
+): string | null {
+  const safe = localDisplayName(value) ?? null;
+
+  return safe !== null && containsCanary(safe, canaries) ? null : safe;
+}
+
+/**
+ * Persists one refreshed observation when the state supports it.
+ *
+ * On schema 1 the verification result is still returned to the operator, but
+ * nothing is written: refreshing a cache is never a reason to migrate state.
+ */
+export async function commitLocalObservation(
+  store: LocalStore,
+  provider: LocalProviderId,
+  observation: LocalInstanceObservation,
+  expectedRevision: number,
+): Promise<boolean> {
+  const installation = await store.getInstallation();
+
+  if (installation.schemaVersion < 2) {
+    return false;
+  }
+
+  await store.putObservation(provider, observation, expectedRevision);
+
+  return true;
 }
 
 /**
@@ -228,8 +595,9 @@ export async function verifyLocalAccount(
     readonly provider: LocalProvider;
     readonly env: NodeJS.ProcessEnv;
     readonly signal: AbortSignal;
+    readonly clock?: () => Date;
   },
-): Promise<LocalBindingResult> {
+): Promise<VerifiedLocalAccount> {
   if (connection.removed) {
     throw localError(
       "BINDING_CHANGED",
@@ -259,7 +627,7 @@ export async function verifyLocalAccount(
     );
   }
 
-  let identity: { targetId: string };
+  let identity: LocalIdentity;
 
   try {
     identity = await options.provider.verifyIdentity(
@@ -277,12 +645,19 @@ export async function verifyLocalAccount(
     );
   }
 
+  const now = (options.clock ?? (() => new Date()))();
+  const canaries = secretCanaries(credentials);
+  const observation = observationFromIdentity(identity, now, canaries);
+
   return {
     provider: providerId,
     targetId: connection.target.targetId,
     connectionId: connection.target.connectionId,
     bindingRevision: connection.target.bindingRevision,
     verified: true,
+    displayName: safeDisplayName(identity.displayName, canaries),
+    lastVerifiedAt: now.toISOString(),
+    ...(observation === undefined ? {} : { observation }),
   };
 }
 

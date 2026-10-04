@@ -139,7 +139,7 @@ interface Harness {
   /** How many times the command tried to write its result envelope. */
  readonly io: CliIo;
   readonly writes: { stdout: number };
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly bluesky: FakeProvider;
   readonly threads: FakeProvider;
   setStdoutFails(value: boolean): void;
@@ -223,7 +223,7 @@ function harness(
     stderr,
     writes,
     io,
-    providers: { bluesky: bluesky.provider, threads: threads.provider },
+    providers: { bluesky: bluesky.provider, threads: threads.provider, linkedin: fakeProvider("linkedin", "urn:li:person:fixturealice").provider },
     bluesky,
     threads,
     setStdoutFails: value => {
@@ -418,16 +418,17 @@ describe("init, providers, and doctor", () => {
     expect(envelopeError(h.lastEnvelope())["code"]).toBe("CONFIG");
   });
 
-  it("lists only the two local providers without touching state", async () => {
+  it("lists the three local providers without touching state", async () => {
     const h = harness();
 
     expect(await h.run(["providers", "list", "--json"])).toBe(0);
 
     const providers = envelopeResult(h.lastEnvelope())["providers"] as unknown[];
 
-    expect(providers).toHaveLength(2);
+    expect(providers).toHaveLength(3);
     expect(JSON.stringify(providers)).toContain("bluesky");
     expect(JSON.stringify(providers)).toContain("threads");
+    expect(JSON.stringify(providers)).toContain("linkedin");
     expect(JSON.stringify(providers)).not.toContain("localPublish\":false");
   });
 
@@ -524,7 +525,8 @@ describe("auth", () => {
     h.stdout.length = 0;
 
     expect(await h.run(["help"])).toBe(0);
-    expect(h.stdout.join("")).not.toContain("connect");
+    expect(h.stdout.join("")).not.toContain("auth connect");
+    expect(h.stdout.join("")).toContain("connect <provider> [--local]");
   });
 
   it("keeps a bare `auth connect` on the ordinary unknown-command path", async () => {

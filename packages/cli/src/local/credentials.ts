@@ -48,6 +48,12 @@ export const LOCAL_CREDENTIAL_ENV_FIELDS: Readonly<
     optional: ["BLUESKY_HOST"],
   },
   threads: { required: ["THREADS_ACCESS_TOKEN"], optional: [] },
+  linkedin: { required: ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR", "LINKEDIN_API_VERSION"], optional: [] },
+  mastodon: {
+    required: ["MASTODON_INSTANCE", "MASTODON_ACCESS_TOKEN"],
+    optional: [],
+  },
+  devto: { required: ["DEVTO_API_KEY"], optional: [] },
 };
 
 const CREDENTIAL_FILE_ROOT_FIELDS: readonly string[] = [
@@ -63,6 +69,13 @@ const BLUESKY_CREDENTIAL_FIELDS: readonly string[] = [
 ];
 
 const THREADS_CREDENTIAL_FIELDS: readonly string[] = ["accessToken"];
+
+const MASTODON_CREDENTIAL_FIELDS: readonly string[] = [
+  "instance",
+  "accessToken",
+];
+
+const DEVTO_CREDENTIAL_FIELDS: readonly string[] = ["apiKey"];
 
 /** C0, DEL, and C1: every control code that could rewrite a terminal. */
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F-\u009F]/;
@@ -108,6 +121,16 @@ function normalizeTrustedPrefix(absolute: string): string {
   }
 
   return absolute;
+}
+
+/**
+ * Resolves exactly the fixed macOS system aliases (`/tmp`, `/var`, `/etc`).
+ *
+ * Everything the caller chose after the alias is left as given, so a symlinked
+ * component the caller controls is never hidden by this rewrite.
+ */
+export function normalizeTrustedPathPrefix(absolute: string): string {
+  return normalizeTrustedPrefix(absolute);
 }
 
 function sourceUnavailable(message: string): CliError {
@@ -169,6 +192,71 @@ function assertOnlyFields(
   }
 }
 
+function linkedinCredentials(accessToken: unknown, author: unknown, apiVersion: unknown): LocalCredentials {
+  const token = readSecret(accessToken, "accessToken");
+  const account = readName(author, "author");
+  const version = readName(apiVersion, "apiVersion");
+  if (!/^[\x21-\x7e]+$/.test(token) || !/^urn:li:person:[A-Za-z0-9_-]+$/.test(account) || !/^20\d{2}(?:0[1-9]|1[0-2])$/.test(version)) {
+    throw sourceUnavailable("LinkedIn needs a token, personal author URN and explicit YYYYMM API version");
+  }
+  return { provider: "linkedin", accessToken: token, author: account, apiVersion: version };
+}
+
+/**
+ * One instance origin for a Mastodon credential.
+ *
+ * This is a shape check only: the authoritative SSRF origin validation lives in
+ * the CLI transport module, which also pins the resolved address. It refuses a
+ * value that is not an HTTPS origin without userinfo, path, query, or fragment,
+ * so an obviously unusable credential never reaches a plan.
+ */
+function readInstance(value: unknown, field: string): string {
+  const text = readName(value, field).trim();
+
+  let url: URL;
+
+  try {
+    url = new URL(text);
+  } catch {
+    throw sourceUnavailable(`${field} must be an absolute HTTPS origin`);
+  }
+
+  if (
+    url.protocol !== "https:" ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.search.length > 0 ||
+    url.hash.length > 0 ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    (url.port !== "" && url.port !== "443")
+  ) {
+    throw sourceUnavailable(`${field} must be an HTTPS origin without a path`);
+  }
+
+  return text;
+}
+
+function mastodonCredentials(
+  instance: unknown,
+  accessToken: unknown,
+): LocalCredentials {
+  return {
+    provider: "mastodon",
+    instance: readInstance(instance, "instance"),
+    accessToken: readSecret(accessToken, "accessToken"),
+  };
+}
+
+function devtoCredentials(apiKey: unknown): LocalCredentials {
+  const key = readSecret(apiKey, "apiKey");
+
+  if (!/^[\x21-\x7e]{1,256}$/.test(key)) {
+    throw sourceUnavailable("apiKey must be printable ASCII");
+  }
+
+  return { provider: "devto", apiKey: key };
+}
+
 async function readEnvCredentials(
   provider: LocalProviderId,
   env: NodeJS.ProcessEnv,
@@ -198,6 +286,19 @@ async function readEnvCredentials(
           ? TRUSTED_BLUESKY_HOST
           : readTrustedHost(host, "BLUESKY_HOST"),
     };
+  }
+
+  if (provider === "linkedin") return linkedinCredentials(env["LINKEDIN_ACCESS_TOKEN"], env["LINKEDIN_AUTHOR"], env["LINKEDIN_API_VERSION"]);
+
+  if (provider === "mastodon") {
+    return mastodonCredentials(
+      env["MASTODON_INSTANCE"],
+      env["MASTODON_ACCESS_TOKEN"],
+    );
+  }
+
+  if (provider === "devto") {
+    return devtoCredentials(env["DEVTO_API_KEY"]);
   }
 
   return {
@@ -386,6 +487,23 @@ function readCredentialGroup(
     };
   }
 
+  if (provider === "linkedin") {
+    assertOnlyFields(group, ["accessToken", "author", "apiVersion"]);
+    return linkedinCredentials(group["accessToken"], group["author"], group["apiVersion"]);
+  }
+
+  if (provider === "mastodon") {
+    assertOnlyFields(group, MASTODON_CREDENTIAL_FIELDS);
+
+    return mastodonCredentials(group["instance"], group["accessToken"]);
+  }
+
+  if (provider === "devto") {
+    assertOnlyFields(group, DEVTO_CREDENTIAL_FIELDS);
+
+    return devtoCredentials(group["apiKey"]);
+  }
+
   assertOnlyFields(group, THREADS_CREDENTIAL_FIELDS);
 
   return {
@@ -441,14 +559,64 @@ export async function credentialFingerprint(
           password: credentials.password,
           host: credentials.host,
         }
-      : {
-          provider: credentials.provider,
-          accessToken: credentials.accessToken,
-        };
+      : credentials.provider === "linkedin"
+        ? { provider: credentials.provider, accessToken: credentials.accessToken, author: credentials.author, apiVersion: credentials.apiVersion }
+        : credentials.provider === "mastodon"
+          ? {
+              provider: credentials.provider,
+              instance: credentials.instance,
+              accessToken: credentials.accessToken,
+            }
+          : credentials.provider === "devto"
+            ? { provider: credentials.provider, apiKey: credentials.apiKey }
+            : {
+                provider: credentials.provider,
+                accessToken: credentials.accessToken,
+              };
 
   return store.authenticate(
     `${CREDENTIAL_FINGERPRINT_DOMAIN}${canonicalJson(group)}`,
   );
+}
+
+/**
+ * The exact JSON body one saved credential file must contain.
+ *
+ * It round-trips through `readCredentialGroup` unchanged: the same field set
+ * per provider, with no extra metadata and no secret in a key name.
+ */
+export function credentialFileBody(credentials: LocalCredentials): {
+  readonly schemaVersion: 1;
+  readonly provider: LocalProviderId;
+  readonly credentials: Readonly<Record<string, unknown>>;
+} {
+  const group: Readonly<Record<string, unknown>> =
+    credentials.provider === "bluesky"
+      ? {
+          identifier: credentials.identifier,
+          password: credentials.password,
+          host: credentials.host,
+        }
+      : credentials.provider === "threads"
+        ? { accessToken: credentials.accessToken }
+        : credentials.provider === "linkedin"
+          ? {
+              accessToken: credentials.accessToken,
+              author: credentials.author,
+              apiVersion: credentials.apiVersion,
+            }
+          : credentials.provider === "mastodon"
+            ? {
+                instance: credentials.instance,
+                accessToken: credentials.accessToken,
+              }
+            : { apiKey: credentials.apiKey };
+
+  return {
+    schemaVersion: 1,
+    provider: credentials.provider,
+    credentials: group,
+  };
 }
 
 /**

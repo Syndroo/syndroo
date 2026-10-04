@@ -1,12 +1,13 @@
 # Testing Syndroo
 
-The `0.6.0-rc.1` candidate is a CLI-first release: local publishing to Bluesky
-and Threads is the product under test, and the pre-0.6 remote surface (Worker,
-SDK, `doctor`, `posts ...`) is regression-tested because it is retained.
+The `0.7.0-rc.1` candidate is a CLI-first release: local text publishing to
+Bluesky, Threads, LinkedIn, and Mastodon, plus DEV.to articles, is the product
+under test. The pre-0.6 remote surface (Worker, SDK, `doctor`, `posts ...`) is
+regression-tested because it is retained.
 
 A pass at one layer never stands in for another. Local unit tests do not prove
 packaging, packaging does not prove platform behavior, and no layer here proves
-live-account acceptance on Bluesky or Threads.
+live-account acceptance on any provider.
 
 ## What each layer proves
 
@@ -63,16 +64,30 @@ The pre-0.6 surface remains supported and must keep working:
 Local publishing never falls back to this surface, and a remote failure is not
 a reason to switch. The two paths share contracts, not code paths.
 
-## Live validation
+## Verification evidence and live validation
 
-Two different things are called "live", and they are not interchangeable:
+Keep fixture, package, state, and live evidence separate:
 
 - `npm run e2e:live` is the **legacy remote** check. It runs `doctor` and
   `posts ...` against a deployed Syndroo instance using an approved plan file,
   and it validates only the remote path.
-- **Local live acceptance** would publish real text to real Bluesky and Threads
+- **Primary package gates (passed)**: the CLI tarball installed with 74 files
+  and ran the local workflow against fake providers. The Worker gate passed
+  its isolated offline npm install, imports, types, licences, and mock-deploy
+  checks. These runs used no live social accounts and deployed no real Worker.
+- **Limited Linux state proof (passed)**: Node.js 22.23.3, uid 1000, networking
+  disabled; offline old and new CLI installs, explicit schema-1-to-2 upgrade,
+  actual old 0.6 binary refusal without modifying schema-2 state, 0700/0600
+  permissions, and unsafe-state-file refusal. `root-linux-state-verification.log`
+  records prior candidate SHA-256
+  `86c7bdf538db4c63bb67252b70b88086fae67b8b46f9f874e1a82af9b102ac12`.
+  Root will rerun this state probe on the final repacked candidate. It does not
+  prove full Linux publishing or the complete OS/Node.js matrix.
+- **Full packaged-platform locality (not passed)**: the runner remains partial
+  because of fixture errors. Unit and package gates do not stand in for it.
+- **Local live acceptance** would publish real text or articles to real
   accounts through the local CLI. That run **has not been executed** for
-  `0.6.0-rc.1`, and no dedicated runner for it exists yet; it needs a real
+  `0.7.0-rc.1`, and no dedicated runner for it exists yet; it needs a real
   account and an explicit operator decision. The local providers are covered by
   fixtures and labelled `fixture-tested`, which is not a substitute for that
   acceptance.
@@ -112,7 +127,8 @@ unsandboxed. Worker gates need the bundled Worker and its local services, which
 ## What is not verified here
 
 - Live-account publishing for any platform, local or remote.
-- Execution on Linux: local evidence so far is macOS arm64.
+- Full Linux publishing and full packaged-platform locality. Linux evidence
+  covers only the state, compatibility, and permissions checks described above.
 - The Node.js 22 and 24 matrix on both macOS and Linux: CI runs it, but this
   checkout's own evidence does not include it.
 - Registry installation: not verified; this task built and installed the local

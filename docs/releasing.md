@@ -1,6 +1,6 @@
 # Releasing Syndroo
 
-The `0.6.0-rc.1` candidate ships the **CLI alone**. The SDK and the Worker keep
+The `0.7.0-rc.1` candidate ships the **CLI alone**. The SDK and the Worker keep
 their existing versions and behavior; they are validated by the same run but
 are not published by it.
 
@@ -8,7 +8,7 @@ Current versions and release roles, as declared in this checkout:
 
 | Package | Version | Release role |
 | --- | --- | --- |
-| `@syndroo/cli` | `0.6.0-rc.1` | the candidate this release set publishes |
+| `@syndroo/cli` | `0.7.0-rc.1` | the candidate this release set publishes |
 | `@syndroo/sdk` | `0.4.0-rc.1` | retained; validated, not part of the CLI set |
 | `@syndroo/cloudflare-worker` | `0.2.0-rc.1` | retained; validated, not part of the CLI set |
 | `@syndroo/core` and the platform adapters | private, bundled | not separate packages |
@@ -78,7 +78,7 @@ The release workflow runs with `SYNDROO_RELEASE_SET=cli`, so it publishes
 
 ## Release tag, dist-tag, and what actually publishes
 
-- The release tag is exactly `v<version>`, for example `v0.6.0-rc.1` for the
+- The release tag is exactly `v<version>`, for example `v0.7.0-rc.1` for the
   version in `packages/cli/package.json`. The workflow reads the tag from the
   release event and refuses when the metadata version, the train version, and
   the tag do not agree.

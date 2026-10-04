@@ -28,6 +28,8 @@ import {
   forgeRecord,
   runWriter,
   seedConnection,
+  waitForWriterReport,
+  writerReportPath,
 } from "../fixtures/local-writer.js";
 
 /**
@@ -281,37 +283,59 @@ describe("REC-03 recovery refusals", () => {
 
   it("refuses while a real writer is alive and still releases the guard", async () => {
     const stateHome = makeStateHome();
+    // REC-03 readiness: wait for the report written *inside* the lock callback.
+    // Polling `owner.json` observes publication, which happens before the
+    // recovery-guard check; a guard winning that window makes the writer release
+    // its own lock and refuse, which the old handshake could not tell apart.
+    const reportPath = writerReportPath(stateHome);
     const pending = runWriter({
       entry: writerEntry,
       mode: "hold-forever",
       stateHome,
+      reportPath,
     });
     let pid = 0;
 
-    for (let attempt = 0; attempt < 200 && pid === 0; attempt++) {
-      const inspection = await inspectLocalState(stateHome);
+    try {
+      // The report is written inside the lock callback, so observing it proves
+      // the writer entered its critical section. The earlier anomaly (a
+      // writer that published owner.json and then released the lock when the
+      // recovery guard won the window) was observed, not reproduced
+      // deterministically; this handshake removes the window from the test.
+      const report = (await waitForWriterReport(reportPath)) as {
+        pid?: unknown;
+      };
 
-      if (inspection.lock.owner !== null) {
-        pid = inspection.lock.owner.pid;
-      } else {
-        await new Promise(resolve => {
-          setTimeout(resolve, 25);
-        });
+      pid = typeof report.pid === "number" ? report.pid : 0;
+
+      // Both conditions hold at callback entry: the writer owns the lock and
+      // the owner record is on disk.
+      expect(pid).toBeGreaterThan(0);
+      expect(exists(path.join(stateHome, ".write-lock", "owner.json"))).toBe(
+        true,
+      );
+
+      const error = await expectCliError(() =>
+        recoverLocalState(stateHome, { confirmNoWriters: true, yes: true }),
+      );
+
+      expect(error.code).toBe("STATE_BUSY");
+      expect(exists(path.join(stateHome, ".write-lock", "owner.json"))).toBe(
+        true,
+      );
+      expect(exists(path.join(stateHome, ".recovery-lock"))).toBe(false);
+    } finally {
+      // This process's own writer is always reaped, even if an assertion fails.
+      if (pid > 0) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // The child already exited.
+        }
       }
+
+      await pending;
     }
-
-    expect(pid).toBeGreaterThan(0);
-
-    const error = await expectCliError(() =>
-      recoverLocalState(stateHome, { confirmNoWriters: true, yes: true }),
-    );
-
-    expect(error.code).toBe("STATE_BUSY");
-    expect(exists(path.join(stateHome, ".write-lock", "owner.json"))).toBe(true);
-    expect(exists(path.join(stateHome, ".recovery-lock"))).toBe(false);
-
-    process.kill(pid, "SIGKILL");
-    await pending;
   });
 
   it("refuses a lock owned by another host", async () => {

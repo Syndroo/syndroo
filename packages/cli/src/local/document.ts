@@ -3,6 +3,8 @@ import { TextDecoder } from "node:util";
 
 import type {
   FrozenDelivery,
+  LocalArticleOptions,
+  LocalContentOptions,
   LocalProviderId,
   TargetBinding,
 } from "@syndroo/core";
@@ -25,23 +27,39 @@ export const MAX_LOCAL_SOURCE_BYTES = 65_536;
 /** Content limit in Unicode code points, matching the remote post limit. */
 export const MAX_LOCAL_CONTENT_CODE_POINTS = 10_000;
 
+/**
+ * Product limits for the v2 article subset, not platform-official limits.
+ *
+ * They are deliberately conservative: Syndroo accepts a smaller, unambiguous
+ * input than the platform API may technically allow.
+ */
+export const MAX_LOCAL_ARTICLE_TITLE_CODE_POINTS = 128;
+export const MAX_LOCAL_ARTICLE_TAGS = 4;
+export const MAX_LOCAL_TAG_CHARS = 30;
+export const MAX_LOCAL_CANONICAL_URL_CHARS = 2_048;
+
 /** Depth bound: deep enough for every local record, shallow enough to parse. */
 const MAX_LOCAL_JSON_DEPTH = 64;
 
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
+/** Providers a schema-1 document may name. */
 const LOCAL_PROVIDERS = [
   "bluesky",
   "threads",
+  "linkedin",
+  "mastodon",
 ] as const satisfies readonly LocalProviderId[];
 
 const LOCAL_PROVIDER_SET: ReadonlySet<string> = new Set<string>(LOCAL_PROVIDERS);
+
+/** The only provider that carries the v2 article expression. */
+const ARTICLE_PROVIDER = "devto";
 
 /** Platforms that keep their remote behavior and have no local input path. */
 const REMOTE_ONLY_PROVIDERS: ReadonlySet<string> = new Set<string>([
   "x",
   "tumblr",
-  "linkedin",
 ]);
 
 const DOCUMENT_FIELDS: ReadonlySet<string> = new Set<string>([
@@ -54,6 +72,8 @@ const DOCUMENT_FIELDS: ReadonlySet<string> = new Set<string>([
 
 export interface LocalPublishOverride {
   readonly content: string;
+  /** Article metadata; only `devto` under schema 2 may carry it. */
+  readonly article?: LocalArticleOptions;
 }
 
 export type LocalPublishOverrides = Readonly<
@@ -61,7 +81,7 @@ export type LocalPublishOverrides = Readonly<
 >;
 
 export interface LocalPublishDocument {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly key: string;
   readonly content: string;
   readonly platforms: readonly LocalProviderId[];
@@ -72,6 +92,8 @@ export interface CanonicalDeliveryOptions {
   readonly namespace: string;
   readonly payloadVersion: number;
   readonly payload: Readonly<Record<string, unknown>>;
+  /** Omitted for legacy text deliveries, never materialized as `undefined`. */
+  readonly contentOptions?: LocalContentOptions;
 }
 
 /**
@@ -237,20 +259,37 @@ export function parseLocalPublishDocument(text: string): LocalPublishDocument {
 
   const schemaVersion = value["schemaVersion"];
 
-  if (schemaVersion !== undefined && schemaVersion !== 1) {
+  if (
+    schemaVersion !== undefined &&
+    schemaVersion !== 1 &&
+    schemaVersion !== 2
+  ) {
     throw localError(
       "INVALID_DOCUMENT",
-      "schemaVersion must be the number 1 when it is present",
+      "schemaVersion must be the number 1 or 2 when it is present",
     );
   }
 
+  const version: 1 | 2 = schemaVersion === undefined ? 1 : schemaVersion;
   const key = readKey(value["key"]);
   const content = readContent(value["content"], "content");
-  const platforms = readPlatforms(value["platforms"]);
-  const overrides = readOverrides(value["overrides"], platforms);
+  const platforms = readPlatforms(value["platforms"], version);
+  const overrides = readOverrides(value["overrides"], platforms, version);
+
+  if (
+    version === 2 &&
+    platforms.includes(ARTICLE_PROVIDER) &&
+    overrides?.[ARTICLE_PROVIDER] === undefined
+  ) {
+    // A v2 document that selects devto must carry the article explicitly.
+    throw localError(
+      "INVALID_DOCUMENT",
+      "devto needs an explicit article title and full Markdown body",
+    );
+  }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: version,
     key,
     content,
     platforms,
@@ -272,6 +311,12 @@ export function canonicalDeliveryPayload(
   options: CanonicalDeliveryOptions,
 ): FrozenDelivery {
   const override = document.overrides?.[target.provider];
+  // Copy the approved metadata into the frozen record: the plan must not alias
+  // the parsed document, or a later mutation could change what was confirmed.
+  const contentOptions =
+    options.contentOptions === undefined
+      ? undefined
+      : copyContentOptions(options.contentOptions);
 
   return {
     deliveryId: sha256(
@@ -286,15 +331,88 @@ export function canonicalDeliveryPayload(
     namespace: options.namespace,
     target,
     content: override === undefined ? document.content : override.content,
+    ...(contentOptions === undefined ? {} : { contentOptions }),
     payloadVersion: options.payloadVersion,
-    payloadHash: sha256(
-      canonicalJson({
-        payloadVersion: options.payloadVersion,
-        payload: options.payload,
-      }),
+    payloadHash: frozenPayloadHash(
+      options.payloadVersion,
+      options.payload,
+      contentOptions,
     ),
     payload: options.payload,
   };
+}
+
+/** A detached, field-preserving copy of one provider's content options. */
+function copyContentOptions(options: LocalContentOptions): LocalContentOptions {
+  const article = options.article;
+
+  if (article === undefined) {
+    return {};
+  }
+
+  return {
+    article: {
+      title: article.title,
+      ...(article.tags === undefined ? {} : { tags: [...article.tags] }),
+      ...(article.canonicalUrl === undefined
+        ? {}
+        : { canonicalUrl: article.canonicalUrl }),
+    },
+  };
+}
+
+/**
+ * The frozen payload hash domain.
+ *
+ * Legacy deliveries hash `{payloadVersion, payload}` exactly as before. A
+ * delivery that carries content options hashes them too, so metadata is bound
+ * to the approved bytes even when a provider's payload would not show it.
+ */
+export function frozenPayloadHash(
+  payloadVersion: number,
+  payload: Readonly<Record<string, unknown>>,
+  contentOptions?: LocalContentOptions,
+): string {
+  return sha256(
+    canonicalJson(
+      contentOptions === undefined
+        ? { payloadVersion, payload }
+        : { contentOptions, payloadVersion, payload },
+    ),
+  );
+}
+
+/**
+ * The content options one provider's frozen payload is built from.
+ *
+ * Only the article-bearing provider carries metadata in this version; every
+ * other provider returns `undefined` so its legacy bytes never change.
+ */
+export function contentOptionsFor(
+  document: LocalPublishDocument,
+  provider: LocalProviderId,
+): LocalContentOptions | undefined {
+  const article = document.overrides?.[provider]?.article;
+
+  return article === undefined ? undefined : { article };
+}
+
+/**
+ * Whether one frozen target needs a schema-2 record and installation.
+ *
+ * A schema-1 record is readable by every older build, so only a target that
+ * actually carries something new (an article option, or one of the providers
+ * this version adds) is written as schema 2.
+ */
+export function requiresSchema2Record(
+  provider: LocalProviderId,
+  contentOptions?: LocalContentOptions,
+): boolean {
+  return (
+    contentOptions !== undefined ||
+    provider === ARTICLE_PROVIDER ||
+    provider === "mastodon"
+  );
 }
 
 function readNode(node: Node, depth: number): unknown {
@@ -390,7 +508,10 @@ function readContent(value: unknown, field: string): string {
   return value;
 }
 
-function readPlatforms(value: unknown): readonly LocalProviderId[] {
+function readPlatforms(
+  value: unknown,
+  schemaVersion: 1 | 2,
+): readonly LocalProviderId[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw localError("INVALID_DOCUMENT", "platforms must be a non-empty array");
   }
@@ -407,6 +528,26 @@ function readPlatforms(value: unknown): readonly LocalProviderId[] {
         "PROVIDER_LOCAL_UNAVAILABLE",
         "this platform has no local publishing path in this version",
       );
+    }
+
+    if (item === ARTICLE_PROVIDER) {
+      if (schemaVersion !== 2) {
+        throw localError(
+          "INVALID_DOCUMENT",
+          "devto needs an explicit schemaVersion 2 article document",
+        );
+      }
+
+      if (!platforms.includes(item)) {
+        platforms.push(item);
+      } else {
+        throw localError(
+          "INVALID_DOCUMENT",
+          "platforms must not repeat a provider",
+        );
+      }
+
+      continue;
     }
 
     if (!isLocalProvider(item)) {
@@ -432,6 +573,7 @@ function readPlatforms(value: unknown): readonly LocalProviderId[] {
 function readOverrides(
   value: unknown,
   platforms: readonly LocalProviderId[],
+  schemaVersion: 1 | 2,
 ): LocalPublishOverrides | undefined {
   if (value === undefined) {
     return undefined;
@@ -444,7 +586,12 @@ function readOverrides(
   const overrides: Partial<Record<LocalProviderId, LocalPublishOverride>> = {};
 
   for (const field of Object.keys(value)) {
-    if (!isLocalProvider(field) || !platforms.includes(field)) {
+    const isArticleProvider = field === ARTICLE_PROVIDER;
+
+    if (
+      (!isLocalProvider(field) && !isArticleProvider) ||
+      !platforms.includes(field as LocalProviderId)
+    ) {
       throw localError(
         "INVALID_DOCUMENT",
         "overrides may only name a platform selected in platforms",
@@ -458,10 +605,17 @@ function readOverrides(
     }
 
     for (const overrideField of Object.keys(override)) {
-      if (overrideField !== "content") {
+      if (
+        overrideField !== "content" &&
+        !(
+          overrideField === "article" &&
+          isArticleProvider &&
+          schemaVersion === 2
+        )
+      ) {
         throw localError(
           "INVALID_DOCUMENT",
-          "an override accepts only content",
+          "an override accepts only the fields this version defines",
         );
       }
     }
@@ -470,12 +624,190 @@ function readOverrides(
       throw localError("INVALID_DOCUMENT", "an override must carry content");
     }
 
+    if (isArticleProvider) {
+      if (schemaVersion !== 2 || !Object.hasOwn(override, "article")) {
+        throw localError(
+          "INVALID_DOCUMENT",
+          "devto needs an explicit article title and full Markdown body",
+        );
+      }
+
+      overrides[field] = {
+        content: readArticleBody(override["content"]),
+        article: readArticle(override["article"]),
+      };
+
+      continue;
+    }
+
     overrides[field] = {
       content: readContent(override["content"], "override content"),
     };
   }
 
   return overrides;
+}
+
+/**
+ * The article body: the same text limits as any content, plus the two
+ * structural defences that stop a second metadata channel from overriding the
+ * fields the operator actually approved.
+ */
+function readArticleBody(value: unknown): string {
+  const body = readContent(value, "article content");
+
+  if (hasFrontMatter(body)) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      "the article must not open with YAML front matter",
+    );
+  }
+
+  if (body.includes("{%") || body.includes("%}")) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      "the article must not carry Liquid directives",
+    );
+  }
+
+  return body;
+}
+
+/** True when the first non-blank line is exactly the front-matter fence. */
+function hasFrontMatter(body: string): boolean {
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    return trimmed === "---";
+  }
+
+  return false;
+}
+
+function readArticle(value: unknown): LocalArticleOptions {
+  if (!isJsonObject(value)) {
+    throw localError("INVALID_DOCUMENT", "article must be an object");
+  }
+
+  for (const field of Object.keys(value)) {
+    if (field !== "title" && field !== "tags" && field !== "canonicalUrl") {
+      throw localError(
+        "INVALID_DOCUMENT",
+        "the article has a field this version does not accept",
+      );
+    }
+  }
+
+  const title = readArticleTitle(value["title"]);
+  const tags = readArticleTags(value["tags"]);
+  const canonicalUrl = readCanonicalUrl(value["canonicalUrl"]);
+
+  return {
+    title,
+    ...(tags === undefined ? {} : { tags }),
+    ...(canonicalUrl === undefined ? {} : { canonicalUrl }),
+  };
+}
+
+function readArticleTitle(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw localError("INVALID_DOCUMENT", "article title must not be blank");
+  }
+
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(value)) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      "article title must not contain control characters",
+    );
+  }
+
+  if (countCodePoints(value) > MAX_LOCAL_ARTICLE_TITLE_CODE_POINTS) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      `article title exceeds ${MAX_LOCAL_ARTICLE_TITLE_CODE_POINTS} code points`,
+    );
+  }
+
+  return value;
+}
+
+function readArticleTags(value: unknown): readonly string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw localError("INVALID_DOCUMENT", "article tags must be an array");
+  }
+
+  if (value.length > MAX_LOCAL_ARTICLE_TAGS) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      `article tags must not exceed ${MAX_LOCAL_ARTICLE_TAGS} entries`,
+    );
+  }
+
+  const tags: string[] = [];
+
+  for (const tag of value) {
+    if (typeof tag !== "string" || !/^[a-z0-9]{1,30}$/.test(tag)) {
+      throw localError(
+        "INVALID_DOCUMENT",
+        "each article tag must be 1-30 lowercase alphanumeric characters",
+      );
+    }
+
+    if (tags.includes(tag)) {
+      throw localError("INVALID_DOCUMENT", "article tags must not repeat");
+    }
+
+    tags.push(tag);
+  }
+
+  return tags;
+}
+
+function readCanonicalUrl(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw localError("INVALID_DOCUMENT", "canonicalUrl must be a string");
+  }
+
+  if (value.length === 0 || value.length > MAX_LOCAL_CANONICAL_URL_CHARS) {
+    throw localError(
+      "INVALID_DOCUMENT",
+      `canonicalUrl must be 1-${MAX_LOCAL_CANONICAL_URL_CHARS} characters`,
+    );
+  }
+
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(value) || value !== value.trim()) {
+    throw localError("INVALID_DOCUMENT", "canonicalUrl is not a usable URL");
+  }
+
+  let url: URL;
+
+  try {
+    url = new URL(value);
+  } catch {
+    throw localError("INVALID_DOCUMENT", "canonicalUrl must be an absolute URL");
+  }
+
+  if (url.protocol !== "https:") {
+    throw localError("INVALID_DOCUMENT", "canonicalUrl must use HTTPS");
+  }
+
+  if (url.username.length > 0 || url.password.length > 0) {
+    throw localError("INVALID_DOCUMENT", "canonicalUrl must not carry userinfo");
+  }
+
+  return value;
 }
 
 function isLocalProvider(value: string): value is LocalProviderId {

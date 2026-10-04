@@ -37,6 +37,28 @@ const HANDLERS: Readonly<Record<string, Handler>> = {
 };
 
 /**
+ * True when the invocation answers from local metadata only.
+ *
+ * `help`, `version`, and `skill path` (and any `--help`/`-h` request) never
+ * contact an instance, so they must not read the remote key or start the
+ * keep-alive timer. Every other legacy command keeps the remote behavior.
+ */
+function isStaticMetadataInvocation(argv: readonly string[]): boolean {
+  if (argv.some(token => token === "--help" || token === "-h")) {
+    return true;
+  }
+
+  const [first, second] = argv.filter(token => !token.startsWith("-"));
+
+  return (
+    first === undefined ||
+    first === "help" ||
+    first === "version" ||
+    (first === "skill" && second === "path")
+  );
+}
+
+/**
  * Runs one command and returns its exit code. Nothing here throws: a failure
  * becomes a reported result, so `bin.ts` only has to set `process.exitCode`.
  *
@@ -72,11 +94,21 @@ async function runLegacy(
   io: CliIo,
   reporter: Reporter,
 ): Promise<number> {
-  // The remote instance key is registered only for the remote surface. A local
-  // command must never let an unrelated environment value redact frozen content.
-  reporter.addSecret(io.env[API_KEY_ENV]);
+  const staticMetadata = isStaticMetadataInvocation(argv);
 
-  const keepAlive = setInterval(() => {}, 1_000);
+  if (!staticMetadata) {
+    // The remote instance key is registered only for the remote surface. A
+    // static metadata command must never read it, so an unrelated environment
+    // value cannot influence its output.
+    reporter.addSecret(io.env[API_KEY_ENV]);
+  }
+
+  // The keep-alive timer exists for `posts wait` only: the SDK unrefs its
+  // polling timers, and a CLI must stay alive until its own deadline. A static
+  // metadata command finishes without it.
+  const keepAlive = staticMetadata
+    ? undefined
+    : setInterval(() => {}, 1_000);
   let parsed: ParsedCommand | undefined;
 
   try {
@@ -145,6 +177,8 @@ async function runLegacy(
 
     return failure.exitCode;
   } finally {
-    clearInterval(keepAlive);
+    if (keepAlive !== undefined) {
+      clearInterval(keepAlive);
+    }
   }
 }

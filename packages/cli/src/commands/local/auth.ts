@@ -1,15 +1,19 @@
-import type { LocalProviderId } from "@syndroo/core";
+import type { LocalProvider, LocalProviderId } from "@syndroo/core";
 
-import { usageError } from "../../cli-error.js";
+import { CliError, usageError } from "../../cli-error.js";
 import { EXIT_CODE } from "../../exit-codes.js";
 import {
   bindLocalAccount,
+  commitLocalObservation,
+  commitLocalBinding,
+  prepareLocalBindingFromSource,
   removeLocalAccount,
   verifyLocalAccount,
   type LocalBindingResult,
 } from "../../local/auth.js";
 import {
   type LocalRunOverrides,
+  type LocalRuntime,
   openLocalRuntime,
 } from "../../local/composition.js";
 import { configError } from "../../cli-error.js";
@@ -28,7 +32,30 @@ import {
   type LocalCommandOutcome,
 } from "./shared.js";
 
-const PROVIDERS: readonly LocalProviderId[] = ["bluesky", "threads"];
+const PROVIDERS: readonly LocalProviderId[] = [
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+];
+
+/** One registered provider, or an explicit refusal; never an undefined cast. */
+function registeredProvider(
+  runtime: LocalRuntime,
+  provider: LocalProviderId,
+): LocalProvider {
+  const found = runtime.providers[provider];
+
+  if (found === undefined) {
+    throw localError(
+      "PROVIDER_LOCAL_UNAVAILABLE",
+      "this provider is not available in this build",
+    );
+  }
+
+  return found;
+}
 
 function requireLocalFlag(context: CommandContext): void {
   if (!hasFlag(context, "local")) {
@@ -82,17 +109,22 @@ export async function runAuthSet(
   const runtime = await openLocalRuntime(context, overrides);
   const timeoutMs = parseLocalTimeoutMs(context);
   const budget = commandBudget(context.io.signal, timeoutMs);
+  const saveFile = flagValue(context, "save-credential-file");
 
   let binding: LocalBindingResult;
 
   try {
-    binding = await withLocalWriteLock(runtime.stateHome, () =>
-      bindLocalAccount(source, {
+    // Verification and confirmation happen with no global write lock; only the
+    // optional file save and the revision-checked binding commit take it.
+    const { prepared, credentials } = await prepareLocalBindingFromSource(
+      source,
+      {
         store: runtime.store,
-        provider: runtime.providers[provider],
+        provider: registeredProvider(runtime, provider),
         env: context.io.env,
         signal: budget.signal,
         expectedTargetId: flagValue(context, "expect-account"),
+        clock: runtime.clock,
         confirm: async preview => {
           // The human's reading time is not part of the request budget; the real
           // caller signal stays linked while the deadline is paused.
@@ -111,6 +143,17 @@ export async function runAuthSet(
 
           return true;
         },
+      },
+    );
+
+    binding = await withLocalWriteLock(runtime.stateHome, () =>
+      commitLocalBinding(prepared, {
+        store: runtime.store,
+        credentials,
+        source,
+        ...(saveFile === undefined
+          ? {}
+          : { saveCredentialFile: { file: saveFile, cwd: context.io.cwd } }),
       }),
     );
   } finally {
@@ -161,6 +204,7 @@ export async function runAuthStatus(
   const selected: readonly LocalProviderId[] =
     requested === undefined ? PROVIDERS : [selectLocalProvider(requested)];
   const bindings: Record<string, unknown>[] = [];
+  const unconfiguredProviders: LocalProviderId[] = [];
   const budget =
     timeoutMs === undefined ? undefined : commandBudget(context.io.signal, timeoutMs);
 
@@ -169,6 +213,7 @@ export async function runAuthStatus(
       const connection = await runtime.store.getConnection(provider);
 
       if (connection === null || connection.removed) {
+        unconfiguredProviders.push(provider);
         continue;
       }
 
@@ -178,17 +223,54 @@ export async function runAuthStatus(
         connectionId: connection.target.connectionId,
         bindingRevision: connection.target.bindingRevision,
         sourceKind: connection.source.kind,
+        configured: true,
+        mode: "local",
+        displayName: connection.verification?.displayName ?? null,
+        lastVerifiedAt: connection.verification?.lastVerifiedAt ?? null,
+        verificationSource: connection.verification === undefined ? "unchecked" : "cached",
+        readiness: "unchecked",
+        nextAction: "verify_identity_and_publish_permissions",
       };
 
       if (budget !== undefined) {
-        const checked = await verifyLocalAccount(connection, {
-          store: runtime.store,
-          provider: runtime.providers[provider],
-          env: context.io.env,
-          signal: budget.signal,
-        });
+        try {
+          const checked = await verifyLocalAccount(connection, {
+            store: runtime.store, provider: registeredProvider(runtime, provider),
+            env: context.io.env, signal: budget.signal, clock: runtime.clock,
+          });
 
-        binding["verified"] = checked.verified;
+          // A refresh is committed under a short lock with the same binding
+          // revision; it never rewrites history and never claims write access.
+          if (checked.observation !== undefined) {
+            const observation = checked.observation;
+
+            // Schema 1 keeps the verification result without writing a
+            // schema-2 cache: refreshing is never an implicit migration.
+            await withLocalWriteLock(runtime.stateHome, () =>
+              commitLocalObservation(
+                runtime.store,
+                provider,
+                observation,
+                connection.target.bindingRevision,
+              ),
+            );
+          }
+
+          binding["verified"] = checked.verified;
+          binding["displayName"] = checked.displayName;
+          binding["lastVerifiedAt"] = checked.lastVerifiedAt;
+          binding["verificationSource"] = "online";
+        } catch (error) {
+          if (!(error instanceof CliError)) throw error;
+          const rejected = error.details?.["readiness"] === "reconnect_required";
+          const reconnect = rejected || ["AUTH_SOURCE_CHANGED", "ACCOUNT_MISMATCH"].includes(error.code);
+          const missing = error.code === "AUTH_SOURCE_UNAVAILABLE" && !reconnect;
+          throw new CliError(error.message, {
+            code: error.code, exitCode: error.exitCode,
+            details: { provider, readiness: reconnect ? "reconnect_required" : missing ? "missing_credentials" : "unavailable",
+              nextAction: reconnect ? "reconnect" : missing ? "configure_credentials" : "retry_identity_verification" },
+          });
+        }
       }
 
       bindings.push(binding);
@@ -199,7 +281,7 @@ export async function runAuthStatus(
 
   return {
     ok: true,
-    result: { bindings },
+    result: { bindings, unconfiguredProviders },
     human: [
       "syndroo auth status",
       ...(bindings.length === 0

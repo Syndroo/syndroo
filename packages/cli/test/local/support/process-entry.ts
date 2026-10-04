@@ -47,9 +47,10 @@ export interface ProcessSpec {
   readonly targetIds?: Partial<Record<LocalProviderId, string>>;
 }
 
-const DEFAULT_TARGET_IDS: Readonly<Record<LocalProviderId, string>> = {
+const DEFAULT_TARGET_IDS: Readonly<Partial<Record<LocalProviderId, string>>> = {
   bluesky: "did:plc:process-fixture",
   threads: "threads-process-fixture",
+  linkedin: "urn:li:person:process-fixture",
 };
 
 const CONTENT_CALLS_FILE = "content-calls.jsonl";
@@ -91,7 +92,10 @@ function buildProvider(
   spec: ProcessSpec,
 ): LocalProvider {
   const controlDir = spec.controlDir;
-  const targetId = spec.targetIds?.[providerId] ?? DEFAULT_TARGET_IDS[providerId];
+  const targetId =
+    spec.targetIds?.[providerId] ??
+    DEFAULT_TARGET_IDS[providerId] ??
+    `${providerId}-process-fixture`;
   const mode = spec.publishMode ?? "success";
 
   return {
@@ -185,9 +189,10 @@ async function main(): Promise<void> {
   tolerateClosedPipe(process.stdout);
   tolerateClosedPipe(process.stderr);
 
-  const providers: Readonly<Record<LocalProviderId, LocalProvider>> = {
+  const providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>> = {
     bluesky: buildProvider("bluesky", spec),
     threads: buildProvider("threads", spec),
+    linkedin: buildProvider("linkedin", spec),
   };
 
   const code = await run(spec.argv, createProcessIo(controller.signal), {

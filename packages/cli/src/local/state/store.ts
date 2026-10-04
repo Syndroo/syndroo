@@ -5,17 +5,22 @@ import path from "node:path";
 
 import type {
   FrozenDelivery,
+  LocalContentOptions,
+  LocalInstanceCapabilities,
+  LocalInstanceObservation,
   LocalProviderId,
   ProviderOutcome,
   TargetBinding,
   TargetStatus,
 } from "@syndroo/core";
+import { isLegacyLocalProvider } from "@syndroo/core";
 
 import { CliError } from "../../cli-error.js";
 import { EXIT_CODE } from "../../exit-codes.js";
 import {
   MAX_LOCAL_CONTENT_CODE_POINTS,
   canonicalJson,
+  frozenPayloadHash,
 } from "../document.js";
 import { localError } from "../errors.js";
 import type { CredentialReference } from "../ports/credentials.js";
@@ -30,6 +35,7 @@ import {
   type PlanAction,
   type PlanItem,
   type PlanKind,
+  type StateSchemaVersion,
 } from "../ports/local-store.js";
 import {
   INTEGRITY_KEY_BYTES,
@@ -79,6 +85,7 @@ import {
   requireRecord,
   requireString,
   requireVersion,
+  requireVersion2,
 } from "./validate.js";
 
 /**
@@ -99,7 +106,13 @@ export const OPERATIONS_DIR_NAME = "operations";
 export const DELIVERIES_DIR_NAME = "deliveries";
 
 /** Local providers this version can hold a binding for. */
-const LOCAL_PROVIDERS: readonly LocalProviderId[] = ["bluesky", "threads"];
+const LOCAL_PROVIDERS: readonly LocalProviderId[] = [
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+];
 
 const NAMESPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const INSTALLATION_ID_PATTERN = /^inst_[0-9a-f]{32}$/;
@@ -158,6 +171,8 @@ export interface LocalStateInspection {
   readonly safe: boolean;
   readonly schemaVersion: number | null;
   readonly installationId: string | null;
+  /** True while a recognized explicit upgrade marker is pending. */
+  readonly upgradeInProgress: boolean;
   readonly lock: {
     readonly held: boolean;
     readonly owner: LockOwnerView | null;
@@ -184,9 +199,27 @@ export interface LocalRecoveryReport {
 }
 
 export interface InstallationRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: StateSchemaVersion;
   readonly installationId: string;
 }
+
+/** Marker written between the two persistent steps of an explicit upgrade. */
+export interface InstallationUpgradeMarker {
+  readonly from: 1;
+  readonly to: 2;
+  readonly startedAt: string;
+  readonly nonce: string;
+}
+
+/** The three durable views of one installation file. */
+export type InstallationView =
+  | { readonly kind: "legacy"; readonly installationId: string }
+  | { readonly kind: "upgraded"; readonly installationId: string }
+  | {
+      readonly kind: "interrupted";
+      readonly installationId: string;
+      readonly marker: InstallationUpgradeMarker;
+    };
 
 interface StoreContext {
   readonly stateHome: string;
@@ -312,16 +345,128 @@ function readInstallationShape(value: unknown): InstallationRecord {
   const what = "the installation record";
   const record = requireRecord(value, what);
 
+  if (Object.hasOwn(record, "upgrade")) {
+    // An interrupted explicit upgrade. Ordinary clients fail closed instead of
+    // guessing whether the marker is finished; only `state upgrade` resumes it.
+    throw stateFailure(
+      "STATE_VERSION_UNSUPPORTED",
+      "the state has an interrupted upgrade; run `syndroo state upgrade --to 2` to finish it",
+    );
+  }
+
   requireExactFields(record, ["schemaVersion", "installationId"], what);
 
   return {
-    schemaVersion: requireVersion(record["schemaVersion"], what),
+    schemaVersion: requireVersion2(record["schemaVersion"], what),
     installationId: requireString(
       record["installationId"],
       `${what} identity`,
       { pattern: INSTALLATION_ID_PATTERN },
     ),
   };
+}
+
+function readInterruptedInstallation(value: unknown): {
+  installationId: string;
+  marker: InstallationUpgradeMarker;
+} {
+  const what = "the installation record";
+  const record = requireRecord(value, what);
+
+  requireExactFields(
+    record,
+    ["schemaVersion", "installationId", "upgrade"],
+    what,
+  );
+
+  if (requireVersion2(record["schemaVersion"], what) !== 2) {
+    corrupt(what, "has an upgrade marker under the wrong schema version");
+  }
+
+  const installationId = requireString(
+    record["installationId"],
+    `${what} identity`,
+    { pattern: INSTALLATION_ID_PATTERN },
+  );
+  const markerRecord = requireRecord(record["upgrade"], "the upgrade marker");
+
+  requireExactFields(
+    markerRecord,
+    ["from", "to", "startedAt", "nonce"],
+    "the upgrade marker",
+  );
+
+  if (markerRecord["from"] !== 1 || markerRecord["to"] !== 2) {
+    // Only the one recognized transition may resume; no arbitrary future
+    // version is ever accepted.
+    throw stateFailure(
+      "STATE_VERSION_UNSUPPORTED",
+      "the upgrade marker names a transition this version cannot resume",
+    );
+  }
+
+  return {
+    installationId,
+    marker: {
+      from: 1,
+      to: 2,
+      startedAt: requireIsoTime(
+        markerRecord["startedAt"],
+        "the upgrade marker time",
+      ),
+      nonce: requireString(markerRecord["nonce"], "the upgrade marker nonce", {
+        pattern: /^[0-9a-f]{32}$/,
+      }),
+    },
+  };
+}
+
+/**
+ * Reads the installation file for the explicit upgrade path only.
+ *
+ * Ordinary readers keep using `requireStateIdentity`, which refuses an
+ * interrupted marker; this view exists so the upgrade command can recognize
+ * and resume exactly one known transition.
+ */
+export async function readInstallationView(
+  stateHome: string,
+): Promise<InstallationView> {
+  assertSupportedRuntime();
+
+  const root = await requireStateDirectory(stateHome);
+  const bytes = await readControlledFile(
+    path.join(root, INSTALLATION_FILE_NAME),
+  );
+
+  if (bytes === null) {
+    throw stateFailure(
+      "STATE_CORRUPT",
+      "the state installation record is missing",
+    );
+  }
+
+  const parsed = parseStateValue(bytes);
+
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, "upgrade")
+  ) {
+    const interrupted = readInterruptedInstallation(parsed);
+
+    return {
+      kind: "interrupted",
+      installationId: interrupted.installationId,
+      marker: interrupted.marker,
+    };
+  }
+
+  const installation = readInstallationShape(parsed);
+
+  return installation.schemaVersion === 1
+    ? { kind: "legacy", installationId: installation.installationId }
+    : { kind: "upgraded", installationId: installation.installationId };
 }
 
 function readProvider(value: unknown, what: string): LocalProviderId {
@@ -414,23 +559,28 @@ function readContent(value: unknown, what: string): string {
   return text;
 }
 
-function readFrozenDelivery(value: unknown, what: string): FrozenDelivery {
+function readFrozenDelivery(
+  value: unknown,
+  what: string,
+  recordSchemaVersion: StateSchemaVersion,
+): FrozenDelivery {
   const record = requireRecord(value, what);
+  const fields = [
+    "deliveryId",
+    "key",
+    "namespace",
+    "target",
+    "content",
+    "payloadVersion",
+    "payloadHash",
+    "payload",
+  ];
 
-  requireExactFields(
-    record,
-    [
-      "deliveryId",
-      "key",
-      "namespace",
-      "target",
-      "content",
-      "payloadVersion",
-      "payloadHash",
-      "payload",
-    ],
-    what,
-  );
+  if (Object.hasOwn(record, "contentOptions")) {
+    fields.push("contentOptions");
+  }
+
+  requireExactFields(record, fields, what);
 
   const payloadVersion = requireInteger(
     record["payloadVersion"],
@@ -443,9 +593,24 @@ function readFrozenDelivery(value: unknown, what: string): FrozenDelivery {
     `${what} payload hash`,
     64,
   );
+  const contentOptions = Object.hasOwn(record, "contentOptions")
+    ? readContentOptions(record["contentOptions"])
+    : undefined;
 
-  if (sha256Hex(canonicalJson({ payloadVersion, payload })) !== payloadHash) {
+  if (contentOptions !== undefined && recordSchemaVersion !== 2) {
+    corrupt(what, "carries content options a schema-1 record cannot hold");
+  }
+
+  if (
+    frozenPayloadHash(payloadVersion, payload, contentOptions) !== payloadHash
+  ) {
     corrupt(what, "payload hash does not match its payload");
+  }
+
+  const target = readBinding(record["target"], `${what} target`);
+
+  if (recordSchemaVersion === 1 && !isLegacyLocalProvider(target.provider)) {
+    corrupt(what, "names a provider a schema-1 record cannot hold");
   }
 
   return {
@@ -456,11 +621,76 @@ function readFrozenDelivery(value: unknown, what: string): FrozenDelivery {
     namespace: requireString(record["namespace"], `${what} namespace`, {
       pattern: NAMESPACE_PATTERN,
     }),
-    target: readBinding(record["target"], `${what} target`),
+    target,
     content: readContent(record["content"], `${what} content`),
+    ...(contentOptions === undefined ? {} : { contentOptions }),
     payloadVersion,
     payloadHash,
     payload,
+  };
+}
+
+function readContentOptions(value: unknown): LocalContentOptions {
+  const what = "the frozen content options";
+  const record = requireRecord(value, what);
+
+  requireExactFields(record, ["article"], what);
+
+  return { article: readFrozenArticle(record["article"]) };
+}
+
+function readFrozenArticle(value: unknown): {
+  readonly title: string;
+  readonly tags?: readonly string[];
+  readonly canonicalUrl?: string;
+} {
+  const what = "the frozen article";
+  const record = requireRecord(value, what);
+  const fields = ["title"];
+
+  if (Object.hasOwn(record, "tags")) {
+    fields.push("tags");
+  }
+
+  if (Object.hasOwn(record, "canonicalUrl")) {
+    fields.push("canonicalUrl");
+  }
+
+  requireExactFields(record, fields, what);
+
+  const tagsValue = record["tags"];
+  const tags =
+    tagsValue === undefined
+      ? undefined
+      : requireArray(tagsValue, `${what} tags`, { min: 0, max: 4 }).map(tag =>
+          requireString(tag, `${what} tag`, {
+            pattern: /^[a-z0-9]{1,30}$/,
+          }),
+        );
+
+  if (tags !== undefined && new Set(tags).size !== tags.length) {
+    corrupt(what, "repeats a tag");
+  }
+
+  const canonicalValue = record["canonicalUrl"];
+  const title = requireString(record["title"], `${what} title`, { max: 512 });
+
+  if (title.trim().length === 0 || countCodePoints(title) > 128) {
+    corrupt(what, "title is outside the accepted length");
+  }
+
+  return {
+    title,
+    ...(tags === undefined ? {} : { tags }),
+    ...(canonicalValue === undefined
+      ? {}
+      : {
+          canonicalUrl: requireString(
+            canonicalValue,
+            `${what} canonical URL`,
+            { max: 2048 },
+          ),
+        }),
   };
 }
 
@@ -468,13 +698,18 @@ function readPlanItem(
   value: unknown,
   namespace: string,
   kind: PlanKind,
+  recordSchemaVersion: StateSchemaVersion,
 ): PlanItem {
   const what = "the plan item";
   const record = requireRecord(value, what);
 
   requireExactFields(record, ["delivery", "action", "previousBinding"], what);
 
-  const delivery = readFrozenDelivery(record["delivery"], `${what} delivery`);
+  const delivery = readFrozenDelivery(
+    record["delivery"],
+    `${what} delivery`,
+    recordSchemaVersion,
+  );
 
   if (delivery.namespace !== namespace) {
     corrupt(what, "does not belong to the plan namespace");
@@ -529,6 +764,7 @@ function readPlanShape(value: unknown): LocalPlan {
     what,
   );
 
+  const schemaVersion = requireVersion2(record["schemaVersion"], what);
   const namespace = requireString(record["namespace"], `${what} namespace`, {
     pattern: NAMESPACE_PATTERN,
   });
@@ -549,7 +785,7 @@ function readPlanShape(value: unknown): LocalPlan {
   const items = requireArray(record["items"], `${what} items`, {
     min: 1,
     max: MAX_PLAN_ITEMS,
-  }).map(item => readPlanItem(item, namespace, kind));
+  }).map(item => readPlanItem(item, namespace, kind, schemaVersion));
 
   if (new Set(items.map(item => item.delivery.deliveryId)).size !== items.length) {
     corrupt(what, "repeats a delivery");
@@ -572,7 +808,7 @@ function readPlanShape(value: unknown): LocalPlan {
   }
 
   return {
-    schemaVersion: requireVersion(record["schemaVersion"], what),
+    schemaVersion,
     installationId: requireString(
       record["installationId"],
       `${what} installation`,
@@ -598,12 +834,18 @@ function readConnectionShape(
 ): ConnectionRecord {
   const what = "the connection record";
   const record = requireRecord(value, what);
+  const schemaVersion = requireVersion2(record["schemaVersion"], what);
+  const fields = ["schemaVersion", "target", "source", "fingerprint", "removed"];
 
-  requireExactFields(
-    record,
-    ["schemaVersion", "target", "source", "fingerprint", "removed"],
-    what,
-  );
+  if (Object.hasOwn(record, "verification")) {
+    fields.push("verification");
+  }
+
+  if (Object.hasOwn(record, "observation")) {
+    fields.push("observation");
+  }
+
+  requireExactFields(record, fields, what);
 
   const target = readBinding(record["target"], `${what} target`);
 
@@ -611,15 +853,144 @@ function readConnectionShape(
     corrupt(what, "belongs to a different provider");
   }
 
+  if (schemaVersion === 1 && !isLegacyLocalProvider(provider)) {
+    corrupt(what, "names a provider a schema-1 record cannot hold");
+  }
+
+  const observation = Object.hasOwn(record, "observation")
+    ? readObservation(record["observation"])
+    : undefined;
+
+  if (observation !== undefined && schemaVersion !== 2) {
+    corrupt(what, "carries an observation a schema-1 record cannot hold");
+  }
+
   return {
-    schemaVersion: requireVersion(record["schemaVersion"], what),
+    schemaVersion,
     target,
     source: readCredentialSource(record["source"], provider),
     fingerprint: requireString(record["fingerprint"], `${what} fingerprint`, {
       pattern: FINGERPRINT_PATTERN,
     }),
     removed: requireBoolean(record["removed"], `${what} tombstone`),
+    ...(Object.hasOwn(record, "verification") ? { verification: readVerification(record["verification"]) } : {}),
+    ...(observation === undefined ? {} : { observation }),
   };
+}
+
+function readCapabilities(value: unknown): LocalInstanceCapabilities {
+  const what = "the connection capabilities";
+  const record = requireRecord(value, what);
+
+  requireExactFields(
+    record,
+    ["maxCharacters", "charactersReservedPerUrl"],
+    what,
+  );
+
+  return {
+    maxCharacters: requireInteger(record["maxCharacters"], `${what} maximum`, {
+      min: 1,
+      max: 1_000_000,
+    }),
+    charactersReservedPerUrl: requireInteger(
+      record["charactersReservedPerUrl"],
+      `${what} URL reservation`,
+      { min: 0, max: 1_000_000 },
+    ),
+  };
+}
+
+function readObservation(value: unknown): LocalInstanceObservation {
+  const what = "the connection observation";
+  const record = requireRecord(value, what);
+
+  requireExactFields(
+    record,
+    [
+      "displayName",
+      "lastVerifiedAt",
+      "scopes",
+      "capabilities",
+      "capabilitySource",
+      "capabilityCheckedAt",
+      "writePermission",
+    ],
+    what,
+  );
+
+  if (record["writePermission"] !== "unknown") {
+    corrupt(what, "claims a write permission it cannot prove");
+  }
+
+  const displayName = record["displayName"];
+
+  if (
+    displayName !== null &&
+    (typeof displayName !== "string" ||
+      displayName.trim().length === 0 ||
+      [...displayName].length > 256 ||
+      /[\u0000-\u001f\u007f-\u009f]/.test(displayName))
+  ) {
+    corrupt(what, "has an unsafe display name");
+  }
+
+  const scopesValue = record["scopes"];
+  const scopes =
+    scopesValue === null
+      ? null
+      : requireArray(scopesValue, `${what} scopes`, { max: 64 }).map(scope =>
+          requireString(scope, `${what} scope`, {
+            pattern: /^[A-Za-z0-9._:-]{1,64}$/,
+          }),
+        );
+  const capabilitiesValue = record["capabilities"];
+  const capabilitySource = record["capabilitySource"];
+  const capabilityCheckedAt = record["capabilityCheckedAt"];
+
+  if (capabilitiesValue !== null && capabilitySource === null) {
+    corrupt(what, "has capabilities without a source");
+  }
+
+  if (capabilitiesValue !== null && capabilityCheckedAt === null) {
+    corrupt(what, "has capabilities without a check time");
+  }
+
+  return {
+    displayName: displayName as string | null,
+    lastVerifiedAt: requireIsoTime(
+      record["lastVerifiedAt"],
+      `${what} verification time`,
+    ),
+    scopes,
+    capabilities:
+      capabilitiesValue === null ? null : readCapabilities(capabilitiesValue),
+    capabilitySource:
+      capabilitySource === null
+        ? null
+        : requireString(capabilitySource, `${what} capability source`, {
+            max: 64,
+          }),
+    capabilityCheckedAt:
+      capabilityCheckedAt === null
+        ? null
+        : requireIsoTime(
+            capabilityCheckedAt,
+            `${what} capability check time`,
+          ),
+    writePermission: "unknown",
+  };
+}
+
+function readVerification(value: unknown): NonNullable<ConnectionRecord["verification"]> {
+  const record = requireRecord(value, "connection verification");
+  requireExactFields(record, ["displayName", "lastVerifiedAt"], "connection verification");
+  const displayName = record["displayName"];
+  if (displayName !== null && (typeof displayName !== "string" || !displayName.trim() ||
+      [...displayName].length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(displayName))) {
+    corrupt("connection verification", "has an unsafe display name");
+  }
+  return { displayName: displayName as string | null, lastVerifiedAt: requireIsoTime(record["lastVerifiedAt"], "connection verification time") };
 }
 
 function readCredentialSource(
@@ -749,7 +1120,12 @@ function readDeliveryShape(value: unknown): DeliveryRecord {
     what,
   );
 
-  const delivery = readFrozenDelivery(record["delivery"], `${what} delivery`);
+  const schemaVersion = requireVersion2(record["schemaVersion"], what);
+  const delivery = readFrozenDelivery(
+    record["delivery"],
+    `${what} delivery`,
+    schemaVersion,
+  );
   const status = readTargetStatus(record["status"], what);
   const attempts = requireInteger(record["attempts"], `${what} attempts`, {
     min: 0,
@@ -795,7 +1171,7 @@ function readDeliveryShape(value: unknown): DeliveryRecord {
   }
 
   return {
-    schemaVersion: requireVersion(record["schemaVersion"], what),
+    schemaVersion,
     delivery,
     status,
     attempts,
@@ -1087,6 +1463,31 @@ function deriveOperationId(installationId: string, planId: string): string {
   return `op_${sha256Hex(canonicalJson([installationId, planId]))}`;
 }
 
+/**
+ * A schema-2 record may only be written into a state that was explicitly
+ * upgraded. Ordinary commands never migrate; they point at the maintenance
+ * command instead.
+ */
+function assertSchema2Available(
+  installation: InstallationRecord,
+  what: string,
+): void {
+  if (installation.schemaVersion < 2) {
+    throw stateFailure(
+      "STATE_VERSION_UNSUPPORTED",
+      `${what} needs state schema 2; run \`syndroo state upgrade --to 2\` first`,
+    );
+  }
+}
+
+/** The schema version a delivery record for one frozen target must use. */
+function deliverySchemaVersion(delivery: FrozenDelivery): StateSchemaVersion {
+  return delivery.contentOptions === undefined &&
+    isLegacyLocalProvider(delivery.target.provider)
+    ? 1
+    : 2;
+}
+
 function assertPlanNotExpired(context: StoreContext, plan: LocalPlan): void {
   if (Date.parse(plan.expiresAt) <= context.now().getTime()) {
     throw admissionFailure(
@@ -1159,6 +1560,25 @@ async function assertCompleteLayout(root: string): Promise<void> {
   }
 }
 
+/**
+ * Narrow upgrade support: an upgrade only ever proceeds against an initialized
+ * layout whose integrity key is present. Nothing here creates or repairs.
+ */
+export async function requireUpgradePreconditions(root: string): Promise<void> {
+  await assertCompleteLayout(root);
+
+  const keyBytes = await readControlledFile(
+    path.join(root, INTEGRITY_KEY_FILE_NAME),
+  );
+
+  if (keyBytes === null || keyBytes.byteLength !== INTEGRITY_KEY_BYTES) {
+    throw stateFailure(
+      "STATE_CORRUPT",
+      "the state integrity key is missing or unreadable",
+    );
+  }
+}
+
 async function initializeStore(context: StoreContext): Promise<void> {
   const root = await storeRoot(context, true);
 
@@ -1189,7 +1609,7 @@ async function initializeStore(context: StoreContext): Promise<void> {
   await assertFreshState(root);
 
   const installation: InstallationRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     installationId: `inst_${randomBytes(16).toString("hex")}`,
   };
 
@@ -1209,7 +1629,7 @@ async function initializeStore(context: StoreContext): Promise<void> {
 
 async function getInstallation(
   context: StoreContext,
-): Promise<{ schemaVersion: 1; installationId: string }> {
+): Promise<{ schemaVersion: StateSchemaVersion; installationId: string }> {
   const root = await storeRoot(context, false);
   const { installation } = await requireStateIdentity(root);
 
@@ -1262,10 +1682,14 @@ async function putConnection(
   const target = readBinding(candidate["target"], "the connection record target");
   const validated = readConnectionShape(record, target.provider);
   const root = await storeRoot(context, false);
-  const { key } = await requireStateIdentity(root);
+  const { installation, key } = await requireStateIdentity(root);
   const dir = path.join(root, CONNECTIONS_DIR_NAME);
 
   await assertControlledDirectory(dir);
+
+  if (validated.schemaVersion === 2) {
+    assertSchema2Available(installation, "a connection record with an observation");
+  }
 
   const existing = await readConnectionRecord(root, key, target.provider);
 
@@ -1303,6 +1727,79 @@ async function putConnection(
   );
 }
 
+/**
+ * Replaces the cached observation of one binding.
+ *
+ * The binding revision, fingerprint, source and history are untouched: an
+ * observation is a cache, not a new account. A stale expected revision refuses
+ * the write so a refresh that raced another writer cannot resurrect an old
+ * observation.
+ */
+async function putObservation(
+  context: StoreContext,
+  provider: LocalProviderId,
+  observation: LocalInstanceObservation,
+  expectedRevision: number,
+): Promise<void> {
+  if (!isLocalProvider(provider)) {
+    throw admissionFailure(
+      "INVALID_DOCUMENT",
+      "the provider has no local binding slot",
+    );
+  }
+
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+    throw admissionFailure(
+      "BINDING_CHANGED",
+      "the expected binding revision is not usable",
+    );
+  }
+
+  const root = await storeRoot(context, false);
+  const { installation, key } = await requireStateIdentity(root);
+
+  assertSchema2Available(installation, "a connection observation");
+
+  const dir = path.join(root, CONNECTIONS_DIR_NAME);
+
+  await assertControlledDirectory(dir);
+
+  const existing = await readConnectionRecord(root, key, provider);
+
+  if (existing === null || existing.removed) {
+    throw admissionFailure(
+      "BINDING_CHANGED",
+      "there is no active local binding for this provider",
+    );
+  }
+
+  if (existing.target.bindingRevision !== expectedRevision) {
+    throw admissionFailure(
+      "BINDING_CHANGED",
+      "the account binding changed before the observation was written",
+    );
+  }
+
+  const validated = readObservation(observation);
+  const next: ConnectionRecord = {
+    ...existing,
+    schemaVersion: 2,
+    observation: validated,
+  };
+
+  await atomicWriteFile(
+    dir,
+    `${provider}.json`,
+    encodeEnvelope(
+      key,
+      CONNECTIONS_DIR_NAME,
+      provider,
+      readConnectionShape(next, provider),
+    ),
+    context.fault,
+  );
+}
+
 async function getPlan(
   context: StoreContext,
   planId: string,
@@ -1321,6 +1818,10 @@ async function putPlan(
   const validated = readPlanShape(plan);
   const root = await storeRoot(context, false);
   const { installation, key } = await requireStateIdentity(root);
+
+  if (validated.schemaVersion === 2) {
+    assertSchema2Available(installation, "a schema-2 plan");
+  }
 
   await verifyPlanSignature(installation, key, validated);
 
@@ -1645,7 +2146,7 @@ async function validateAdmission(
       }
 
       pending.push({
-        schemaVersion: 1,
+        schemaVersion: deliverySchemaVersion(item.delivery),
         delivery: item.delivery,
         status: "not_started",
         attempts: 0,
@@ -1851,6 +2352,10 @@ async function reserveOperation(
   const root = await storeRoot(context, false);
   const { installation, key } = await requireStateIdentity(root);
 
+  if (validated.schemaVersion === 2) {
+    assertSchema2Available(installation, "a schema-2 plan");
+  }
+
   await verifyPlanSignature(installation, key, validated);
 
   const operationId = deriveOperationId(
@@ -2050,7 +2555,7 @@ async function beginAttempt(
   }
 
   const next: DeliveryRecord = {
-    schemaVersion: 1,
+    schemaVersion: record.schemaVersion,
     delivery,
     status: "in_flight",
     attempts: record.attempts + 1,
@@ -2136,7 +2641,7 @@ async function commitOutcome(
 
   const validated = readOutcome(outcome, "the provider outcome");
   const next: DeliveryRecord = {
-    schemaVersion: 1,
+    schemaVersion: record.schemaVersion,
     delivery: record.delivery,
     status: validated.kind,
     attempts: record.attempts,
@@ -2207,6 +2712,8 @@ export function createLocalFileStore(
     getConnection: provider => getConnection(context, provider),
     putConnection: (record, expectedRevision) =>
       putConnection(context, record, expectedRevision),
+    putObservation: (provider, observation, expectedRevision) =>
+      putObservation(context, provider, observation, expectedRevision),
     getPlan: planId => getPlan(context, planId),
     putPlan: plan => putPlan(context, plan),
     getDelivery: deliveryId => getDelivery(context, deliveryId),
@@ -2246,6 +2753,7 @@ export async function inspectLocalState(
   const temporaryFiles: string[] = [];
   let schemaVersion: number | null = null;
   let installationId: string | null = null;
+  let upgradeInProgress = false;
   let lockHeld = false;
   let lockOwner: LockOwnerView | null = null;
   let recoveryGuard = false;
@@ -2266,6 +2774,7 @@ export async function inspectLocalState(
     safe,
     schemaVersion,
     installationId,
+    upgradeInProgress,
     lock: { held: lockHeld, owner: lockOwner },
     recoveryGuard,
     preparingOperations,
@@ -2318,10 +2827,20 @@ export async function inspectLocalState(
         schemaVersion = raw;
       }
 
-      installation = readInstallationShape(parsed);
+      if (Object.hasOwn(parsed, "upgrade")) {
+        // A recognized interrupted upgrade is a fail-closed state, not
+        // corruption: report it as such so the operator can finish it.
+        const interrupted = readInterruptedInstallation(parsed);
 
-      schemaVersion = installation.schemaVersion;
-      installationId = installation.installationId;
+        upgradeInProgress = true;
+        schemaVersion = 2;
+        installationId = interrupted.installationId;
+      } else {
+        installation = readInstallationShape(parsed);
+
+        schemaVersion = installation.schemaVersion;
+        installationId = installation.installationId;
+      }
     } catch (error) {
       defect("installation", "installation", errorCodeOf(error));
     }
@@ -2439,7 +2958,7 @@ export async function inspectLocalState(
   await inspectCollection({
     root: absolute,
     dirName: CONNECTIONS_DIR_NAME,
-    pattern: /^(?:bluesky|threads)$/,
+    pattern: /^(?:bluesky|threads|linkedin|mastodon|devto)$/,
     key,
     defect,
     temporaryFiles,
@@ -2815,7 +3334,7 @@ async function runRecovery(
     }
 
     pending.push({
-      schemaVersion: 1,
+      schemaVersion: record.schemaVersion,
       delivery: record.delivery,
       status: "unknown",
       attempts: record.attempts,

@@ -124,6 +124,9 @@ function createHarness(): ManualHarness {
     providers: {
       bluesky: fakeProvider("bluesky", publishCalls),
       threads: fakeProvider("threads", publishCalls),
+      linkedin: fakeProvider("linkedin", publishCalls),
+      mastodon: fakeProvider("mastodon", publishCalls),
+      devto: fakeProvider("devto", publishCalls),
     },
   };
 
@@ -235,8 +238,16 @@ describe("the documented local workflow", () => {
         }
       ).providers.map(entry => entry.provider);
 
-      expect(listed).toHaveLength(2);
-      expect(listed).toEqual(expect.arrayContaining(["bluesky", "threads"]));
+      expect(listed).toHaveLength(5);
+      expect(listed).toEqual(
+        expect.arrayContaining([
+          "bluesky",
+          "threads",
+          "linkedin",
+          "mastodon",
+          "devto",
+        ]),
+      );
 
       const authSet = await runAuthSet(
         harness.context([

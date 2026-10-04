@@ -5,7 +5,11 @@ import type { LocalProviderId } from "@syndroo/core";
 import { CliError, usageError } from "../../cli-error.js";
 import { EXIT_CODE, type ExitCode } from "../../exit-codes.js";
 import type { CliIo } from "../../io.js";
-import { frozenBusinessTime, previewForPlan } from "../../local/plan.js";
+import {
+  frozenBusinessTime,
+  previewForPlan,
+  type LocalPreviewOptions,
+} from "../../local/plan.js";
 import type { LocalPreviewResult } from "../../local/results.js";
 import { localError } from "../../local/errors.js";
 import type { LocalPlan } from "../../local/ports/local-store.js";
@@ -34,12 +38,17 @@ export const MAX_COMMAND_TIMEOUT_MS = 600_000;
 /** How long one prompt may wait for a human before it counts as a refusal. */
 const PROMPT_LIMIT_MS = 10 * 60 * 1_000;
 
-const LOCAL_PROVIDERS: ReadonlySet<string> = new Set(["bluesky", "threads"]);
+const LOCAL_PROVIDERS: ReadonlySet<string> = new Set([
+  "bluesky",
+  "threads",
+  "linkedin",
+  "mastodon",
+  "devto",
+]);
 
 const REMOTE_ONLY_PROVIDERS: ReadonlySet<string> = new Set([
   "x",
   "tumblr",
-  "linkedin",
 ]);
 
 const TIMEOUT_PATTERN = /^(\d+)(ms|s)?$/u;
@@ -286,6 +295,32 @@ export function previewHumanLines(
       }`,
     );
 
+    if (item.visibility !== undefined) {
+      lines.push(`    visibility ${item.visibility}`);
+    }
+
+    if (item.article !== undefined) {
+      lines.push(
+        `    title    ${item.article.title}`,
+        `    tags     ${
+          item.article.tags.length === 0 ? "(none)" : item.article.tags.join(", ")
+        }`,
+        `    canonical ${item.article.canonicalUrl ?? "(none)"}`,
+      );
+    }
+
+    if (item.capabilities !== undefined) {
+      lines.push(
+        `    limits   ${
+          item.capabilities === null
+            ? "unverified"
+            : `source ${item.capabilities.source ?? "unknown"} checked ${
+                item.capabilities.checkedAt ?? "unknown"
+              }`
+        }`,
+      );
+    }
+
     const frozen = frozenTimes[index];
 
     if (frozen !== null && frozen !== undefined) {
@@ -402,8 +437,12 @@ export function previewOutcome(
   context: CommandContext,
   label: string,
   plan: LocalPlan,
+  capabilities?: LocalPreviewOptions["capabilities"],
 ): LocalCommandOutcome {
-  const preview = previewForPlan(plan);
+  const preview = previewForPlan(
+    plan,
+    capabilities === undefined ? {} : { capabilities },
+  );
   const frozenTimes = plan.items.map(item => frozenBusinessTime(item.delivery));
 
   plan.items.forEach((item, index) => {

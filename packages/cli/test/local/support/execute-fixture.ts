@@ -253,7 +253,7 @@ export interface ExecutionFixture {
   readonly events: string[];
   readonly bluesky: ScriptedProvider;
   readonly threads: ScriptedProvider;
-  readonly providers: Readonly<Record<LocalProviderId, LocalProvider>>;
+  readonly providers: Readonly<Partial<Record<LocalProviderId, LocalProvider>>>;
   readonly resolveCredentials: CredentialResolver;
   /** Providers whose credential source was resolved, in call order. */
   readonly resolved: string[];
@@ -288,6 +288,7 @@ export async function openExecution(
   const providers = {
     bluesky: bluesky.provider,
     threads: threads.provider,
+    linkedin: scriptedProvider("linkedin", events).provider,
   };
   const resolved: string[] = [];
   const resolveCredentials: CredentialResolver = async connection => {

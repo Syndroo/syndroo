@@ -1,7 +1,7 @@
 # @syndroo/cli
 
-The `syndroo` command publishes plain text to Bluesky and Threads from the
-machine it runs on. This is the CLI-first `0.6.0-rc.1` candidate: a local path
+The `syndroo` command publishes plain text and DEV.to articles to Bluesky, Threads, LinkedIn, Mastodon, and DEV.to from the
+machine it runs on. This is the CLI-first `0.7.0-rc.1` candidate: a local path
 with no server, no queue, and no database, plus the retained remote path for a
 deployed Syndroo instance.
 
@@ -17,8 +17,8 @@ snapshot, then sends it and reports one result per target.
 
 ## Status
 
-- Target version: `0.6.0-rc.1`. It is not published to npm yet.
-- Local providers: Bluesky and Threads, plain text, foreground execution.
+- Target version: `0.7.0-rc.1`. It is not published to npm yet.
+- Local providers: Bluesky, Threads, LinkedIn, Mastodon (plain text), and DEV.to (articles); foreground execution.
 - Provider maturity is `fixture-tested`: the protocol paths are covered by
   tests against controlled endpoints, and no live-account acceptance has been
   run for this candidate.
@@ -32,7 +32,7 @@ repository builds. To build it yourself, run this from the repository root:
 
 ```bash
 npm run pack:cli
-npm install --global ./artifacts/syndroo-cli-0.6.0-rc.1.tgz
+npm install --global ./artifacts/syndroo-cli-0.7.0-rc.1.tgz
 syndroo version
 ```
 
@@ -40,7 +40,7 @@ If someone hands you the tarball, skip the build and install that path
 directly:
 
 ```bash
-npm install --global /path/to/syndroo-cli-0.6.0-rc.1.tgz
+npm install --global /path/to/syndroo-cli-0.7.0-rc.1.tgz
 ```
 
 `npm pack` inside `packages/cli` is not the release path: it packs a workspace
@@ -120,7 +120,7 @@ show help without reading config or contacting a provider.
 ## What the local path does not do
 
 No scheduling, no media, no threads or replies, no batch or watch mode, no RSS,
-no experimental platforms, no local OAuth or token refresh, and no automatic
+no experimental platforms, no automatic token refresh, and no automatic
 switch to the remote path. `scheduledAt` is a remote document field only.
 
 ## State and credentials

@@ -114,7 +114,7 @@ function identityThenPublish(
   publish: Respond,
 ): FixtureHandler {
   return (request, response) => {
-    if (request.url === "/me?fields=id") {
+    if (request.url === "/me?fields=id,username") {
       jsonResponse(response, 200, { id: TARGET_ID });
       return;
     }
@@ -198,7 +198,7 @@ describe("ThreadsLocalProvider", () => {
     const request = server.requests[0];
 
     expect(request?.method).toBe("GET");
-    expect(request?.url).toBe("/me?fields=id");
+    expect(request?.url).toBe("/me?fields=id,username");
     expect(headerOf(request!, "authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
   });
 
