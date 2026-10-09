@@ -69,9 +69,11 @@
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "check:e2e": "tsc -p e2e/local-only/tsconfig.json --noEmit",
     "dco:check": "npm run build:scripts && node .build/scripts/check-dco.js",
-    "test:scripts": "npm run build:scripts && node --test --test-concurrency=1 .build/scripts/check-release.spec.js .build/scripts/release-train.spec.js .build/scripts/package-licenses.spec.js .build/scripts/cli-licenses.spec.js .build/scripts/cli-artifact.spec.js .build/scripts/v1-stages.spec.js .build/scripts/bundle-v1-cli.spec.js .build/scripts/bundle-v1-server.spec.js .build/scripts/bundle-v1-cloudflare.spec.js",
+    "test:scripts": "npm run build:scripts && node --test --test-concurrency=1 .build/scripts/check-release.spec.js .build/scripts/release-train.spec.js .build/scripts/package-licenses.spec.js .build/scripts/cli-licenses.spec.js .build/scripts/cli-artifact.spec.js .build/scripts/v1-stages.spec.js .build/scripts/bundle-v1-cli.spec.js .build/scripts/bundle-v1-server.spec.js .build/scripts/bundle-v1-cloudflare.spec.js .build/scripts/local-release.spec.js",
     "release:check": "npm run build:scripts && node .build/scripts/check-release.js",
     "release:train": "npm run build:scripts && node .build/scripts/release-train.js",
+    "pack:local": "node scripts/pack-local.ts",
+    "install:global": "node scripts/install-local.ts",
     "e2e:local-only:build": "tsc -p e2e/local-only/tsconfig.json",
     "e2e:local-only": "npm run e2e:local-only:build && node .build/e2e-local-only/runner.js"
   },

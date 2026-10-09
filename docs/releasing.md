@@ -52,6 +52,18 @@ way for a pull request; there is no bare local form.
 page: it failed with ten `pack FAIL` rows there, and each stage's `prepack`
 script builds that package, which was out of scope for a docs-only change.
 
+## Packaging and installing locally
+
+`npm run pack:local` writes one tarball per public package into `artifacts/`
+(the private `@syndroo/core` is never packed), and `npm run install:global`
+installs the CLI, its provider contract and the five official providers globally
+from those tarballs in one `npm install --global`.
+
+The one rule not to forget: after any change to a provider's built output,
+regenerate the provider catalog (`npm run generate:provider-catalog`) and
+reinstall the CLI too, or the CLI sees a fingerprint that no longer matches the
+installed provider and reports it as `stale` / `PROVIDER_TRUST_REQUIRED`.
+
 ## What a publish or deploy would require
 
 A real release or deployment is a separate, explicitly authorized step. It would
