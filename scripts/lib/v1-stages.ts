@@ -9,9 +9,14 @@
  * The order encodes real dependencies. A consumer that imports an official
  * provider (`@syndroo/sdk`, `@syndroo/cli`) cannot be built before that provider
  * package exists, so the five official providers come after Core and before
- * `sdk`/`server`/`cli`; `cloudflare` is last because it composes every official
- * provider and the Node server. `provider-sdk` is first because Core and every
- * provider implementation depends on its contract.
+ * `sdk`/`cli`; `server` follows `cli` because the self-hosted composition reuses
+ * the CLI's provider runtime, and `cloudflare` is last because it composes every
+ * official provider and the Node server. `provider-sdk` is first because Core
+ * and every provider implementation depends on its contract.
+ *
+ * `scripts/v1-stages.spec.ts` reads the workspace manifests and fails when this
+ * list puts a package before anything it depends on, so the order stays a fact
+ * rather than a convention.
  *
  * These scripts run through Node's type stripping, so the import specifier keeps
  * the `.ts` extension. `tsconfig.v1-tools.json` type-checks the same files with
@@ -39,7 +44,7 @@ export const MIN_NODE_ENGINE = ">=24.19.0";
 /**
  * Build order for the eleven architecture-v1 packages.
  *
- * `provider-sdk -> core -> five providers -> sdk/server/cli -> cloudflare`.
+ * `provider-sdk -> core -> five providers -> sdk/cli/server -> cloudflare`.
  * Never reorder a consumer before the official providers it imports.
  */
 export const STAGES: readonly V1Stage[] = [
@@ -51,8 +56,8 @@ export const STAGES: readonly V1Stage[] = [
   { dir: "provider-mastodon", name: "@syndroo/provider-mastodon" },
   { dir: "provider-devto", name: "@syndroo/provider-devto" },
   { dir: "sdk", name: "@syndroo/sdk" },
-  { dir: "server", name: "@syndroo/server", bundlesCore: true },
   { dir: "cli", name: "@syndroo/cli", bundlesCore: true },
+  { dir: "server", name: "@syndroo/server", bundlesCore: true },
   { dir: "cloudflare", name: "@syndroo/cloudflare", bundlesCore: true },
 ];
 

@@ -21,10 +21,13 @@ live-account acceptance on any provider.
 | `npm run check:provider-catalog` | `generate-provider-catalog.ts --check` | The checked-in CLI provider catalog matches the built official providers |
 | `npm run check:pack` | `check-v1.ts --pack` | Each stage's `npm pack --dry-run` succeeds |
 
-`npm run check` is deliberately honest about unbuilt artifacts: a bundle with no
-`dist/` is reported `PENDING`, never `ok`. `PENDING` does not fail the run,
-because the check graph does not build; run `npm run build` first when you need
-the bundle rows to assert something.
+`npm run check` is deliberately honest about unbuilt bundles: a package with no
+`dist/` is reported `PENDING`, never `ok`, and a `PENDING` row does not fail the
+run, because the check graph does not build. A *fully* cold checkout is a
+different case: each workspace type-checks against its siblings' built
+declarations, so with no `dist/` anywhere the type step fails with import errors
+that say nothing about the code. Run `npm run build` first, which is what CI does
+and what `check:allow-missing` exists for in the other direction.
 
 `npm run check:pack` runs `npm pack --dry-run` per stage, and each stage's
 `prepack` script builds that package. It passes end to end — `11 checked,

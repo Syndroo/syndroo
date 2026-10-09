@@ -46,14 +46,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check types, generated bindings and package graph
-        run: npm run check
-
+      # Build first: the type gate resolves sibling workspaces through their
+      # built declarations, so a fresh checkout has nothing to check yet.
       - name: Build every package
         run: npm run build
 
-      - name: Verify bundled artifacts
-        run: node scripts/check-v1.ts
+      - name: Check types, generated bindings, packages and bundles
+        run: npm run check
 
       - name: Run package tests
         run: npm test

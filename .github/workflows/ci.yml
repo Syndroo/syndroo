@@ -47,20 +47,18 @@ jobs:
           SYNDROO_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SYNDROO_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
-      # Generated protocol bindings, the provider catalog and the package graph
-      # are checked for drift before any build, so a stale generator fails here
-      # rather than silently shipping.
-      - name: Check types, generated bindings and package graph
-        run: npm run check
-
+      # The build comes first: every workspace's `check` resolves its sibling
+      # packages through their built declarations, so a checkout with no `dist`
+      # yet fails the type gate for the wrong reason. `--allow-missing` exists
+      # for the pre-build case; CI uses the strict gate once the artifacts are
+      # real.
       - name: Build every package
         run: npm run build
 
-      # The bundle gate only asserts inlining once an artifact exists, so it runs
-      # again after the build; before the build those rows honestly report
-      # PENDING instead of passing on faith.
-      - name: Verify bundled artifacts
-        run: node scripts/check-v1.ts
+      # Types, generated protocol bindings, the package graph and the bundle
+      # rows are all checked against the artifacts the previous step produced.
+      - name: Check types, generated bindings, packages and bundles
+        run: npm run check
 
       - name: Run package tests
         run: npm test

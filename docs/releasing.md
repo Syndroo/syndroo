@@ -79,13 +79,13 @@ need, beyond the checks above:
 ## Release automation
 
 `.github/workflows/ci.yml` runs the v1 gates in the order that makes them mean
-something: `npm run check` (types, generated bindings, package graph), then
-`npm run build`, then `node scripts/check-v1.ts` again so the bundle rows assert
-against real artifacts instead of reporting `PENDING`, then `npm test`,
-`npm run test:scripts`, the e2e type check, `npm run e2e:local-only`, `npm pack
---dry-run` for five public packages and `git diff --exit-code` for generated
-drift. The matrix is Node 24 only, because every v1 package requires
-`>=24.19.0`.
+something, and the build comes first: `npm run build` produces the declarations
+every workspace checks against, then `npm run check` type-checks the packages and
+asserts the bundle rows against real artifacts instead of reporting `PENDING`.
+`npm test`, `npm run test:scripts`, the e2e type check, `npm run e2e:local-only`,
+`npm pack --dry-run` for five public packages and `git diff --exit-code` for
+generated drift follow. The matrix is Node 24 only, because every v1 package
+requires `>=24.19.0`.
 
 `.github/workflows/release.yml` validates the ten-package train and publishes
 nothing by default. Publishing requires an explicit opt-in — the repository
