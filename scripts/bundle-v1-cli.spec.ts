@@ -4,8 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { collectImportSpecifiers } from "./lib/bundle-v1.js";
-import { CLI_DIST_DIR, bundleCli, verifyCliBundleArtifact } from "./bundle-v1-cli.js";
+import { collectImportSpecifiers, verifyBundleArtifact } from "./lib/bundle-v1.js";
+import {
+  CLI_BUNDLE_SPEC,
+  CLI_DIST_DIR,
+  CLI_PACKAGE_DIR,
+  bundleCli,
+  verifyCliBundleArtifact,
+} from "./bundle-v1-cli.js";
 
 /**
  * The `@syndroo/cli` bundle must inline the private `@syndroo/core` in the
@@ -100,6 +106,36 @@ describe("@syndroo/cli bundle", () => {
     assert.ok(
       problems.some((problem) => problem.includes("imports") && problem.includes("@syndroo/core")),
       `expected a surviving-declaration-import problem, got:\n${problems.join("\n")}`,
+    );
+  });
+
+  it("fails verification when the manifest requires a package the bundle inlined", () => {
+    // Falsifiable: `npm install --global ./syndroo-cli-0.7.0-rc.1.tgz` asked the
+    // registry for `@syndroo/provider-sdk` and failed with a 404, even though
+    // the tarball had already compiled that package into `dist/bin.js`. The
+    // published manifest must therefore keep inlined packages out of
+    // `dependencies`, and this rule is what says so.
+    const directory = copyOfArtifact();
+    const packageDir = mkdtempSync(join(tmpdir(), "syndroo-cli-package-"));
+
+    scratch.push(packageDir);
+
+    const manifest = JSON.parse(readFileSync(join(CLI_PACKAGE_DIR, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    const pinned = manifest.devDependencies["@syndroo/provider-sdk"];
+
+    assert.ok(pinned !== undefined, "the fixture assumes the CLI pins provider-sdk for its build");
+    delete manifest.devDependencies["@syndroo/provider-sdk"];
+    manifest.dependencies["@syndroo/provider-sdk"] = pinned;
+    writeFileSync(join(packageDir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    const problems = verifyBundleArtifact({ ...CLI_BUNDLE_SPEC, packageDir }, directory);
+
+    assert.ok(
+      problems.includes("@syndroo/provider-sdk is listed as a runtime dependency"),
+      `expected a runtime-dependency problem, got:\n${problems.join("\n")}`,
     );
   });
 });

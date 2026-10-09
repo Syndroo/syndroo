@@ -43,13 +43,13 @@
     "access": "public"
   },
   "dependencies": {
-    "@syndroo/provider-sdk": "0.7.0-rc.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "commander": "13.1.0"
   },
   "devDependencies": {
     "@syndroo/core": "0.7.0-rc.1",
+    "@syndroo/provider-sdk": "0.7.0-rc.1",
     "@types/node": "^26.4.0",
     "esbuild": "0.28.1"
   },

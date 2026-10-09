@@ -601,7 +601,11 @@ function checkManifest(
   // selected, a train package must install the exact published version of the
   // package it builds against, so a resumed publish cannot mix releases.
   if (definition.dependsOn !== undefined) {
-    const range = manifest.dependencies?.[definition.dependsOn];
+    // A bundled package may build against the dependency without shipping it:
+    // the CLI compiles `@syndroo/provider-sdk` in and pins it in
+    // `devDependencies`, so the exact-version rule reads both fields.
+    const range =
+      manifest.dependencies?.[definition.dependsOn] ?? manifest.devDependencies?.[definition.dependsOn];
 
     if (range !== manifest.version) {
       fail(

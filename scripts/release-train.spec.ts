@@ -442,6 +442,41 @@ describe("release train manifest validation", () => {
     );
   });
 
+  it("accepts a CLI that pins provider-sdk in devDependencies because it bundles it", async () => {
+    // The CLI compiles `@syndroo/provider-sdk` into `dist/bin.js`, so the
+    // published manifest keeps the exact pin in `devDependencies`. Reading only
+    // `dependencies` would report the released CLI as out of train.
+    const fixture = await createFixture("dependency-dev-only", {
+      overrides: {
+        cli: {
+          dependencies: {},
+          devDependencies: { "@syndroo/provider-sdk": CANDIDATE },
+        },
+      },
+    });
+
+    const result = runChecker(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.json["ok"], true);
+  });
+
+  it("rejects a CLI whose devDependencies pin drifts from the train version", async () => {
+    const fixture = await createFixture("dependency-dev-range", {
+      overrides: {
+        cli: {
+          dependencies: {},
+          devDependencies: { "@syndroo/provider-sdk": "^0.7.0-rc.1" },
+        },
+      },
+    });
+
+    assertFailed(
+      runChecker(fixture),
+      /must depend on exactly @syndroo\/provider-sdk@0\.7\.0-rc\.1/,
+    );
+  });
+
   it("rejects a missing package in the train", async () => {
     const fixture = await createFixture("missing-package", { remove: ["cli"] });
     const result = runChecker(fixture);

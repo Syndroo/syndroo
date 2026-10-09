@@ -547,8 +547,17 @@ export function verifyBundleArtifact(spec: BundleSpec, distDirectory = spec.dist
     dependencies?: Record<string, string>;
   };
   const dependencies = manifest.dependencies ?? {};
+  const inlinedWorkspace = [...new Set([...spec.requiredInlined, ...inlinedWorkspacePackages])];
 
-  for (const name of spec.requiredInlined) {
+  // Nothing the artifact compiled in may also be declared as a runtime
+  // dependency. A consumer installing the published tarball has no `packages/`
+  // directory, so a name that is inlined here but declared there is either a
+  // redundant install (the CLI asked npm for `@syndroo/provider-sdk` even
+  // though it had compiled it in, and failed with a 404 while the train was
+  // unpublished) or a second copy at runtime. The record is the authority on
+  // what was inlined, so the rule covers every inlined workspace package, not
+  // just the ones this spec requires.
+  for (const name of inlinedWorkspace) {
     if (dependencies[name] !== undefined) {
       problems.push(`${name} is listed as a runtime dependency`);
     }
@@ -563,7 +572,6 @@ export function verifyBundleArtifact(spec: BundleSpec, distDirectory = spec.dist
   const forbidden = spec.forbiddenImports.map((name) => ({ name, pattern: new RegExp(`^${escapeRegExp(name)}$`, "u") }));
   // A published `.d.ts` must never point at a package the JavaScript compiled in:
   // an embedder type-checking the tarball cannot resolve it there.
-  const inlinedWorkspace = [...new Set([...spec.requiredInlined, ...inlinedWorkspacePackages])];
   // Nor may it point at *any* other workspace package the manifest does not
   // declare: an embedder has no `packages/` directory to fall back to.
   const declaredDependencies = new Set(Object.keys(dependencies));
