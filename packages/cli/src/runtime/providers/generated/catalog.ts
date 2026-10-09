@@ -86,7 +86,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "devto",
     "packageName": "@syndroo/provider-devto",
     "resolvedRoot": "packages/provider-devto",
-    "artifactFingerprint": "bcdece7015b1b55bebfd4d959d34b4b094dba1a9b2bec24d4c5d964176e01e99",
+    "artifactFingerprint": "e0738e8d53103ea8a8b6aea68aa9018f7b501d394155f7f42e0d74ca4c082e5c",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
