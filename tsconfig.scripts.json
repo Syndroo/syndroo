@@ -3,7 +3,8 @@
   "compilerOptions": {
     "outDir": ".build",
     "rootDir": ".",
-    "types": ["node"]
+    "types": ["node"],
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["scripts/**/*.ts"]
 }

@@ -2,7 +2,7 @@
   "name": "@syndroo/cli",
   "version": "0.7.0-rc.1",
   "type": "module",
-  "description": "Local-first Syndroo CLI: publish text to Bluesky and Threads, with the retained remote command surface.",
+  "description": "Local-first Syndroo CLI: connect, prepare, confirm, execute and query status for content publishing.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
     }
   },
   "bin": {
@@ -33,29 +37,27 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24.19.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "@types/node": "^26.4.0"
+    "@syndroo/provider-sdk": "0.7.0-rc.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "commander": "13.1.0"
   },
   "devDependencies": {
-    "@syndroo/bluesky": "0.1.0",
-    "@syndroo/core": "0.1.0",
-    "@syndroo/devto": "0.1.0",
-    "@syndroo/linkedin": "0.1.0",
-    "@syndroo/mastodon": "0.1.0",
-    "@syndroo/sdk": "0.4.0-rc.1",
-    "@syndroo/threads": "0.1.0",
-    "esbuild": "0.28.1",
-    "jsonc-parser": "^3.3.1"
+    "@syndroo/core": "0.7.0-rc.1",
+    "@types/node": "^26.4.0",
+    "esbuild": "0.28.1"
   },
   "scripts": {
-    "build": "npm run build:scripts --prefix ../.. && node ../../.build/scripts/bundle-cli.js",
+    "build": "node ../../scripts/bundle-v1-cli.ts",
+    "build:types": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "test": "npm run build && vitest run",
+    "test": "vitest run",
     "prepack": "npm run build"
   }
 }

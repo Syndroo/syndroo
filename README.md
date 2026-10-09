@@ -1,97 +1,236 @@
 # Syndroo
 
-Publish plain text and articles to Bluesky, Threads, LinkedIn, Mastodon, and DEV.to from your own machine, with no
-server, queue, or database in the path. `publish` sends directly after
-confirmation; add `--dry-run` for an optional, read-only preview.
+Publish to Bluesky, Threads, LinkedIn, Mastodon and DEV.to from your own
+machine, or run the same product as an authenticated HTTP service. Every
+surface speaks one protocol generation, **v1**, with three operations:
+`connect`, `publish` and `status`.
 
-This is the `0.7.0-rc.1` CLI-first candidate. Build and install its local
-tarball for validation; live-account acceptance has not been run for it.
+This is the unreleased `0.7.0-rc.1` architecture-v1 tree. Nothing here has been
+published to npm, deployed, or run against a real social account. Provider
+behaviour is covered by tests against recorded API evidence and controlled
+fixtures; see [Honest boundaries](#honest-boundaries).
+
+## Surfaces
+
+| Surface | What runs | Entry point |
+| --- | --- | --- |
+| Local CLI | `syndroo` on your machine, private filesystem state | `@syndroo/cli` |
+| Self-hosted server | Node HTTP service, SQLite state, encrypted secrets | `@syndroo/server` |
+| Cloudflare Worker | D1 state, Queues, Cron recovery | `@syndroo/cloudflare` |
+| HTTP client | Thin HTTP client plus status polling | `@syndroo/sdk` |
+| Provider plugins | Platform authentication, payloads, write outcomes | `@syndroo/provider-*` |
+
+The CLI and the server share contracts and semantics, not processes or state. A
+failure on one surface is not a reason to switch to the other.
+
+## Requirements
+
+- Node.js `>=24.19.0` (the same floor every v1 package declares).
+- npm.
+- A POSIX host for local CLI state. Windows local writes are refused rather
+  than approximated.
+
+## Build and run the CLI
+
+```bash
+npm ci
+npm run build                 # builds all eleven v1 packages in dependency order
+node packages/cli/dist/bin.js --help
+```
+
+`@syndroo/cli` is not published, so run it from the build output as above. Once
+that works, the three commands are all you need:
+
+```bash
+node packages/cli/dist/bin.js connect bluesky
+node packages/cli/dist/bin.js publish --input post.json
+node packages/cli/dist/bin.js status
+```
 
 ## Quickstart
 
-Requirements: Node.js 22 or newer and npm. Local state writes support macOS and
-Linux; Windows local writes are refused rather than approximated.
+### 1. Connect an account
 
 ```bash
-# build and install the candidate from this repository
-npm ci
-npm run build          # workspace types must exist in dist before bundling
-npm run pack:cli
-npm install --global ./artifacts/syndroo-cli-0.7.0-rc.1.tgz
-syndroo version
-
-# create local config and state
-syndroo init --namespace default
-syndroo providers list
-syndroo auth set bluesky --local --from-env
-syndroo auth status --local
+node packages/cli/dist/bin.js connect bluesky
 ```
 
-`auth set` reads one whole credential group from the environment:
-`BLUESKY_IDENTIFIER`, `BLUESKY_PASSWORD`, and optional `BLUESKY_HOST` (which
-must be `bsky.social`), or `THREADS_ACCESS_TOKEN`. A credential file works too
-and must be a plain file only you can read (`chmod 600`). The CLI never reads
-`.env`, never mixes sources, and stores a reference plus a stable account id,
-never the secret.
+On a terminal the CLI prompts for the credential fields the provider declares
+and reads secret fields with echo disabled. With no terminal, or with `--json`,
+it prints the pending action and exits `0` instead of blocking.
 
-Save one strict JSON document as `post.json` and publish it:
+To import credentials once, from a JSON file you own or from one environment
+variable:
+
+```bash
+node packages/cli/dist/bin.js connect bluesky --credential-file ./bluesky.json
+SYNDROO_CREDENTIALS='{"identifier":"you.bsky.social","password":"APP_PASSWORD"}' \
+  node packages/cli/dist/bin.js connect bluesky --from-env
+```
+
+`--from-env` reads `SYNDROO_CREDENTIALS` and nothing else. The credential object
+uses the provider's own field names: Bluesky `identifier` + `password`, DEV.to
+`apiKey`, LinkedIn `client_id` + `client_secret`, Threads `client_id` +
+`client_secret`, Mastodon an empty object. LinkedIn, Threads and Mastodon then
+need OAuth connect options (`redirectUri`, and `instance`/`scopes` for Mastodon),
+so they are started with a whole `ConnectRequest`; see
+[docs/cli-manual.md](docs/cli-manual.md#getting-credentials-per-platform).
+Credentials are imported once; later calls read the Core credential store, never
+the original environment variable or file.
+
+### 2. Publish
+
+Save one strict JSON document as `post.json`. The shape is `content` + `targets`:
 
 ```json
 {
-  "key": "release-announcement-001",
-  "content": "Syndroo now publishes from the command line.",
-  "platforms": ["bluesky"]
+  "content": { "text": "Syndroo now publishes from the command line." },
+  "targets": [{ "provider": "bluesky" }]
 }
 ```
 
 ```bash
-syndroo publish --input post.json --yes --no-input --json
-syndroo receipts show <operation-id> --json
+node packages/cli/dist/bin.js publish --input post.json --dry-run
+node packages/cli/dist/bin.js publish --input post.json
 ```
 
-For generated content, pass serialized JSON directly with `--data`:
+`publish` prepares one frozen snapshot, prints the full preview, asks for an
+explicit yes on the terminal, and only then executes that same snapshot. An
+optional `--dry-run` previews without writing state, resolving credentials or
+making a network call. A request without a `type` is an ordinary document and
+becomes a `prepare` request; `{"type":"execute","approvalToken":"..."}` is only
+read from standard input.
+
+Agents should use `--json` and pass a machine request on stdin:
 
 ```bash
-syndroo publish --data '{"key":"release-announcement-002","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
-syndroo publish --input post.json --dry-run --json
+echo '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}' \
+  | node packages/cli/dist/bin.js publish --input - --json
 ```
 
-Choose exactly one source: `--data`, `--input <file>`, or `--input -` for stdin.
-`schemaVersion` defaults to `1`. Inline content can appear in shell history and
-process arguments; use stdin for sensitive text and keep credentials out of
-post JSON. Agents should pass serialized JSON as one argument, not build a
-shell command from post text. Run bare `syndroo` or `syndroo -h` for help.
+### 3. Inspect state
 
-A dry-run creates no state, resolves no credentials, and makes no network
-request. A later publish reads its current input; it is not tied to an earlier
-preview. Within one publish, confirmation and sending use the same snapshot.
-Execution holds the local write lock and sends at most one content request per
-target. Exit `0` on a preview means validation succeeded, not publication.
-An `unknown` outcome stops blind retries: read the receipt instead of re-sending.
+```bash
+node packages/cli/dist/bin.js status                       # overview
+node packages/cli/dist/bin.js status --connections         # stored connections
+node packages/cli/dist/bin.js status --provider bluesky    # one provider's schema
+node packages/cli/dist/bin.js status --operation <op_id>   # one operation
+node packages/cli/dist/bin.js status --operations --limit 20
+```
 
-Full command reference: [docs/cli-manual.md](docs/cli-manual.md). Agent
-quickstart: [docs/agent-quickstart.md](docs/agent-quickstart.md). The bundled
-Skill lives at `syndroo skill path`.
+`status` is read-only: it never calls a provider, reads a secret, or writes
+state.
+
+## Configuration
+
+The CLI has one configuration source, and it is never inferred from the working
+directory.
+
+| What | Default | Selected by |
+| --- | --- | --- |
+| Config file | `${XDG_CONFIG_HOME:-$HOME/.config}/syndroo/config.json` | `--config <absolute path>` |
+| State root | `${XDG_STATE_HOME:-$HOME/.local/state}/syndroo/runtime-v1` | `stateRoot` in the config file |
+
+```json
+{
+  "version": 1,
+  "stateRoot": "/absolute/path/to/state",
+  "providers": { "bluesky": { "path": "./plugins/bluesky" } }
+}
+```
+
+A missing default config file is not an error for commands that need no
+provider resolution. An explicit `--config` path must be absolute, must exist,
+and is validated strictly: unknown top-level keys are rejected, and any key that
+looks like a token, secret, password, API key or credential is refused rather
+than ignored. There is no `secretsRoot` key. See
+[docs/cli-manual.md](docs/cli-manual.md) for the full contract.
+
+## Repository layout
+
+```text
+packages/core                 private: use cases, domain, protocol, ports
+packages/provider-sdk         public: Provider contract, defineProvider, test helpers
+packages/provider-bluesky     official Bluesky provider
+packages/provider-threads     official Threads provider
+packages/provider-linkedin    official LinkedIn provider
+packages/provider-mastodon    official Mastodon provider
+packages/provider-devto       official DEV.to provider
+packages/sdk                  public: HTTP client, protocol types, wait
+packages/cli                  public: commander, renderers, local runtime, Skill
+packages/server               public: Node HTTP runtime, SQLite, encrypted secrets
+packages/cloudflare           public artifact: Worker, D1, Queues, Cron
+scripts/                      build, protocol export, provider catalog, release checks
+tests/                        cross-entry and packaged-consumer checks
+docs/                         architecture specs and operator documentation
+```
+
+Dependency direction: `provider-sdk` then `core`, then the five official
+providers, then `{sdk, server, cli}`, then `cloudflare`. `@syndroo/core` stays
+platform-neutral. Three artifacts inline private Core: `@syndroo/cli`
+(`dist/bin.js`), `@syndroo/server` (`dist/index.js`) and `@syndroo/cloudflare`
+(`dist/worker.js`).
+
+## Provider plugins
+
+Every provider, official or third-party, implements the same
+`@syndroo/provider-sdk` contract and is registered by an explicit registry, one
+active implementation per provider id. Each manifest declares exactly which
+origins it may call:
+
+| Provider | Capability | Egress |
+| --- | --- | --- |
+| `bluesky` | text | `https://bsky.social` |
+| `threads` | text | `https://www.threads.net`, `https://graph.threads.net` |
+| `linkedin` | text | `https://www.linkedin.com`, `https://api.linkedin.com` |
+| `mastodon` | text | federated: the instance host supplied at connect time |
+| `devto` | article | `https://dev.to` |
+
+The CLI resolves one transport per provider from that declaration and fails
+closed for an undeclared origin. A third-party plugin runs as code you explicitly
+trusted, in the same process, with your permissions: minimal arguments are not a
+sandbox. The full trust and fingerprint policy is in
+[packages/cli/src/runtime/providers/README.md](packages/cli/src/runtime/providers/README.md).
 
 ## Development
 
 ```bash
 npm ci
-export SYNDROO_RELEASE_SET=cli
-npm test
-npm run check
-npm run e2e:cli-local          # packed CLI, isolated install, fake providers
-npm run verify:package
+npm run build        # build all eleven packages
+npm run check        # type-check the v1 tools and inspect built artifacts
+npm test             # per-package tests via scripts/check-v1.ts
+npm run test:v1      # the same tests under one vitest run
+git diff --check
 ```
 
-[docs/testing.md](docs/testing.md) describes what each layer proves;
-[docs/releasing.md](docs/releasing.md) covers the release sets and what remains
-unverified.
+`npm run check` reports `PENDING` for any bundle that has not been built; an
+unbuilt artifact is an assertion that has not been verified, never a pass.
+[docs/testing.md](docs/testing.md) describes what each layer proves and
+[docs/releasing.md](docs/releasing.md) covers the release gates.
+
+## Honest boundaries
+
+- No live end-to-end call to any social platform has been made from this
+  repository. Verification is against recorded API evidence (kept outside this
+  repository at `outputs/provider-api-evidence.md`) and controlled fixtures.
+- LinkedIn publishing pins an API version constant (`LINKEDIN_VERSION`) and is
+  awaiting re-verification against LinkedIn's currently supported versions.
+- Threads publishes in a single call with `auto_publish_text=true`.
+- A freshly deployed Cloudflare Worker has no tables: `status` fails until the
+  first `connect` initializes storage. That is expected first-run behaviour.
+- No npm publish, no deployment and no real credential use has been performed
+  for this tree.
 
 ## Contributing and licence
 
 Contributions require a Developer Certificate of Origin sign-off; see
-[CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Domain vocabulary
-is in [CONTEXT.md](CONTEXT.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
 
 Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Grant Dai.
+
+## More documentation
+
+- CLI reference: [docs/cli-manual.md](docs/cli-manual.md)
+- Agent quickstart: [docs/agent-quickstart.md](docs/agent-quickstart.md)
+- Self-hosted server and Worker: [docs/remote-compatibility.md](docs/remote-compatibility.md)
+- Architecture v1 specs: [docs/superpowers/specs/architecture-v1/](docs/superpowers/specs/architecture-v1/)

@@ -1,123 +1,188 @@
-# Retained remote path
+# Self-hosted server and Cloudflare Worker
 
-The pre-0.6 remote surface stays available: the Cloudflare Worker serves an HTTP
-API, and the `syndroo` CLI can still talk to a deployed instance with `doctor`
-and `posts ...`. This page covers only what is unique to running that surface.
-Package details live in
-[`packages/cloudflare-worker/README.md`](../packages/cloudflare-worker/README.md)
-and [`packages/sdk/README.md`](../packages/sdk/README.md).
+The remote surface is the same protocol v1 as the local CLI, served over HTTP.
+It is a separate deployment with its own connections, credentials, operations
+and idempotency records. It never reads the CLI's local state, and a local
+failure is not a reason to switch to it.
 
-The local CLI path never falls back to this surface, and the remote commands
-never read local state. The two share contracts, not code paths.
+Two runtimes implement it:
 
-## Status
+| Package | Runtime | State | Secrets |
+| --- | --- | --- | --- |
+| `@syndroo/server` | Node HTTP server | SQLite | encrypted store, key from deployment config |
+| `@syndroo/cloudflare` | Cloudflare Worker | D1 | AES-GCM with AAD binding and crypto-shred |
 
-| Piece | Version | Release role |
-| --- | --- | --- |
-| `@syndroo/cloudflare-worker` | `0.2.0-rc.1` | retained remote runtime |
-| `@syndroo/sdk` | `0.4.0-rc.1` | retained HTTP client |
+Status: neither has been deployed from this tree, and the first-run behaviour
+below has not been exercised against a real account. The SDK and Worker package
+READMEs under `packages/` still describe the pre-v1 `posts` surface and are not
+accurate for v1; the authoritative contract is this page.
 
-Bluesky and Threads are the Worker's release gates. X, Tumblr, and LinkedIn are
-experimental: implemented and locally tested, not validated against live
-accounts. This task performed no npm publish and did not verify the registry's
-current state; build and install the local tarball instead.
+## HTTP contract
 
-## Run it
-
-Two paths deploy the same Worker:
-
-- **Deploy to Cloudflare button** — the button in the root README. Cloudflare
-  creates an independent repository in your account (not a GitHub fork, with no
-  upstream relationship), provisions D1 and Queue, applies D1 migrations,
-  configures the Cron Trigger, and deploys the Worker. Cloudflare prompts for
-  `SYNDROO_API_KEY`; add platform secrets afterwards.
-- **Thin deployment template** — `Syndroo/syndroo-deploy-template` pins exact
-  package versions with a lockfile. It is prepared but has not been rehearsed
-  end to end, and it has no registry-backed lockfile until these versions are
-  published.
-
-### Local development
-
-```bash
-cp .dev.vars.example .dev.vars
-# fill in only the platform secrets you need locally
-npm ci
-npm run build               # workspace packages must resolve to dist for wrangler
-npm run db:migrate:local    # local D1 migrations
-npm run dev                 # local Worker, reading .dev.vars
+```text
+POST /v1/connect
+POST /v1/publish
+POST /v1/status
+GET  /health                          # no business information
+GET  /oauth/callback/:provider        # only when the OAuth module is configured
 ```
 
-`npm run dev` uses the local `.dev.vars` file and the local D1 database. It
-cannot reach production secrets, and `.dev.vars` must never be committed. The
-Worker entry in `wrangler.jsonc` imports workspace packages whose exports
-resolve to `dist`, so build the workspaces before the first local run.
+Every `/v1/*` request must carry `Authorization: Bearer <deployment secret>`.
+Authentication runs before any business input is read. `/health` is the only
+route that needs no credential; it returns `{"status":"ok"}` and proves
+reachability only. `/oauth/callback/:provider` is owned by the optional OAuth
+module and receives the browser request before authentication, because a browser
+holds no deployment bearer; when no OAuth module is configured the path is a
+plain `404`.
 
-### Production deploy from a checkout
+`POST /v1/status` has no business write side effect and responds with
+`Cache-Control: no-store`. Responses also set `X-Content-Type-Options: nosniff`
+and `Content-Security-Policy: default-src 'none'`.
 
-```bash
-npx wrangler secret put SYNDROO_API_KEY
-# then the required secrets for each selected platform, for example:
-npx wrangler secret put BLUESKY_IDENTIFIER
-npx wrangler secret put BLUESKY_PASSWORD
-npm run deploy              # production deploy through scripts/deploy.ts
+Requests must be `application/json` (optionally `; charset=utf-8`),
+`content-encoding` must be absent or `identity`, and the body is capped at 64 KiB.
+An `Idempotency-Key` header, when present, must match `[A-Za-z0-9._:-]{1,128}`;
+the same key with the same body replays the original result and the same key with
+a different body is a conflict.
+
+### Envelope
+
+```json
+{
+  "protocolVersion": 1,
+  "operation": "publish",
+  "ok": true,
+  "result": { "status": "pending", "operationId": "op_example", "phase": "execution", "deliveries": [] },
+  "error": null
+}
 ```
 
-Set the secrets before the deploy. Production uses the default environment;
-do not pass `--env local` when deploying. The platform secret names and their
-per-platform rules are listed in
-[`packages/cloudflare-worker/README.md`](../packages/cloudflare-worker/README.md).
+`ok` means the protocol call was handled, not that a platform published anything.
+Business results live in `result`; a failure carries a stable `code`, a static
+`message`, and bounded `details`.
 
-`scripts/deploy.ts` checks the declared D1 database, repairs a missing or stale
-generated database ID, applies pending migrations, deploys through a temporary
-ignored config, and removes that config afterwards. Apply migrations before
-deploying a Worker version that expects them.
+### Status codes
 
-### Maintenance switch
+| Code | When |
+| --- | --- |
+| `200` | Completed protocol response: a query, a connect action, or a prepared result |
+| `202` | A durable admitted execution that is still non-terminal (`pending`/`running`) |
+| `400` | Invalid input or an invalid provider |
+| `401` / `403` | Missing or wrong bearer / a forbidden action or untrusted provider |
+| `404` | Unknown route or record |
+| `405` | Wrong method for a `/v1/*` route |
+| `409` | A conflict such as `IDEMPOTENCY_CONFLICT`, `STALE_INTENT`, `APPROVAL_INVALID`, `RETRY_INELIGIBLE` |
+| `413` / `415` | Body too large / unsupported media type |
+| `429` / `504` | Rate limited / request timeout |
+| `500` | Durability failure or an oversized response |
+| `503` | Provider unavailable or state recovery required |
 
-`SYNDROO_MAINTENANCE` is an optional non-secret Worker variable. Only the exact
-string `true` enables it; an unset variable or any other value keeps normal
-operation.
+A `202` must never be reported as "not executed": an accepted operation whose
+queue notification failed is still admitted, not cancelled.
 
-- `true`: new `POST /v1/posts` requests are rejected with `503`
-  `SERVICE_UNAVAILABLE`. Reads, Queue delivery, and Cron keep running, so
-  already-accepted work is not lost.
-- `false`, or removing the variable, resumes accepting new posts.
+## SDK
 
-Retry after maintenance with the same `Idempotency-Key` and the same body.
+`@syndroo/sdk` is a dependency-free HTTP client for one deployment. It imports
+no Core and no Provider code.
 
-### Scheduling and retries
+```ts
+import { Syndroo } from "@syndroo/sdk";
 
-The Cron Trigger runs every 15 minutes
-(`wrangler.jsonc`, `"crons": ["*/15 * * * *"]`), which is the recovery cadence
-for scheduled posts and stale enqueues. It is not a delivery-time guarantee.
-Ambiguous provider outcomes — a timeout, a dropped connection, or a `5xx` after
-submission — are never retried automatically: the publication is marked
-ambiguous, and an operator verifies it on the platform instead of resending.
+const syndroo = new Syndroo({ baseUrl, apiKey });
 
-## API contract essentials
+const prepared = await syndroo.publish(
+  { type: "prepare", content: { text: "Hello" }, targets: [{ provider: "bluesky" }] },
+  { idempotencyKey: "req_example" },
+);
+```
 
-- Every `/v1/*` route requires `SYNDROO_API_KEY` as a Bearer token; `GET
-  /health` is public.
-- `POST /v1/posts` returns `202` when the request is accepted. Accepted is not
-  delivered: a post is delivered only when every selected publication reached
-  `published`.
-- An `Idempotency-Key` replays the original result when the body is unchanged;
-  the same key with a different body is a conflict.
-- Post statuses are `scheduled`, `queued`, `publishing`, `published`,
-  `partial`, and `failed`. An ambiguous publication outcome means the platform
-  may have accepted the content, so verify on the platform instead of resending.
-- The request body is capped at 64 KiB, and error bodies are shaped
-  `{"error":{"code":...,"message":...}}`.
+- `connect`, `publish`, `status` mirror the protocol request unions and return the
+  matching result type.
+- `wait(operationId, options)` polls `status({ type: "operation" })` only. Defaults
+  are a 2000 ms interval and a 120000 ms total wait, both bounded by the client.
+- The client never approves, confirms or resumes anything itself, and never
+  retries a business result. `failed`, `partial` and `unknown` are protocol
+  successes, not transport exceptions.
+- `timeoutMs` and `AbortSignal` end the client's wait only; they do not cancel
+  server work or re-publish.
+- Keep the API key in a trusted environment. It can publish; never ship it to a
+  browser.
 
-Platform credentials and per-platform publishing limits are documented in the
-Worker package README linked above.
+## Self-hosted server
 
-## Live checks
+`@syndroo/server` exposes `createSelfHostedRuntime(options)`, which returns an
+HTTP `server`, the composed `core`, and a `close()` function. Options:
 
-`npm run e2e:live -- --plan <file>` is the **legacy remote** live check: it runs
-`doctor` and `posts ...` against a deployed instance from an approved plan file.
-It does not exercise local publishing. Local live acceptance would publish real
-text through the local CLI and has not been run for `0.7.0-rc.1`.
+| Option | Meaning |
+| --- | --- |
+| `bearerSecret` | Exactly 32 random bytes encoded canonically as base64url (`[A-Za-z0-9_-]{43}`). |
+| `statePath`, `secretsPath` | SQLite state and encrypted secret locations. |
+| `secretStoreKey` | Key material for the encrypted credential store. |
+| `providers`, `providerContext` | Registry and per-provider context; the server requires an explicit import and registration, never a filesystem scan. |
+| `oauth` | Optional OAuth callback module. |
+| `scope`, `principalId` | Single-deployment scope and principal identity. |
+| `trustedProxyAddresses`, `requestTimeoutMs` | Canonical-origin resolution and request deadline (1 to 120000 ms). |
 
-For the full gate matrix, see [testing.md](testing.md). For the release
-process, see [releasing.md](releasing.md).
+The server is single-tenant and always enforces bearer authentication: there is
+no API to disable auth or disable security. An OAuth module is configuration, not
+a runtime switch: a deployment either starts with a complete module
+(`publicOrigin`, a `providers` list of 1 to 16 ids, and an optional `ttlMs` from
+60000 to 900000 ms, defaulting to 900000) or refuses to start.
+
+## Cloudflare Worker
+
+`@syndroo/cloudflare` exports a Worker that composes the same Core with D1 state,
+encrypted secrets, a work queue and cron recovery. It reads these bindings at
+request time:
+
+| Binding | Meaning |
+| --- | --- |
+| `DB` | D1 database. |
+| `WORK_QUEUE` | Queue producer used to notify admitted work. |
+| `QUEUE_NAME`, `DLQ_NAME` | Queue names; they must differ. |
+| `API_BEARER` | Deployment bearer, 32 to 1024 characters, no whitespace. |
+| `SECRET_KEY`, `RUNTIME_KEY` | Key material for the encrypted secret store and digests. |
+| `SCOPE` | Deployment scope, `[A-Za-z0-9._:-]{1,128}`. |
+| `PUBLIC_FETCH_STRICT` | Must be the exact string `enabled`. |
+
+If a binding is missing or malformed, the Worker returns `503` before handling
+the request. `queue` and `scheduled` entry points also assert the environment
+before doing work.
+
+### First-run behaviour
+
+A freshly deployed Worker has no tables. `status` fails until the first `connect`
+initializes storage; that is expected. The status path opens existing storage in
+read-only mode and never creates or repairs it, while the connect path initializes
+it. Connect once after a first deploy before relying on `status`.
+
+### Deployment configuration
+
+The Worker reads the bindings above, and the deployment must set Wrangler's
+`global_fetch_strictly_public` flag so that outbound fetches never reach private
+addresses. The `wrangler.jsonc` at the repository root is that config: it points
+at the built `packages/cloudflare/dist/worker.js`, sets the compatibility flag,
+and declares the bindings in the table above with no migrations directory,
+because the D1 schema is created on demand. Build the Worker before deploying —
+`npm run build --workspace @syndroo/cloudflare` — and create the D1 database, the
+two queues and the three secrets in the target account first. `npx wrangler
+deploy --dry-run` verifies the config without contacting an account; no
+deployment has been performed from this tree.
+
+## Migration from the pre-v1 path
+
+There is none, by design. Protocol v1 does not read, migrate or delete the old
+Worker's D1 data, the old CLI's local state, or any old credential reference.
+Deploying v1 alongside an older instance creates an independent service with its
+own records.
+
+## What is not verified
+
+- No server or Worker has been deployed from this tree.
+- No HTTP integration has been run against a real deployment; the handler,
+  authentication, SQLite, D1 and Worker paths are covered by tests and fixtures.
+- The SDK README and the Worker README in `packages/` describe the pre-v1
+  surface and have not been rewritten.
+
+See [testing.md](testing.md) for what the test layers cover and
+[releasing.md](releasing.md) for the release gates.

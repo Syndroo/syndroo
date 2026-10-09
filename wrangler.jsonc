@@ -1,41 +1,59 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syndroo",
-  "main": "packages/cloudflare-worker/src/index.ts",
+  // The Worker is a bundle: build it first with
+  // `npm run build --workspace @syndroo/cloudflare`. The bundle inlines Core and
+  // the official providers, so `nodejs_compat` is deliberately absent — the
+  // bundle gate refuses any `node:` import.
+  "main": "packages/cloudflare/dist/worker.js",
   "compatibility_date": "2026-09-02",
-  "compatibility_flags": ["nodejs_compat"],
-  // Optional, non-secret maintenance admission switch. Only the exact string
-  // "true" rejects new posts during a cutover; any other value, including an
-  // unset variable, keeps normal operation. Queue and Cron are not paused.
+  // Required by packages/cloudflare/src/transport.ts: the Worker must not be
+  // able to fetch a private or loopback address.
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "vars": {
-    "SYNDROO_MAINTENANCE": "false"
+    "QUEUE_NAME": "syndroo-work",
+    "DLQ_NAME": "syndroo-dead",
+    "SCOPE": "default",
+    // `assertEnv` refuses to start unless this is exactly `enabled`.
+    "PUBLIC_FETCH_STRICT": "enabled"
   },
+  // These are the only secrets the v1 Worker reads. Provider credentials are
+  // not deployment configuration; they are created by `syndroo connect` and
+  // stored encrypted under SECRET_KEY.
   "secrets": {
-    "required": [
-      "SYNDROO_API_KEY"
-    ]
+    "required": ["API_BEARER", "SECRET_KEY", "RUNTIME_KEY"]
   },
+  // No migrations directory: the D1 schema is created on demand by
+  // createD1Storage, so a fresh deployment answers `status` with a durability
+  // error until the first `connect` initializes storage.
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "syndroo",
-      "migrations_dir": "packages/cloudflare-worker/migrations"
+      "database_name": "syndroo"
     }
   ],
   "queues": {
     "producers": [
       {
-        "binding": "PUBLICATION_QUEUE",
-        "queue": "syndroo-publications"
+        "binding": "WORK_QUEUE",
+        "queue": "syndroo-work"
       }
     ],
     "consumers": [
       {
-        "queue": "syndroo-publications",
+        "queue": "syndroo-work",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 2,
         "retry_delay": 60
+      },
+      {
+        // The dead-letter consumer only acknowledges and classifies messages
+        // that exhausted their retries; it must never retry them.
+        "queue": "syndroo-dead",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 0
       }
     ]
   },
@@ -45,25 +63,5 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
-  },
-  // Wrangler only loads listed secrets locally. Missing platform credentials
-  // produce local warnings but do not prevent using another platform.
-  "env": {
-    "local": {
-      "name": "syndroo-local",
-      "vars": { "SYNDROO_MAINTENANCE": "false" },
-      "secrets": {
-        "required": ["SYNDROO_API_KEY", "BLUESKY_IDENTIFIER", "BLUESKY_PASSWORD", "BLUESKY_HOST", "THREADS_ACCESS_TOKEN", "X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "TUMBLR_CONSUMER_KEY", "TUMBLR_CONSUMER_SECRET", "TUMBLR_TOKEN", "TUMBLR_TOKEN_SECRET", "TUMBLR_BLOG", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR", "LINKEDIN_API_VERSION", "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"]
-      },
-      "d1_databases": [{
-        "binding": "DB",
-        "database_name": "syndroo",
-        "migrations_dir": "packages/cloudflare-worker/migrations"
-      }],
-      "queues": {
-        "producers": [{ "binding": "PUBLICATION_QUEUE", "queue": "syndroo-publications" }],
-        "consumers": [{ "queue": "syndroo-publications", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 2, "retry_delay": 60 }]
-      }
-    }
   }
 }

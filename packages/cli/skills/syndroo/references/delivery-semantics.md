@@ -1,55 +1,96 @@
-# Local delivery semantics
+# Delivery semantics
 
-Read this once a preview or a run has returned and you have to explain what happened.
+Read this once a prepare, execute or status result has returned and you must
+explain what happened.
 
-## A preview is not a publication
+## A prepare is not a publication
 
-A preview validates input and reads existing local state. It creates no state, takes no write lock, resolves no credentials, and makes no network calls. Exit `0` means the preview succeeded, not that anything reached a platform.
+A `prepare` validates the request, freezes one snapshot and returns an approval
+token. It sends nothing to any platform. Exit `0` means the prepare succeeded,
+not that anything was published.
 
-Only an execution sends content, and only its per-target results say what each platform did. A run is complete when every selected target succeeded and the result was persisted (`status: "succeeded"` with `durability: "committed"`).
+Only an `execute` sends content, and only its per-target `deliveries` say what
+each platform did.
 
-## Target statuses
+## Prepare result
 
-| Status | Meaning |
+```json
+{
+  "status": "confirmation_required",
+  "operationId": "op_example",
+  "approvalToken": "at_example",
+  "expiresAt": "2026-10-09T03:00:00.000Z",
+  "preview": []
+}
+```
+
+`preview` contains every target: its provider, its `connectionId`, the resolved
+`account`, the text or fields and any options. Show it in full before asking for
+confirmation. The token is consumed by the matching execute and never proves a
+human read the preview.
+
+## Execution result
+
+```json
+{
+  "phase": "execution",
+  "operationId": "op_example",
+  "status": "succeeded",
+  "deliveries": [
+    { "deliveryId": "dl_example", "connectionId": "conn_example", "account": { "provider": "bluesky", "accountId": "did:plc:…", "origin": "https://bsky.app" }, "attempts": 1, "outcome": { "status": "succeeded", "remoteId": "…", "url": "https://…" } }
+  ]
+}
+```
+
+| Aggregate `status` | Meaning |
 | --- | --- |
-| `not_started` | Frozen but not attempted. A deadline or a stop before the first attempt leaves it here |
-| `in_flight` | An attempt is recorded but no outcome is committed. While a writer is alive this is "in progress"; after a crash it is unknown |
-| `succeeded` | The provider accepted the content and returned an id |
-| `failed` | The provider refused it, or the request provably never reached it |
-| `unknown` | The write may have reached the platform. This is the honest answer for a timeout, a dropped connection, or a success response without a usable id |
+| `pending` / `running` | Admitted, not finished. Keep waiting; do not re-send. |
+| `succeeded` | Every target succeeded. |
+| `partial` | Some targets succeeded and others failed or did not start. |
+| `failed` | No target succeeded and at least one definitely failed. |
+| `unknown` | At least one target may have reached the platform, or a writer is still in flight. |
 
-`writeDisposition` carries the same distinction in machine-readable form: `applied`, `not_applied`, or `unknown`.
+A `durabilityWarning` of `OUTCOME_NOT_DURABLE` means a trusted result could not
+be written to local state. Report it and do not re-send.
 
-## Aggregate status and exit codes
+## Per-target outcome
 
-| Aggregate | When |
+| `outcome.status` | Meaning |
 | --- | --- |
-| `succeeded` | Every target succeeded |
-| `partial` | Some targets succeeded and others failed or never started |
-| `failed` | No target succeeded and at least one definitely failed |
-| `unknown` | At least one target is `unknown`, or a writer is still in flight |
-| `blocked` | Nothing was attempted, for example a deadline that passed before the first attempt |
-
-Exit codes follow the same order: `4` for an unknown write, then `1` for a result that could not be persisted, then `6` for a run that ended without full delivery, then `0`. A refusal before any content request is `2`, a declined prompt is `5`, and a signal is `130`.
+| `succeeded` | The provider accepted the content and returned an id (and usually a url). |
+| `failed` | The provider refused it, or the request provably never reached it (`disposition: "not_applied"`). |
+| `unknown` | The write may have reached the platform (`disposition: "unknown"`). The honest answer for a timeout, a dropped connection, or a response without a usable id. |
+| `not_started` | Frozen but never attempted (`disposition: "not_applied"`). |
+| `null` | No outcome is recorded yet; treat it as unresolved. |
 
 ## Unknown is a third outcome
 
-Report unknown as unknown. A provider that may have accepted the post before the connection dropped is not a clean failure, and treating it as one invites a duplicate.
+Report unknown as unknown. A provider that may have accepted the post before the
+connection dropped is not a clean failure, and treating it as one invites a
+duplicate.
 
-When a result is unknown, read it back with `syndroo receipts show <operation-id> --json` and stop. Do not send the post again under a new key, a new namespace, or a fresh state directory; that would publish the same text under a new identity. A retry is a separate, explicit decision: use `syndroo retry <operation-id> --to <csv> --yes --no-input` only for provably safe targets. Add `--dry-run` to preview without retrying.
+When a result is unknown, read it back with `syndroo status --operation
+<operationId> --json` and stop. Do not send the post again under a new request id
+or a fresh state directory. A retry is a separate, explicit decision.
 
 ## Retry rules
 
-- A succeeded target is never republished. Repeating the same delivery reports the original result with `reused: true` and sends nothing.
-- Only a definite `not_applied` failure is retryable, and only within the three-attempt budget for that logical delivery.
-- `retryNotBefore`, when present, must have passed.
-- A selection that includes an unknown target blocks the whole retry. The user can narrow the selection to other safe targets; the unknown record stays unknown.
-- Retrying after a credential change requires re-verifying the same stable account, and the preview shows the old and new binding so the user can confirm the change.
+- A succeeded target is never resent.
+- Only a definite `not_applied` failure is eligible, and only within the
+  per-target attempt budget.
+- A selection that includes an `unknown` target blocks the whole retry. Narrow it
+  to other safe targets; the unknown record stays unknown.
+- Retrying after a credential change requires the same stable account to be
+  re-verified.
 
-## Durability
-
-`durability: "failed"` means a trusted provider result could not be written to local state. The result is still reported, the exit code is `1`, and the same content must not be sent again. If a later query finds only an in-flight record, that record is unknown, because the outcome was never committed.
+```bash
+syndroo publish --retry op_example --to conn_example
+```
 
 ## What to report
 
-State the operation id, aggregate status, and durability, then every target: provider, stable account id, status, attempt count, and remote id when one exists. Name the targets that succeeded before the ones that did not, and keep delivered, not delivered, and unknown in three separate buckets. When a link is `null`, say that no verified link is known rather than constructing one.
+State the `operationId`, the aggregate status, and then every target: provider,
+stable account id, outcome status, attempt count and any remote id or url. Put the
+succeeded targets before the ones that did not, and keep delivered, not delivered
+and unknown in three separate buckets. When a url is absent, say no verified link
+is known rather than constructing one.

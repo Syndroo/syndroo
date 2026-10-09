@@ -3,13 +3,26 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
+import {
+  RELEASE_TRAIN,
+  REPOSITORY_URL,
+  REQUIRED_NODE_ENGINE,
+  type TrainPackage,
+} from "./release-train.js";
+
+/**
+ * The train under test is the module's own `RELEASE_TRAIN`, so this suite can
+ * never drift from the packages the checker actually validates. Every fixture
+ * is built from those definitions; nothing is hard-coded per package.
+ */
 const CHECKER_PATH = fileURLToPath(new URL("./release-train.js", import.meta.url));
 const FIXTURE_ROOT = await mkdtemp(join(tmpdir(), "syndroo-release-train-"));
+const CANDIDATE = "0.7.0-rc.1";
+const STABLE = "0.7.0";
 
 assert.ok(
   existsSync(CHECKER_PATH),
@@ -78,44 +91,22 @@ const FAKE_REGISTRY_MODULE = [
   "",
 ].join("\n");
 
-const BASE_MANIFESTS: Readonly<Record<string, Record<string, unknown>>> = {
-  sdk: {
-    name: "@syndroo/sdk",
-    directory: "packages/sdk",
-    files: ["dist", "LICENSE", "NOTICE", "README.md"],
-  },
-  cli: {
-    name: "@syndroo/cli",
-    directory: "packages/cli",
-    files: ["dist", "skills", "LICENSE", "NOTICE", "README.md"],
-    bin: { syndroo: "./dist/bin.js" },
-    dependsOn: "@syndroo/sdk",
-  },
-  worker: {
-    name: "@syndroo/cloudflare-worker",
-    directory: "packages/cloudflare-worker",
-    files: [
-      "dist",
-      "licenses",
-      "migrations",
-      "types",
-      "LICENSE",
-      "NOTICE",
-      "README.md",
-    ],
-    bin: { "syndroo-deploy": "./dist/deploy.js" },
-  },
-};
-
-type PackageKey = keyof typeof BASE_MANIFESTS;
-type Overrides = Partial<Record<PackageKey, Record<string, unknown>>>;
-
 type Fixture = {
   readonly dir: string;
   readonly outputPath: string;
   readonly statePath: string;
   readonly logPath: string;
   readonly preloadPath: string;
+};
+
+type CreateOptions = {
+  readonly version?: string;
+  readonly overrides?: Readonly<Record<string, Record<string, unknown>>>;
+  readonly remove?: readonly string[];
+  /** Extra workspace directories written beside the train packages. */
+  readonly extraWorkspaces?: Readonly<Record<string, Record<string, unknown>>>;
+  /** Root `workspaces` array; omitted fixtures declare no workspaces. */
+  readonly workspaces?: readonly string[];
 };
 
 type RunOptions = {
@@ -134,55 +125,60 @@ type CheckerRun = {
 
 async function createFixture(
   name: string,
-  options: {
-    readonly version?: string;
-    readonly overrides?: Overrides;
-    readonly remove?: readonly PackageKey[];
-  } = {},
+  options: CreateOptions = {},
 ): Promise<Fixture> {
   const dir = join(FIXTURE_ROOT, name);
-  const version = options.version ?? "0.4.0-rc.1";
+  const version = options.version ?? CANDIDATE;
 
   await mkdir(dir, { recursive: true });
   await writeFile(
     join(dir, "package.json"),
-    `${JSON.stringify({ name: "syndroo", private: true, version: "0.1.0" }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: "syndroo",
+        private: true,
+        version: "0.1.0",
+        ...(options.workspaces === undefined
+          ? {}
+          : { workspaces: [...options.workspaces] }),
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
-  await writeFile(join(dir, "wrangler.jsonc"), "{}\n", "utf8");
 
-  for (const [key, base] of Object.entries(BASE_MANIFESTS)) {
-    if (options.remove?.includes(key as PackageKey) === true) {
+  for (const definition of RELEASE_TRAIN) {
+    if (options.remove?.includes(definition.slug) === true) {
       continue;
     }
 
-    const manifest: Record<string, unknown> = {
+    await writePackage(dir, definition.directory, {
+      name: definition.name,
       version,
       license: "Apache-2.0",
-      repository: { type: "git", url: REPOSITORY_URL, directory: base["directory"] },
-      engines: { node: ">=22" },
+      repository: {
+        type: "git",
+        url: REPOSITORY_URL,
+        directory: definition.directory,
+      },
+      engines: { node: REQUIRED_NODE_ENGINE },
       publishConfig: { access: "public" },
-      ...base,
-      ...(options.overrides?.[key as PackageKey] ?? {}),
-    };
+      files: [...definition.requiredFiles],
+      ...(Object.keys(definition.requiredBins).length === 0
+        ? {}
+        : { bin: { ...definition.requiredBins } }),
+      ...(definition.dependsOn === undefined
+        ? {}
+        : { dependencies: { [definition.dependsOn]: version } }),
+      ...(options.overrides?.[definition.slug] ?? {}),
+    });
+  }
 
-    if (typeof manifest["dependsOn"] === "string") {
-      const dependency = manifest["dependsOn"];
-      const explicit = manifest["dependencies"] as Record<string, string> | undefined;
-      delete manifest["dependsOn"];
-      manifest["dependencies"] = {
-        [dependency]: manifest["version"],
-        ...explicit,
-      };
-    }
-
-    const packageDirectory = join(dir, base["directory"] as string);
-    await mkdir(packageDirectory, { recursive: true });
-    await writeFile(
-      join(packageDirectory, "package.json"),
-      `${JSON.stringify(manifest, null, 2)}\n`,
-      "utf8",
-    );
+  for (const [directory, manifest] of Object.entries(
+    options.extraWorkspaces ?? {},
+  )) {
+    await writePackage(dir, directory, manifest);
   }
 
   const statePath = join(dir, "registry-state.json");
@@ -199,6 +195,20 @@ async function createFixture(
   };
 }
 
+async function writePackage(
+  root: string,
+  directory: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  const packageDirectory = join(root, directory);
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(
+    join(packageDirectory, "package.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 async function setRegistryState(
   fixture: Fixture,
   state: Readonly<Record<string, unknown>>,
@@ -208,9 +218,8 @@ async function setRegistryState(
 
 function runChecker(fixture: Fixture, options: RunOptions = {}): CheckerRun {
   // The ambient release set is only what the caller supplied: a CI job that
-  // exports SYNDROO_RELEASE_SET must not silently turn the legacy `all` fixtures
-  // into CLI-set runs. Every fixture therefore starts from an explicit default
-  // and overrides it per test.
+  // exports SYNDROO_RELEASE_SET must not silently retarget a fixture. Every
+  // fixture therefore starts from an explicit default and overrides it per test.
   const env: Record<string, string> = {
     SYNDROO_RELEASE_SET: "all",
     PATH: process.env["PATH"] ?? "",
@@ -303,6 +312,55 @@ function order(result: CheckerRun): string[] {
   return packages.map((entry) => entry["name"] as string);
 }
 
+function trainNames(): string[] {
+  return RELEASE_TRAIN.map((definition) => definition.name);
+}
+
+function everyTrain(status: string): Record<string, string> {
+  return Object.fromEntries(RELEASE_TRAIN.map((definition) => [definition.slug, status]));
+}
+
+function packumentUrl(name: string): string {
+  return `https://registry.npmjs.org/${encodeURIComponent(name)}`;
+}
+
+/** The exact GitHub-output lines a run must write, derived from the train. */
+function expectedOutputs(options: {
+  readonly releaseSet?: string;
+  readonly version: string;
+  readonly stage: string;
+  readonly distTag: string;
+  readonly publishRequired: boolean;
+  readonly statuses: Readonly<Record<string, string>>;
+}): Record<string, string> {
+  const outputs: Record<string, string> = {
+    release_set: options.releaseSet ?? "all",
+    version: options.version,
+    stage: options.stage,
+    dist_tag: options.distTag,
+    publish_required: String(options.publishRequired),
+  };
+
+  for (const [slug, status] of Object.entries(options.statuses)) {
+    outputs[`${slug}_status`] = status;
+    outputs[`publish_${slug}`] = String(status === "publish");
+  }
+
+  return outputs;
+}
+
+/** The `packages` array for a registry run where every train package is absent. */
+function absentPlan(version: string): unknown[] {
+  return RELEASE_TRAIN.map((definition) => ({
+    name: definition.name,
+    slug: definition.slug,
+    version,
+    distTag: "next",
+    status: "publish",
+    detail: `${definition.name}@${version} is not published (HTTP 404)`,
+  }));
+}
+
 function publishedState(
   version: string,
   tags: Readonly<Record<string, string>> = {},
@@ -323,29 +381,22 @@ describe("release train manifest validation", () => {
     const result = runChecker(fixture);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readOutputs(fixture), {
-      release_set: "all",
-      version: "0.4.0-rc.1",
-      stage: "rc",
-      dist_tag: "next",
-      publish_required: "true",
-      sdk_status: "publish",
-      cli_status: "publish",
-      worker_status: "publish",
-      publish_sdk: "true",
-      publish_cli: "true",
-      publish_worker: "true",
-    });
-    assert.deepEqual(order(result), [
-      "@syndroo/sdk",
-      "@syndroo/cli",
-      "@syndroo/cloudflare-worker",
-    ]);
+    assert.deepEqual(
+      await readOutputs(fixture),
+      expectedOutputs({
+        version: CANDIDATE,
+        stage: "rc",
+        distTag: "next",
+        publishRequired: true,
+        statuses: everyTrain("publish"),
+      }),
+    );
+    assert.deepEqual(order(result), trainNames());
     assert.equal(result.json["registryChecked"], false);
   });
 
   it("accepts a complete final train and resolves the latest dist-tag", async () => {
-    const fixture = await createFixture("final-train", { version: "0.4.0" });
+    const fixture = await createFixture("final-train", { version: STABLE });
     const result = runChecker(fixture);
 
     assert.equal(result.status, 0, result.stderr);
@@ -356,7 +407,7 @@ describe("release train manifest validation", () => {
 
   it("rejects packages that do not share one train version", async () => {
     const fixture = await createFixture("version-mismatch", {
-      overrides: { cli: { version: "0.4.0-rc.2" } },
+      overrides: { cli: { version: "0.7.0-rc.2" } },
     });
     const result = runChecker(fixture);
 
@@ -365,25 +416,29 @@ describe("release train manifest validation", () => {
     assert.equal(existsSync(fixture.outputPath), false);
   });
 
-  it("rejects a CLI that does not depend on the exact SDK version", async () => {
+  it("rejects a CLI that does not depend on the exact provider-sdk version", async () => {
     const fixture = await createFixture("dependency-range", {
-      overrides: { cli: { dependencies: { "@syndroo/sdk": "^0.4.0-rc.1" } } },
+      overrides: {
+        cli: { dependencies: { "@syndroo/provider-sdk": `^${CANDIDATE}` } },
+      },
     });
 
     assertFailed(
       runChecker(fixture),
-      /must depend on exactly @syndroo\/sdk@0\.4\.0-rc\.1/,
+      /must depend on exactly @syndroo\/provider-sdk@0\.7\.0-rc\.1/,
     );
   });
 
-  it("rejects a CLI pinned to a different SDK version", async () => {
+  it("rejects a CLI pinned to a different provider-sdk version", async () => {
     const fixture = await createFixture("dependency-pin", {
-      overrides: { cli: { dependencies: { "@syndroo/sdk": "0.4.0-rc.0" } } },
+      overrides: {
+        cli: { dependencies: { "@syndroo/provider-sdk": "0.7.0-rc.0" } },
+      },
     });
 
     assertFailed(
       runChecker(fixture),
-      /must depend on exactly @syndroo\/sdk@0\.4\.0-rc\.1/,
+      /must depend on exactly @syndroo\/provider-sdk@0\.7\.0-rc\.1/,
     );
   });
 
@@ -398,14 +453,16 @@ describe("release train manifest validation", () => {
 
   it("rejects a package that is private by mistake", async () => {
     const fixture = await createFixture("private-package", {
-      overrides: { worker: { private: true } },
+      overrides: { cloudflare: { private: true } },
     });
 
     assertFailed(runChecker(fixture), /must not be private/);
   });
 
+  const firstTrainPackage: TrainPackage = RELEASE_TRAIN[0] as TrainPackage;
+
   const manifestCases: ReadonlyArray<
-    readonly [string, PackageKey, Record<string, unknown>, RegExp]
+    readonly [string, string, Record<string, unknown>, RegExp]
   > = [
     ["a wrong license", "sdk", { license: "MIT" }, /must use Apache-2\.0/],
     [
@@ -421,12 +478,12 @@ describe("release train manifest validation", () => {
       /repository directory must be packages\/sdk/,
     ],
     ["a missing publishConfig", "cli", { publishConfig: undefined }, /publishConfig\.access must be "public"/],
-    ["a wrong engines range", "cli", { engines: { node: ">=20" } }, /engines\.node must be ">=22"/],
-    ["a missing file entry", "worker", { files: ["dist", "LICENSE"] }, /"files" must include "migrations"/],
+    ["a wrong engines range", "cli", { engines: { node: ">=22" } }, new RegExp(`engines\\.node must be "${REQUIRED_NODE_ENGINE.replace(/[.]/gu, "\\.")}"`)],
+    ["a missing file entry", "cloudflare", { files: ["dist/worker.js", "LICENSE"] }, /"files" must include "dist\/index\.d\.ts"/],
     ["a wrong bin target", "cli", { bin: { syndroo: "./bin/syndroo.js" } }, /bin syndroo must point at \.\/dist\/bin\.js/],
-    ["a workspace protocol dependency", "cli", { dependencies: { "@syndroo/sdk": "workspace:^" } }, /workspace protocol/],
-    ["a private runtime dependency", "worker", { dependencies: { "@syndroo/core": "0.1.0" } }, /must not depend on the private workspace package @syndroo\/core/],
-    ["a malformed version", "sdk", { version: "0.4" }, /must be <major>\.<minor>\.<patch>/],
+    ["a workspace protocol dependency", "cli", { dependencies: { "@syndroo/provider-sdk": "workspace:^" } }, /workspace protocol/],
+    ["a private runtime dependency", "cloudflare", { dependencies: { "@syndroo/core": "0.1.0" } }, /must not depend on the private workspace package @syndroo\/core/],
+    ["a malformed version", "provider-sdk", { version: "0.7" }, /must be <major>\.<minor>\.<patch>/],
     ["a wrong package name", "sdk", { name: "@syndroo/other" }, /expected package name @syndroo\/sdk/],
   ];
 
@@ -442,6 +499,62 @@ describe("release train manifest validation", () => {
       assert.equal(existsSync(fixture.outputPath), false);
     });
   }
+
+  it("names the first train package in the order it publishes", async () => {
+    assert.equal(firstTrainPackage.name, "@syndroo/provider-sdk");
+  });
+});
+
+describe("workspace coverage", () => {
+  it("accepts a workspace set fully covered by the train plus private packages", async () => {
+    const fixture = await createFixture("coverage-ok", {
+      workspaces: [
+        ...RELEASE_TRAIN.map((definition) => definition.directory),
+        "packages/core",
+      ],
+      extraWorkspaces: {
+        "packages/core": {
+          name: "@syndroo/core",
+          version: CANDIDATE,
+          private: true,
+        },
+      },
+    });
+
+    const result = runChecker(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("rejects a public workspace that is not in the train", async () => {
+    const fixture = await createFixture("coverage-public-extra", {
+      workspaces: [
+        ...RELEASE_TRAIN.map((definition) => definition.directory),
+        "packages/extra",
+      ],
+      extraWorkspaces: {
+        "packages/extra": { name: "@syndroo/extra", version: CANDIDATE },
+      },
+    });
+
+    assertFailed(
+      runChecker(fixture),
+      /workspace packages\/extra \(@syndroo\/extra\) is public but is not in the release train/,
+    );
+  });
+
+  it("rejects a train entry that is not a declared workspace", async () => {
+    const fixture = await createFixture("coverage-train-missing", {
+      workspaces: RELEASE_TRAIN.filter((definition) => definition.slug !== "sdk").map(
+        (definition) => definition.directory,
+      ),
+    });
+
+    assertFailed(
+      runChecker(fixture),
+      /@syndroo\/sdk is in the release train but packages\/sdk is not a declared workspace/,
+    );
+  });
 });
 
 describe("release event agreement", () => {
@@ -450,7 +563,7 @@ describe("release event agreement", () => {
     const result = runChecker(fixture, {
       env: {
         GITHUB_EVENT_NAME: "release",
-        SYNDROO_RELEASE_TAG: "v0.4.0-rc.1",
+        SYNDROO_RELEASE_TAG: `v${CANDIDATE}`,
         SYNDROO_RELEASE_PRERELEASE: "true",
       },
     });
@@ -463,20 +576,20 @@ describe("release event agreement", () => {
     const result = runChecker(fixture, {
       env: {
         GITHUB_EVENT_NAME: "release",
-        SYNDROO_RELEASE_TAG: "v0.4.0",
+        SYNDROO_RELEASE_TAG: `v${STABLE}`,
         SYNDROO_RELEASE_PRERELEASE: "false",
       },
     });
 
-    assertFailed(result, /does not match the train version 0\.4\.0-rc\.1/);
+    assertFailed(result, /does not match the train version 0\.7\.0-rc\.1/);
   });
 
   it("rejects a stable train published as a GitHub prerelease", async () => {
-    const fixture = await createFixture("release-event-stable", { version: "0.4.0" });
+    const fixture = await createFixture("release-event-stable", { version: STABLE });
     const result = runChecker(fixture, {
       env: {
         GITHUB_EVENT_NAME: "release",
-        SYNDROO_RELEASE_TAG: "v0.4.0",
+        SYNDROO_RELEASE_TAG: `v${STABLE}`,
         SYNDROO_RELEASE_PRERELEASE: "true",
       },
     });
@@ -487,7 +600,7 @@ describe("release event agreement", () => {
   it("rejects incomplete release metadata", async () => {
     const fixture = await createFixture("release-event-partial");
     const result = runChecker(fixture, {
-      env: { GITHUB_EVENT_NAME: "release", SYNDROO_RELEASE_TAG: "v0.4.0-rc.1" },
+      env: { GITHUB_EVENT_NAME: "release", SYNDROO_RELEASE_TAG: `v${CANDIDATE}` },
     });
 
     assertFailed(result, /must be set together/);
@@ -521,11 +634,10 @@ describe("dist-tag guard", () => {
 describe("registry planning", () => {
   it("records every package as publishable when the registry has none of them", async () => {
     const fixture = await createFixture("registry-all-absent");
-    await setRegistryState(fixture, {
-      "@syndroo/sdk": ABSENT,
-      "@syndroo/cli": ABSENT,
-      "@syndroo/cloudflare-worker": ABSENT,
-    });
+    await setRegistryState(
+      fixture,
+      Object.fromEntries(RELEASE_TRAIN.map((definition) => [definition.name, ABSENT])),
+    );
 
     const result = runChecker(fixture, {
       preload: true,
@@ -533,43 +645,13 @@ describe("registry planning", () => {
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(statuses(result), {
-      sdk: "publish",
-      cli: "publish",
-      worker: "publish",
-    });
+    assert.deepEqual(statuses(result), everyTrain("publish"));
     assert.equal(result.json["publishRequired"], true);
-    assert.deepEqual(result.json["packages"], [
-      {
-        name: "@syndroo/sdk",
-        slug: "sdk",
-        version: "0.4.0-rc.1",
-        distTag: "next",
-        status: "publish",
-        detail: "@syndroo/sdk@0.4.0-rc.1 is not published (HTTP 404)",
-      },
-      {
-        name: "@syndroo/cli",
-        slug: "cli",
-        version: "0.4.0-rc.1",
-        distTag: "next",
-        status: "publish",
-        detail: "@syndroo/cli@0.4.0-rc.1 is not published (HTTP 404)",
-      },
-      {
-        name: "@syndroo/cloudflare-worker",
-        slug: "worker",
-        version: "0.4.0-rc.1",
-        distTag: "next",
-        status: "publish",
-        detail: "@syndroo/cloudflare-worker@0.4.0-rc.1 is not published (HTTP 404)",
-      },
-    ]);
-    assert.deepEqual(await readRegistryRequests(fixture), [
-      "https://registry.npmjs.org/%40syndroo%2Fsdk",
-      "https://registry.npmjs.org/%40syndroo%2Fcli",
-      "https://registry.npmjs.org/%40syndroo%2Fcloudflare-worker",
-    ]);
+    assert.deepEqual(result.json["packages"], absentPlan(CANDIDATE));
+    assert.deepEqual(
+      await readRegistryRequests(fixture),
+      RELEASE_TRAIN.map((definition) => packumentUrl(definition.name)),
+    );
   });
 
   it("does not contact the registry unless the check is enabled", async () => {
@@ -582,12 +664,16 @@ describe("registry planning", () => {
   });
 
   it("accepts a fully published final train already on the latest tag", async () => {
-    const fixture = await createFixture("registry-final-complete", { version: "0.4.0" });
-    await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0", { latest: "0.4.0", next: "0.3.0" }),
-      "@syndroo/cli": publishedState("0.4.0", { latest: "0.4.0" }),
-      "@syndroo/cloudflare-worker": publishedState("0.4.0", { latest: "0.4.0" }),
-    });
+    const fixture = await createFixture("registry-final-complete", { version: STABLE });
+    await setRegistryState(
+      fixture,
+      Object.fromEntries(
+        RELEASE_TRAIN.map((definition) => [
+          definition.name,
+          publishedState(STABLE, { latest: STABLE }),
+        ]),
+      ),
+    );
 
     const result = runChecker(fixture, {
       preload: true,
@@ -595,35 +681,37 @@ describe("registry planning", () => {
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(statuses(result), {
-      sdk: "already-published",
-      cli: "already-published",
-      worker: "already-published",
-    });
+    assert.deepEqual(statuses(result), everyTrain("already-published"));
     assert.equal(result.json["publishRequired"], false);
     assert.match(String(result.json["nextStep"]), /nothing to publish/);
-    assert.deepEqual(await readOutputs(fixture), {
-      release_set: "all",
-      version: "0.4.0",
-      stage: "final",
-      dist_tag: "latest",
-      publish_required: "false",
-      sdk_status: "already-published",
-      cli_status: "already-published",
-      worker_status: "already-published",
-      publish_sdk: "false",
-      publish_cli: "false",
-      publish_worker: "false",
-    });
+    assert.deepEqual(
+      await readOutputs(fixture),
+      expectedOutputs({
+        version: STABLE,
+        stage: "final",
+        distTag: "latest",
+        publishRequired: false,
+        statuses: everyTrain("already-published"),
+      }),
+    );
   });
 
   it("rejects a final train whose latest dist-tag points somewhere else", async () => {
-    const fixture = await createFixture("registry-wrong-tag", { version: "0.4.0" });
-    await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0", { latest: "0.3.5" }),
-      "@syndroo/cli": publishedState("0.4.0", { latest: "0.4.0" }),
-      "@syndroo/cloudflare-worker": publishedState("0.4.0", { latest: "0.4.0" }),
-    });
+    const fixture = await createFixture("registry-wrong-tag", { version: STABLE });
+    await setRegistryState(
+      fixture,
+      Object.fromEntries(
+        RELEASE_TRAIN.map((definition) => [
+          definition.name,
+          publishedState(
+            STABLE,
+            definition.name === "@syndroo/sdk"
+              ? { latest: "0.6.5" }
+              : { latest: STABLE },
+          ),
+        ]),
+      ),
+    );
 
     const result = runChecker(fixture, {
       preload: true,
@@ -632,7 +720,7 @@ describe("registry planning", () => {
 
     assertFailed(
       result,
-      /`latest` dist-tag for @syndroo\/sdk points at "0\.3\.5", not 0\.4\.0/,
+      /`latest` dist-tag for @syndroo\/sdk points at "0\.6\.5", not 0\.7\.0/,
     );
     assert.equal(existsSync(fixture.outputPath), false);
   });
@@ -640,12 +728,10 @@ describe("registry planning", () => {
   it("rejects a release candidate that is already the latest dist-tag", async () => {
     const fixture = await createFixture("registry-rc-on-latest");
     await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0-rc.1", {
-        latest: "0.4.0-rc.1",
-        next: "0.4.0-rc.1",
+      "@syndroo/provider-sdk": publishedState(CANDIDATE, {
+        latest: CANDIDATE,
+        next: CANDIDATE,
       }),
-      "@syndroo/cli": ABSENT,
-      "@syndroo/cloudflare-worker": ABSENT,
     });
 
     const result = runChecker(fixture, {
@@ -659,12 +745,10 @@ describe("registry planning", () => {
   it("reports a partly published train as publishable without republishing", async () => {
     const fixture = await createFixture("registry-partial");
     await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0-rc.1", {
-        latest: "0.2.0",
-        next: "0.4.0-rc.1",
+      "@syndroo/provider-sdk": publishedState(CANDIDATE, {
+        latest: "0.6.0",
+        next: CANDIDATE,
       }),
-      "@syndroo/cli": ABSENT,
-      "@syndroo/cloudflare-worker": ABSENT,
     });
 
     const result = runChecker(fixture, {
@@ -673,26 +757,22 @@ describe("registry planning", () => {
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(statuses(result), {
-      sdk: "already-published",
-      cli: "publish",
-      worker: "publish",
-    });
+    assert.equal(statuses(result)["provider-sdk"], "already-published");
+    assert.equal(statuses(result)["cli"], "publish");
     assert.equal(result.json["publishRequired"], true);
     assert.match(
       String(result.json["nextStep"]),
-      /Publish only @syndroo\/cli -> @syndroo\/cloudflare-worker/,
+      /Publish only @syndroo\/provider-bluesky/,
     );
     assert.match(String(result.json["nextStep"]), /must not be republished/);
-    assert.equal((await readOutputs(fixture))["publish_sdk"], "false");
+    assert.equal((await readOutputs(fixture))["publish_provider-sdk"], "false");
   });
 
   it("rejects a train whose packages are published out of order", async () => {
     const fixture = await createFixture("registry-order");
     await setRegistryState(fixture, {
-      "@syndroo/sdk": ABSENT,
-      "@syndroo/cli": publishedState("0.4.0-rc.1", { next: "0.4.0-rc.1" }),
-      "@syndroo/cloudflare-worker": publishedState("0.4.0-rc.1", { next: "0.4.0-rc.1" }),
+      "@syndroo/provider-sdk": ABSENT,
+      "@syndroo/cli": publishedState(CANDIDATE, { next: CANDIDATE }),
     });
 
     const result = runChecker(fixture, {
@@ -702,7 +782,7 @@ describe("registry planning", () => {
 
     assertFailed(
       result,
-      /Publish order violated: @syndroo\/cli is already published but @syndroo\/sdk is not/,
+      /Publish order violated: @syndroo\/cli is already published but @syndroo\/provider-sdk is not/,
     );
     assert.equal(existsSync(fixture.outputPath), false);
   });
@@ -711,9 +791,7 @@ describe("registry planning", () => {
     it(`fails closed on registry HTTP ${status} and stops the train`, async () => {
       const fixture = await createFixture(`registry-${status}`);
       await setRegistryState(fixture, {
-        "@syndroo/sdk": ABSENT,
-        "@syndroo/cli": { mode: "http", status: Number(status) },
-        "@syndroo/cloudflare-worker": ABSENT,
+        "@syndroo/provider-bluesky": { mode: "http", status: Number(status) },
       });
 
       const result = runChecker(fixture, {
@@ -725,23 +803,25 @@ describe("registry planning", () => {
         result,
         new RegExp(`npm registry check failed \\(HTTP ${status}\\); refusing to publish`),
       );
-      assert.deepEqual(statuses(result), {
-        sdk: "publish",
-        cli: "blocked",
-        worker: "blocked",
-      });
+      const after = statuses(result);
+
+      assert.equal(after["provider-sdk"], "publish");
+      assert.equal(after["provider-bluesky"], "blocked");
+      assert.equal(after["cli"], "blocked");
       assert.equal(existsSync(fixture.outputPath), false);
-      // The Worker packument is never requested once the CLI check has failed.
+      // No packument beyond the failing one is requested.
       assert.deepEqual(await readRegistryRequests(fixture), [
-        "https://registry.npmjs.org/%40syndroo%2Fsdk",
-        "https://registry.npmjs.org/%40syndroo%2Fcli",
+        packumentUrl("@syndroo/provider-sdk"),
+        packumentUrl("@syndroo/provider-bluesky"),
       ]);
     });
   }
 
   it("fails closed when the registry call throws", async () => {
     const fixture = await createFixture("registry-network-error");
-    await setRegistryState(fixture, { "@syndroo/sdk": { mode: "network-error" } });
+    await setRegistryState(fixture, {
+      "@syndroo/provider-sdk": { mode: "network-error" },
+    });
 
     const result = runChecker(fixture, {
       preload: true,
@@ -754,7 +834,9 @@ describe("registry planning", () => {
 
   it("fails closed on a packument the checker cannot read", async () => {
     const fixture = await createFixture("registry-unreadable");
-    await setRegistryState(fixture, { "@syndroo/sdk": { mode: "unreadable" } });
+    await setRegistryState(fixture, {
+      "@syndroo/provider-sdk": { mode: "unreadable" },
+    });
 
     const result = runChecker(fixture, {
       preload: true,
@@ -766,15 +848,14 @@ describe("registry planning", () => {
 });
 
 describe("partial publish recovery", () => {
-  it("stops after the CLI publish fails and never announces a finished train", async () => {
+  it("stops after a mid-train publish fails and never announces a finished train", async () => {
     const fixture = await createFixture("recovery-failure");
     await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0-rc.1", {
-        latest: "0.2.0",
-        next: "0.4.0-rc.1",
+      "@syndroo/provider-sdk": publishedState(CANDIDATE, {
+        latest: "0.6.0",
+        next: CANDIDATE,
       }),
-      "@syndroo/cli": { mode: "http", status: 500 },
-      "@syndroo/cloudflare-worker": ABSENT,
+      "@syndroo/provider-bluesky": { mode: "http", status: 500 },
     });
 
     const result = runChecker(fixture, {
@@ -784,34 +865,34 @@ describe("partial publish recovery", () => {
 
     assert.notEqual(result.status, 0);
     assert.equal(result.json["ok"], false);
-    assert.deepEqual(statuses(result), {
-      sdk: "already-published",
-      cli: "blocked",
-      worker: "blocked",
-    });
+
+    const after = statuses(result);
+
+    assert.equal(after["provider-sdk"], "already-published");
+    assert.equal(after["provider-bluesky"], "blocked");
+    assert.equal(after["cli"], "blocked");
 
     const packages = result.json["packages"] as Array<Record<string, string>>;
+    const cliEntry = packages.find((entry) => entry["slug"] === "cli");
 
     assert.equal(
-      packages[2]?.["detail"],
+      cliEntry?.["detail"],
       "not attempted; an earlier registry check or package in the train failed",
     );
     assert.equal(existsSync(fixture.outputPath), false);
     assert.deepEqual(await readRegistryRequests(fixture), [
-      "https://registry.npmjs.org/%40syndroo%2Fsdk",
-      "https://registry.npmjs.org/%40syndroo%2Fcli",
+      packumentUrl("@syndroo/provider-sdk"),
+      packumentUrl("@syndroo/provider-bluesky"),
     ]);
   });
 
-  it("resumes on the remaining packages and never republishes the SDK", async () => {
+  it("resumes on the remaining packages and never republishes the first one", async () => {
     const fixture = await createFixture("recovery-resume");
     await setRegistryState(fixture, {
-      "@syndroo/sdk": publishedState("0.4.0-rc.1", {
-        latest: "0.2.0",
-        next: "0.4.0-rc.1",
+      "@syndroo/provider-sdk": publishedState(CANDIDATE, {
+        latest: "0.6.0",
+        next: CANDIDATE,
       }),
-      "@syndroo/cli": ABSENT,
-      "@syndroo/cloudflare-worker": ABSENT,
     });
 
     const result = runChecker(fixture, {
@@ -820,37 +901,30 @@ describe("partial publish recovery", () => {
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(statuses(result), {
-      sdk: "already-published",
-      cli: "publish",
-      worker: "publish",
-    });
-    assert.match(result.stderr, /already published, skipping: @syndroo\/sdk/);
+    assert.equal(statuses(result)["provider-sdk"], "already-published");
+    assert.equal(statuses(result)["cli"], "publish");
+    assert.match(
+      result.stderr,
+      /already published, skipping: @syndroo\/provider-sdk/,
+    );
 
     const outputs = await readOutputs(fixture);
 
-    // No publish action is ever planned for the SDK, so the published version
-    // can never be overwritten by a resumed run.
-    assert.equal(outputs["publish_sdk"], "false");
-    assert.equal(outputs["sdk_status"], "already-published");
+    // No publish action is ever planned for the published package, so a resumed
+    // run can never overwrite it.
+    assert.equal(outputs["publish_provider-sdk"], "false");
+    assert.equal(outputs["provider-sdk_status"], "already-published");
     assert.equal(outputs["publish_cli"], "true");
-    assert.equal(outputs["publish_worker"], "true");
   });
 });
 
 /**
- * The 0.6 candidate publishes the CLI alone and self-contained. The `all` set
- * above keeps its historical rules; these tests cover the narrowed set, where
- * the SDK pin is replaced by a stricter rule: no workspace runtime dependency.
+ * The narrowed CLI release set. It publishes only `@syndroo/cli`, but it never
+ * relaxes the exact-version pin on the packages the CLI builds against.
  */
-describe("cli-only release set", () => {
-  it("accepts a self-contained CLI candidate at an independent version", async () => {
-    const fixture = await createFixture("cli-set-candidate", {
-      version: "0.6.0-rc.1",
-    });
-
-    await dropCliRuntimeDependencies(fixture);
-
+describe("cli release set", () => {
+  it("narrows the set to the CLI at the train version", async () => {
+    const fixture = await createFixture("cli-set-candidate");
     const result = runChecker(fixture, {
       env: { SYNDROO_RELEASE_SET: "cli" },
     });
@@ -861,18 +935,20 @@ describe("cli-only release set", () => {
     const outputs = await readOutputs(fixture);
 
     assert.equal(outputs["release_set"], "cli");
-    assert.equal(outputs["version"], "0.6.0-rc.1");
+    assert.equal(outputs["version"], CANDIDATE);
     assert.equal(outputs["dist_tag"], "next");
     assert.equal(outputs["cli_status"], "publish");
     assert.equal(outputs["publish_cli"], "true");
-    // The SDK and Worker are out of the set, so they are not planned at all.
-    assert.equal(outputs["sdk_status"], undefined);
-    assert.equal(outputs["worker_status"], undefined);
+    // Every other train package is out of the set, so it is not planned at all.
+    assert.equal(outputs["provider-sdk_status"], undefined);
+    assert.equal(outputs["cloudflare_status"], undefined);
   });
 
-  it("rejects a CLI that keeps a workspace runtime dependency", async () => {
+  it("still enforces the CLI's exact provider-sdk pin", async () => {
     const fixture = await createFixture("cli-set-coupled", {
-      version: "0.6.0-rc.1",
+      overrides: {
+        cli: { dependencies: { "@syndroo/provider-sdk": `^${CANDIDATE}` } },
+      },
     });
 
     const result = runChecker(fixture, {
@@ -880,37 +956,20 @@ describe("cli-only release set", () => {
     });
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /must be self-contained/u);
-    assert.match(result.stderr, /@syndroo\/sdk/u);
+    assert.match(
+      result.stderr,
+      /must depend on exactly @syndroo\/provider-sdk@0\.7\.0-rc\.1/u,
+    );
   });
 
-  it("still rejects an unknown release set instead of falling back", async () => {
-    const fixture = await createFixture("cli-set-unknown", {
-      version: "0.6.0-rc.1",
-    });
+  it("rejects an unknown release set instead of falling back", async () => {
+    const fixture = await createFixture("cli-set-unknown");
 
     const result = runChecker(fixture, {
-      env: { SYNDROO_RELEASE_SET: "cli-and-worker" },
+      env: { SYNDROO_RELEASE_SET: "cli-and-cloudflare" },
     });
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /SYNDROO_RELEASE_SET must be "all" or "cli"/u);
   });
 });
-
-/** Removes the SDK pin so the fixture models a bundled, self-contained CLI. */
-async function dropCliRuntimeDependencies(fixture: Fixture): Promise<void> {
-  const manifestPath = join(fixture.dir, "packages", "cli", "package.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<
-    string,
-    unknown
-  >;
-
-  delete manifest["dependencies"];
-
-  await writeFile(
-    manifestPath,
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf8",
-  );
-}

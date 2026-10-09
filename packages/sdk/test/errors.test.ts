@@ -1,283 +1,161 @@
-import { afterEach, describe, expect, it } from "vitest";
+/**
+ * The error surface is static on purpose: SDK errors reach logs, so no code
+ * path may build a message from a base URL, a token, a key or a response body.
+ */
 
-import {
-  SyndrooApiError,
-  SyndrooClient,
-  SyndrooResponseError,
-  type SyndrooClientOptions,
-} from "../src/index.js";
-import {
-  jsonResponse,
-  textResponse,
-  startFixtureServer,
-  type FixtureServer,
-  type FixtureHandler,
-} from "./support/loopback.js";
+import { describe, expect, it } from "vitest";
+import { inspect } from "node:util";
 
-const API_KEY = "test-instance-key-not-a-real-secret";
-const servers: FixtureServer[] = [];
+import { SyndrooError, isSyndrooError } from "../src/index.js";
+import type { SyndrooErrorCode } from "../src/index.js";
+import { projectServerError } from "../src/errors.js";
 
-afterEach(async () => {
-  while (servers.length > 0) {
-    const server = servers.pop();
+/** A distinctive value that must never survive into anything a log can print. */
+const CANARY = "CANARY-do-not-log-3f6f0c1e";
 
-    if (server !== undefined) {
-      await server.close();
-    }
+/** Everything about an error that can end up in a log line. */
+function printable(error: unknown): string {
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(error.message, error.stack ?? "");
   }
-});
-
-async function fixture(handler: FixtureHandler): Promise<FixtureServer> {
-  const server = await startFixtureServer(handler);
-  servers.push(server);
-  return server;
-}
-
-function client(
-  server: FixtureServer,
-  options: Partial<SyndrooClientOptions> = {},
-): SyndrooClient {
-  return new SyndrooClient({ baseUrl: server.url, apiKey: API_KEY, ...options });
-}
-
-function errorResponse(
-  status: number,
-  code: string,
-  message: string,
-): Promise<FixtureServer> {
-  return fixture((_request, response) => {
-    if (status === 429) {
-      response.setHeader("retry-after", "2");
-    }
-
-    jsonResponse(response, status, { error: { code, message } });
-  });
-}
-
-const CASES = [
-  {
-    status: 400,
-    code: "INVALID_REQUEST",
-    message: "platforms must be a non-empty array",
-    applied: false,
-  },
-  {
-    status: 401,
-    code: "UNAUTHORIZED",
-    message: "Unauthorized",
-    applied: false,
-  },
-  {
-    status: 404,
-    code: "POST_NOT_FOUND",
-    message: "Post not found",
-    applied: false,
-  },
-  {
-    status: 409,
-    code: "IDEMPOTENCY_CONFLICT",
-    message: "Idempotency-Key was already used with a different request",
-    applied: false,
-  },
-  {
-    status: 422,
-    code: "PLATFORM_NOT_CONFIGURED",
-    message: "platforms[0] is not configured on this deployment",
-    applied: false,
-  },
-  {
-    status: 429,
-    code: "RATE_LIMITED",
-    message: "Too many requests",
-    applied: false,
-  },
-  {
-    status: 503,
-    code: "SERVICE_UNAVAILABLE",
-    message:
-      "Syndroo is in maintenance mode and is not accepting new posts; retry later with the same Idempotency-Key and request body",
-    applied: true,
-  },
-] as const;
-
-describe("typed HTTP errors", () => {
-  for (const testCase of CASES) {
-    it(`surfaces HTTP ${testCase.status} ${testCase.code} as a SyndrooApiError`, async () => {
-      const server = await errorResponse(
-        testCase.status,
-        testCase.code,
-        testCase.message,
-      );
-
-      const error = expectApiError(
-        await captured(
-          client(server).posts.create({ content: "Hello", platforms: ["bluesky"] }),
-        ),
-      );
-
-      expect(error.status).toBe(testCase.status);
-      expect(error.code).toBe(testCase.code);
-      expect(error.message).toBe(testCase.message);
-      expect(error.requestMayHaveBeenApplied).toBe(testCase.applied);
-      expect(error.retryable).toBe(testCase.status === 429 || testCase.status >= 500);
-      expect(error.message).not.toContain(API_KEY);
-      expect(server.requestCount()).toBe(1);
-    });
-  }
-
-  it("reads Retry-After into a bounded backpressure hint", async () => {
-    const server = await errorResponse(
-      429,
-      "RATE_LIMITED",
-      "Too many requests",
-    );
-
-    const error = expectApiError(
-      await captured(
-        client(server).posts.get("post_1"),
-      ),
-    );
-
-    expect(error.retryAfterMs).toBe(2_000);
-  });
-
-  it("never treats a 5xx as a rejection of a write", async () => {
-    const server = await errorResponse(
-      500,
-      "INTERNAL_ERROR",
-      "Internal server error",
-    );
-
-    const error = expectApiError(
-      await captured(
-        client(server).posts.create({ content: "Hello", platforms: ["bluesky"] }),
-      ),
-    );
-
-    expect(error.requestMayHaveBeenApplied).toBe(true);
-    expect(error.message).not.toMatch(/not created|did not create/u);
-  });
-});
-
-describe("malformed responses", () => {
-  it("keeps a non-JSON body bounded and never reports a write as accepted", async () => {
-    const server = await fixture((_request, response) => {
-      textResponse(response, 202, "<html>not json</html>", "text/html");
-    });
-
-    const error = expectResponseError(
-      await captured(
-        client(server).posts.create({ content: "Hello", platforms: ["bluesky"] }),
-      ),
-    );
-
-    expect(error.status).toBe(202);
-    expect(error.requestMayHaveBeenApplied).toBe(true);
-    expect(error.preview).toBe("<html>not json</html>");
-    expect(error.message).toContain("not JSON");
-  });
-
-  it("bounds the preview of an oversized non-JSON body", async () => {
-    const server = await fixture((_request, response) => {
-      textResponse(response, 200, "x".repeat(10_000), "text/html");
-    });
-
-    const error = expectResponseError(
-      await captured(client(server).posts.get("post_1")),
-    );
-
-    expect(error.preview?.length ?? 0).toBeLessThan(260);
-    expect(error.message.length).toBeLessThan(400);
-  });
-
-  it("fails loudly when a success response is missing required fields", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 202, {});
-    });
-
-    const error = expectResponseError(
-      await captured(
-        client(server).posts.create({ content: "Hello", platforms: ["bluesky"] }),
-      ),
-    );
-
-    expect(error.message).toContain("create response id");
-    expect(error.requestMayHaveBeenApplied).toBe(true);
-  });
-
-  it("fails loudly when a post detail drops a documented field", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, {
-        id: "post_1",
-        status: "published",
-        platforms: ["bluesky"],
-        createdAt: "2030-01-02T03:04:05.000Z",
-        publications: [],
-      });
-    });
-
-    const error = expectResponseError(
-      await captured(client(server).posts.get("post_1")),
-    );
-
-    expect(error.message).toContain("post content");
-    expect(error.requestMayHaveBeenApplied).toBe(false);
-  });
-
-  it("rejects a response above the configured size limit", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, { items: [], padding: "a".repeat(5_000) });
-    });
-
-    const error = expectResponseError(
-      await captured(client(server, { maxResponseBytes: 2_048 }).posts.list()),
-    );
-
-    expect(error.message).toContain("2048");
-    expect(server.requestCount()).toBe(1);
-  });
-
-  it("carries a usable error envelope even when the failure body is HTML", async () => {
-    const server = await fixture((_request, response) => {
-      textResponse(response, 500, "<html>bad gateway</html>", "text/html");
-    });
-
-    const error = expectApiError(
-      await captured(client(server).posts.get("post_1")),
-    );
-
-    expect(error.code).toBe("HTTP_500");
-    expect(error.status).toBe(500);
-    expect(error.message).toContain("bad gateway");
-  });
-});
-
-function expectApiError(error: unknown): SyndrooApiError {
-  expect(error).toBeInstanceOf(SyndrooApiError);
-
-  if (!(error instanceof SyndrooApiError)) {
-    throw new Error("Expected a SyndrooApiError.");
-  }
-
-  return error;
-}
-
-function expectResponseError(error: unknown): SyndrooResponseError {
-  expect(error).toBeInstanceOf(SyndrooResponseError);
-
-  if (!(error instanceof SyndrooResponseError)) {
-    throw new Error("Expected a SyndrooResponseError.");
-  }
-
-  return error;
-}
-
-async function captured(promise: Promise<unknown>): Promise<unknown> {
   try {
-    await promise;
-  } catch (error) {
-    return error;
+    parts.push(JSON.stringify(error) ?? "");
+  } catch {
+    parts.push("");
   }
-
-  throw new Error("Expected the SDK call to reject.");
+  parts.push(inspect(error, { depth: 8 }));
+  parts.push(JSON.stringify(projectServerError((error as SyndrooError).serverError) ?? null));
+  return parts.join("\n");
 }
+
+const CODES: readonly SyndrooErrorCode[] = [
+  "INVALID_ARGUMENT",
+  "INSECURE_BASE_URL",
+  "INVALID_REQUEST",
+  "INVALID_RESPONSE",
+  "RESPONSE_TOO_LARGE",
+  "REDIRECT_NOT_ALLOWED",
+  "TRANSPORT",
+  "HTTP_ERROR",
+  "PROTOCOL",
+  "TIMEOUT",
+  "ABORTED",
+  "WAIT_TIMEOUT",
+  "CONFIRMATION_REQUIRED",
+  "CONFIRMATION_EXPIRED",
+];
+
+describe("SyndrooError", () => {
+  it("carries a stable code and a fixed message for every code", () => {
+    for (const code of CODES) {
+      const error = new SyndrooError(code);
+      expect(error.code).toBe(code);
+      expect(error.name).toBe("SyndrooError");
+      expect(error.message.length).toBeGreaterThan(0);
+      expect(error.message).not.toContain(code);
+    }
+  });
+
+  it("never interpolates a supplied value into the message", () => {
+    // Feed the canary through every channel the constructor accepts, so the
+    // assertion can only pass if the value genuinely never reaches the output.
+    const error = new SyndrooError("PROTOCOL", {
+      status: 400,
+      serverError: {
+        code: CANARY,
+        message: CANARY,
+        details: { field: CANARY, operationId: CANARY, retryAt: CANARY },
+        extra: CANARY,
+      } as never,
+    });
+    expect(error.message).not.toContain(CANARY);
+    expect(error.message).not.toContain("super-secret-token");
+    expect(error.message).not.toMatch(/https?:\/\//);
+    expect(error.status).toBe(400);
+    expect(printable(error)).not.toContain(CANARY);
+  });
+
+  it("defaults retryable to transport failures only", () => {
+    expect(new SyndrooError("TRANSPORT").retryable).toBe(true);
+    expect(new SyndrooError("ABORTED").retryable).toBe(false);
+    expect(new SyndrooError("PROTOCOL").retryable).toBe(false);
+    expect(new SyndrooError("INVALID_RESPONSE").retryable).toBe(false);
+  });
+
+  it("is recognized by isSyndrooError", () => {
+    expect(isSyndrooError(new SyndrooError("TRANSPORT"))).toBe(true);
+    expect(isSyndrooError(new Error("plain"))).toBe(false);
+    expect(isSyndrooError(undefined)).toBe(false);
+  });
+
+  describe("server error projection", () => {
+    it("drops a canary in message, an extra field and details", () => {
+      const error = new SyndrooError("PROTOCOL", {
+        status: 409,
+        serverError: {
+          code: "IDEMPOTENCY_CONFLICT",
+          message: `conflict: ${CANARY}`,
+          extraTopField: CANARY,
+          details: {
+            field: CANARY,
+            operationId: "op_1",
+            retryAt: CANARY,
+            extraDetailField: CANARY,
+          },
+        } as never,
+      });
+
+      // The projection is rebuilt from scratch: allowlisted code, static text,
+      // and only validated detail values.
+      expect(error.serverError).toEqual({
+        code: "IDEMPOTENCY_CONFLICT",
+        message: "the server rejected the request",
+        details: { operationId: "op_1" },
+      });
+      expect(printable(error)).not.toContain(CANARY);
+      expect(error.message).not.toContain(CANARY);
+      expect(error.stack ?? "").not.toContain(CANARY);
+      expect(JSON.stringify(error)).not.toContain(CANARY);
+      expect(inspect(error, { depth: 8 })).not.toContain(CANARY);
+    });
+
+    it("replaces an unknown code and drops malformed detail values", () => {
+      const projected = projectServerError({
+        code: CANARY,
+        message: CANARY,
+        details: {
+          field: "targets[0].options.visibility",
+          operationId: "op_abc-123",
+          retryAt: "nonsense",
+        },
+      });
+      expect(projected).toEqual({
+        code: "UNKNOWN_ERROR",
+        message: "the server rejected the request",
+        details: {
+          field: "targets[0].options.visibility",
+          operationId: "op_abc-123",
+        },
+      });
+      expect(JSON.stringify(projected)).not.toContain(CANARY);
+    });
+
+    it("accepts a well-formed retryAt and copies nothing by reference", () => {
+      const source: Record<string, unknown> = {
+        code: "RETRY_INELIGIBLE",
+        message: "original text",
+        details: { retryAt: "2026-10-08T00:15:00.000Z" },
+      };
+      const error = new SyndrooError("PROTOCOL", { serverError: source as never });
+      source["message"] = CANARY;
+      (source["details"] as Record<string, unknown>)["retryAt"] = CANARY;
+      expect(error.serverError).toEqual({
+        code: "RETRY_INELIGIBLE",
+        message: "the server rejected the request",
+        details: { retryAt: "2026-10-08T00:15:00.000Z" },
+      });
+      expect(printable(error)).not.toContain(CANARY);
+    });
+  });
+});

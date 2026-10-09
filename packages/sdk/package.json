@@ -1,8 +1,8 @@
 {
   "name": "@syndroo/sdk",
-  "version": "0.4.0-rc.1",
+  "version": "0.7.0-rc.1",
   "type": "module",
-  "description": "Lightweight TypeScript HTTP client for the Syndroo publishing API.",
+  "description": "Standalone TypeScript HTTP client for a Syndroo server. No Core or Provider imports.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -29,10 +29,13 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24.19.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

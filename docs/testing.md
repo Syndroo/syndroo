@@ -1,135 +1,112 @@
 # Testing Syndroo
 
-The `0.7.0-rc.1` candidate is a CLI-first release: local text publishing to
-Bluesky, Threads, LinkedIn, and Mastodon, plus DEV.to articles, is the product
-under test. The pre-0.6 remote surface (Worker, SDK, `doctor`, `posts ...`) is
-regression-tested because it is retained.
+Architecture v1 replaces the earlier CLI-first release train. The product under
+test is eleven packages: `provider-sdk`, `core`, five official providers, `sdk`,
+`server`, `cli` and `cloudflare`. The `0.7.0-rc.1` tree is unreleased and has no
+live-account acceptance.
 
-A pass at one layer never stands in for another. Local unit tests do not prove
-packaging, packaging does not prove platform behavior, and no layer here proves
+A pass at one layer never stands in for another. Unit tests do not prove
+packaging, packaging does not prove platform behaviour, and no layer here proves
 live-account acceptance on any provider.
+
+## Gates
+
+| Command | What it does | What a pass means |
+| --- | --- | --- |
+| `npm run check:v1-tools` | `tsc` over the build/check tooling | The build graph and scripts type-check |
+| `npm run check` | `check:v1-tools` then `scripts/check-v1.ts` | Every v1 package type-checks; each built bundle inlines private Core and keeps it out of `dependencies` |
+| `npm test` | `scripts/check-v1.ts --tests` | Every package with tests runs its own `npm test` |
+| `npm run test:v1` | `vitest --config vitest.v1.config.ts` | The same tests under one run, useful while iterating |
+| `npm run build` | `scripts/build-v1.ts` | All eleven packages build in dependency order |
+| `npm run check:provider-catalog` | `generate-provider-catalog.ts --check` | The checked-in CLI provider catalog matches the built official providers |
+| `npm run check:pack` | `check-v1.ts --pack` | Each stage's `npm pack --dry-run` succeeds |
+
+`npm run check` is deliberately honest about unbuilt artifacts: a bundle with no
+`dist/` is reported `PENDING`, never `ok`. `PENDING` does not fail the run,
+because the check graph does not build; run `npm run build` first when you need
+the bundle rows to assert something.
+
+`npm run check:pack` runs `npm pack --dry-run` per stage, and each stage's
+`prepack` script builds that package. It passes end to end — `11 checked,
+0 failed` with a `pack ok` row per stage — but it needs a writable npm cache:
+run it with `npm_config_cache` pointing at a directory the process may write, or
+every stage fails with `EPERM` against `~/.npm/_cacache` instead of a product
+error. The failure mode looks like ten real pack failures, so check the cache
+path before reading anything into it.
 
 ## What each layer proves
 
-| Layer | Entry point | What a pass means |
-| --- | --- | --- |
-| Workspace units | `npm test` | Per-package behavior: core contracts, adapters, CLI parsing and local use cases, Worker logic, SDK client, repository scripts |
-| Types and bindings | `npm run check` | `tsc` for every workspace plus scripts and e2e types, and regenerated Worker bindings |
-| CLI local end to end | `npm run e2e:cli-local` | The packed CLI installs outside the repository and runs the documented local workflow against fake providers |
-| Remote (Worker) end to end | `npm run e2e:local` | Bundle → D1 → Queue → Cron → adapters → Mock SNS, for the retained remote path |
-| Consumer packages | `npm run e2e:consumer -- --source tarball` | The packed artifacts install outside the repository and the real SDK and CLI run against them |
-| Worker artifact | `npm run verify:package` | Packed Worker artifact, licence notices, isolated install |
-| Release sets | `SYNDROO_RELEASE_SET=cli npm run release:train` | The self-contained CLI candidate is internally consistent and publishable alone |
-| Legacy remote live check | `npm run e2e:live -- --plan <file>` | Only when an operator supplies an approved plan file: `doctor` and `posts ...` against a deployed instance |
+- **Core** (`packages/core`): protocol validation, connect/publish/status state
+  transitions, idempotency, retry eligibility, and the shared result model.
+- **Provider SDK** (`packages/provider-sdk`): the plugin contract, `defineProvider`
+  validation, capability/manifest rules, egress rules and the contract-test
+  helper.
+- **Official providers**: platform authentication, identity verification, frozen
+  payloads and write-outcome classification, each against controlled endpoint
+  fixtures.
+- **CLI** (`packages/cli`): argument parsing, human and JSON rendering, the local
+  runtime adapters, the provider trust loader, transport policy, and the request
+  journal. Provider-loader and egress tests cover trust, fingerprinting and
+  fail-closed origins.
+- **SDK** (`packages/sdk`): the HTTP client, transport, error contract, and
+  `wait` polling, with a fake HTTP implementation and wire fixtures.
+- **Server** (`packages/server`): the HTTP handler, mandatory Bearer
+  authentication, SQLite state, encrypted secret storage, and the Node provider
+  composition.
+- **Cloudflare** (`packages/cloudflare`): D1 state, encrypted secrets with AAD
+  binding and crypto-shred, the Worker entry gates, queue consumption and cron
+  recovery, against the D1 test harness.
+- **Build graph** (`scripts/`): stage order, Node engine floor, the private Core
+  boundary, and the three bundle checks.
 
-## Local CLI coverage
+## Bundles
 
-The CLI suite is where the local design is actually proven:
+Three artifacts inline private `@syndroo/core` and are checked by
+`scripts/check-v1.ts`:
 
-- **Document input**: inline JSON, file, and stdin; strict JSON, duplicate keys,
-  escapes, key and content limits, source byte cap, default schema version,
-  source conflicts, override selection, and provider availability.
-- **Direct publishing**: read-only dry-run, confirmation over one input snapshot,
-  source changes during confirmation, signed internal intents, `skip`/`blocked`
-  handling, and legacy state compatibility. Internal signature and expiry
-  checks remain covered without exposing a public Plan workflow.
-- **State**: real files and directories, atomic writes, permission and symlink
-  refusal, HMAC integrity, tombstoned connections, and manifest admission.
-- **Locking and recovery**: competing real processes, owner checks, quarantine,
-  and orphan in-flight intent becoming `unknown`.
-- **Process behavior**: the real binary under signals and broken pipes,
-  including exit `130` and persisted success that could not be reported.
-- **Providers**: protocol fixtures against controlled endpoints, covering
-  identity checks, frozen payloads sent verbatim, timeouts, response caps, and
-  the conservative `unknown` classification.
-- **Guidance consistency**: the bundled Skill's commands, flags, exit codes, and
-  links are checked against the built `--help` output.
-- **Import boundaries**: `@syndroo/core` stays platform-neutral, and the pure
-  local use cases import no filesystem, Worker, SDK, or concrete provider code.
+| Artifact | Entry |
+| --- | --- |
+| `@syndroo/cli` | `dist/bin.js` |
+| `@syndroo/server` | `dist/index.js` |
+| `@syndroo/cloudflare` | `dist/worker.js` |
 
-## Remote regression scope
+Each check asserts the entry exists, inlines Core, and that Core stays out of the
+package's `dependencies`. `dist/bundle.json` records the generator, entrypoints,
+external packages and inlined workspace packages.
 
-The pre-0.6 surface remains supported and must keep working:
+## Fixture versus live
 
-- Worker behavior: request validation, idempotency, claim-before-send, Queue
-  and Cron recovery, D1 migrations, and the 64 KiB body limit.
-- API contract: `POST /v1/posts` returning `202`, the documented statuses and
-  error shapes, and the Bearer-token rule on every `/v1/*` route.
-- Remote CLI commands: `doctor` and `posts validate|create|list|get|wait`,
-  including their exit codes and JSON shapes.
-- Adapters: Bluesky, Threads, X, Tumblr, and LinkedIn, with X, Tumblr, and
-  LinkedIn still marked experimental because their live publishing has not been
-  validated.
+- **Fixture-tested**: every provider path here. Requests, responses, timeouts and
+  error classification run against controlled endpoints, never a real account.
+- **Recorded evidence**: `outputs/provider-api-evidence.md`, kept outside this
+  repository, is the API research the providers were written against. It is not
+  a test result.
+- **Live-account acceptance**: **not run**. No real credential has been used and
+  no post has been published to a real platform from this repository.
 
-Local publishing never falls back to this surface, and a remote failure is not
-a reason to switch. The two paths share contracts, not code paths.
+Any command that would reach a real platform runs only under the operator's own
+authorization. No test in this repository contacts a real social account.
 
-## Verification evidence and live validation
+## Requirements
 
-Keep fixture, package, state, and live evidence separate:
+- Node.js `>=24.19.0`, npm, and a POSIX host.
+- Provider, SDK and server fixtures bind a loopback port, so a sandbox that
+  denies `listen` needs those tests to run unsandboxed.
 
-- `npm run e2e:live` is the **legacy remote** check. It runs `doctor` and
-  `posts ...` against a deployed Syndroo instance using an approved plan file,
-  and it validates only the remote path.
-- **Primary package gates (passed)**: the CLI tarball installed with 74 files
-  and ran the local workflow against fake providers. The Worker gate passed
-  its isolated offline npm install, imports, types, licences, and mock-deploy
-  checks. These runs used no live social accounts and deployed no real Worker.
-- **Limited Linux state proof (passed)**: Node.js 22.23.3, uid 1000, networking
-  disabled; offline old and new CLI installs, explicit schema-1-to-2 upgrade,
-  actual old 0.6 binary refusal without modifying schema-2 state, 0700/0600
-  permissions, and unsafe-state-file refusal. `root-linux-state-verification.log`
-  records prior candidate SHA-256
-  `86c7bdf538db4c63bb67252b70b88086fae67b8b46f9f874e1a82af9b102ac12`.
-  Root will rerun this state probe on the final repacked candidate. It does not
-  prove full Linux publishing or the complete OS/Node.js matrix.
-- **Full packaged-platform locality (not passed)**: the runner remains partial
-  because of fixture errors. Unit and package gates do not stand in for it.
-- **Local live acceptance** would publish real text or articles to real
-  accounts through the local CLI. That run **has not been executed** for
-  `0.7.0-rc.1`, and no dedicated runner for it exists yet; it needs a real
-  account and an explicit operator decision. The local providers are covered by
-  fixtures and labelled `fixture-tested`, which is not a substitute for that
-  acceptance.
+## Release tooling tests
 
-Any command that reaches a real platform, local or remote, does so only under
-the operator's own authorization. No test in this repository contacts a real
-social account.
+`npm run test:scripts` compiles the build/release tooling and runs its own Node
+test suites (`128` tests at the time of writing). It covers packaging, licences,
+the release train and artifact handling. It is a tooling suite, not product
+acceptance, and it is not part of the v1 protocol gates above.
 
-## Running the gates
+## What is not verified
 
-```bash
-npm ci
-# The candidate versions are split, so the release-set scripts need the CLI set.
-export SYNDROO_RELEASE_SET=cli
-npm test
-npm run check
-npm run e2e:cli-local
-npm run e2e:local
-npm run verify:package
-npm run release:train
-```
-
-`npm test` and `npm run test:scripts` validate the publishable release set, so
-they need `SYNDROO_RELEASE_SET=cli` while the three candidate versions differ.
-The default set stays `all` and reports that mismatch as a failure until the
-packages share one version.
-
-Requirements: Node.js 22 or newer, npm, and a POSIX host. Local state
-operations support macOS and Linux; Windows local writes are refused rather
-than approximated.
-
-Notes for a sandboxed environment: the provider and remote fixtures bind a
-loopback port, so a sandbox that denies `listen` needs those tests to run
-unsandboxed. Worker gates need the bundled Worker and its local services, which
-`npm run e2e:local` starts for the run.
-
-## What is not verified here
-
-- Live-account publishing for any platform, local or remote.
-- Full Linux publishing and full packaged-platform locality. Linux evidence
-  covers only the state, compatibility, and permissions checks described above.
-- The Node.js 22 and 24 matrix on both macOS and Linux: CI runs it, but this
-  checkout's own evidence does not include it.
-- Registry installation: not verified; this task built and installed the local
-  tarball only and performed no npm publish.
+- Live-account publishing for any provider.
+- A deployed Cloudflare Worker against a real Cloudflare account. The Worker's
+  deployment configuration is not part of this tree; see
+  [remote-compatibility.md](remote-compatibility.md).
+- The macOS/Linux and Node.js matrix: this checkout has run on Node.js 24.19.0
+  only.
+- Registry installation: no package in this tree has been published, so install
+  from a registry is untested.

@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import {
   collectBundledSources,
   derivePackageRootFromFile,
+  findTextViolations,
+  isInside,
   packageNameFromRoot,
   selectLicenseArtifacts,
 } from "./package-support.js";
@@ -46,15 +48,15 @@ function sha256(text: string): string {
 describe("bundled package resolution", () => {
   it("identifies the exact package instance, including nested versions", async () => {
     const root = await createTree({
-      "packages/cloudflare-worker/dist/index.js": "",
-      "packages/cloudflare-worker/src/index.ts": "",
+      "packages/cloudflare/dist/worker.js": "",
+      "packages/cloudflare/src/index.ts": "",
       "node_modules/mit-pkg/index.js": "",
       "node_modules/mit-pkg/package.json": '{"name":"mit-pkg","version":"1.0.0"}',
       "node_modules/other/node_modules/mit-pkg/index.js": "",
       "node_modules/other/node_modules/mit-pkg/package.json":
         '{"name":"mit-pkg","version":"2.0.0"}',
     });
-    const mapDirectory = resolve(root, "packages/cloudflare-worker/dist");
+    const mapDirectory = resolve(root, "packages/cloudflare/dist");
 
     const { sources, unresolved } = collectBundledSources(
       {
@@ -84,10 +86,10 @@ describe("bundled package resolution", () => {
 
   it("keeps repository sources out of the third-party list", async () => {
     const root = await createTree({
-      "packages/cloudflare-worker/dist/index.js": "",
+      "packages/cloudflare/dist/worker.js": "",
       "packages/core/src/index.ts": "",
     });
-    const mapDirectory = resolve(root, "packages/cloudflare-worker/dist");
+    const mapDirectory = resolve(root, "packages/cloudflare/dist");
     const { sources, unresolved } = collectBundledSources(
       { sources: ["../../core/src/index.ts"], sourceRoot: "dist" },
       mapDirectory,
@@ -99,12 +101,12 @@ describe("bundled package resolution", () => {
 
   it("identifies a bundled package whose published source map points at unpublished files", async () => {
     const root = await createTree({
-      "packages/cloudflare-worker/dist/index.js": "",
+      "packages/cloudflare/dist/worker.js": "",
       "node_modules/xdk/package.json": '{"name":"xdk","version":"1.0.0"}',
     });
     const { sources, unresolved } = collectBundledSources(
       { sources: ["../../../node_modules/xdk/src/index.ts"] },
-      resolve(root, "packages/cloudflare-worker/dist"),
+      resolve(root, "packages/cloudflare/dist"),
     );
 
     assert.equal(sources.length, 1);
@@ -183,7 +185,7 @@ describe("license generation", () => {
     assert.match(result.stderr, /Refusing to package without complete third-party license text/);
     assert.match(result.stderr, /no-license-pkg/);
     assert.equal(
-      existsSync(resolve(fixture, "packages/cloudflare-worker/dist/THIRD_PARTY_LICENSES.txt")),
+      existsSync(resolve(fixture, "packages/cloudflare/dist/THIRD_PARTY_LICENSES.txt")),
       false,
     );
   });
@@ -196,7 +198,7 @@ describe("license generation", () => {
 
     const licensePath = resolve(
       fixture,
-      "packages/cloudflare-worker/dist/THIRD_PARTY_LICENSES.txt",
+      "packages/cloudflare/dist/THIRD_PARTY_LICENSES.txt",
     );
     const contents = await readFile(licensePath, "utf8");
     const second = runGenerator(fixture);
@@ -238,7 +240,7 @@ describe("license generation", () => {
     assert.equal(result.status, 0, result.stderr);
 
     const contents = await readFile(
-      resolve(fixture, "packages/cloudflare-worker/dist/THIRD_PARTY_LICENSES.txt"),
+      resolve(fixture, "packages/cloudflare/dist/THIRD_PARTY_LICENSES.txt"),
       "utf8",
     );
 
@@ -294,7 +296,7 @@ describe("license generation", () => {
   }): Promise<string> {
     const directory = await mkdtemp(resolve(tmpdir(), "syndroo-licenses-"));
     fixtures.push(directory);
-    const packageDirectory = resolve(directory, "packages/cloudflare-worker");
+    const packageDirectory = resolve(directory, "packages/cloudflare");
 
     await writeFile(
       resolve(directory, "package.json"),
@@ -305,16 +307,16 @@ describe("license generation", () => {
     await mkdir(resolve(packageDirectory, "dist"), { recursive: true });
     await writeFile(
       resolve(packageDirectory, "package.json"),
-      '{"name":"@syndroo/cloudflare-worker","version":"0.0.0"}\n',
+      '{"name":"@syndroo/cloudflare","version":"0.0.0"}\n',
       "utf8",
     );
     await writeFile(
-      resolve(packageDirectory, "dist/index.js"),
+      resolve(packageDirectory, "dist/worker.js"),
       "export default {};\n",
       "utf8",
     );
     await writeFile(
-      resolve(packageDirectory, "dist/index.js.map"),
+      resolve(packageDirectory, "dist/worker.js.map"),
       `${JSON.stringify({
         version: 3,
         sources: [
@@ -404,6 +406,67 @@ describe("license generation", () => {
       stderr: result.stderr ?? "",
     };
   }
+});
+
+/**
+ * Artifact leak detection. These assertions lived in the deleted
+ * `verify-package.spec.ts`; the packaged-artifact verifier is gone with the v0
+ * layout, but the detector itself still guards every published artifact, so its
+ * coverage moved here rather than disappearing with the script.
+ */
+describe("artifact leak detection", () => {
+  it("flags workspace, experiment, and account identifiers", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['{"dependencies":{"x":"workspace:*"}}', "workspace-protocol"],
+      ["import '../../experiments/crosspost-cloudflare/src/index.ts'", "experiment-path"],
+      ['{"account_id":"0123456789abcdef0123456789abcdef"}', "account-id-json"],
+      ['{"database_id":"11111111-2222-3333-4444-555555555555"}', "database-id-json"],
+      ['const SYNDROO_API_KEY = "super-secret-value";', "api-key-assignment"],
+    ];
+
+    for (const [text, code] of cases) {
+      assert.deepEqual(
+        findTextViolations(text, "fixture").map((violation) => violation.code),
+        [code],
+        `expected ${code} for ${text}`,
+      );
+    }
+  });
+
+  it("flags a literal assignment to a deployed Worker secret", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['const API_BEARER = "super-secret-value";', "worker-secret-assignment"],
+      ['{"SECRET_KEY":"0123456789abcdef0123456789abcdef"}', "worker-secret-assignment"],
+      ['RUNTIME_KEY: "0123456789abcdef0123456789abcdef"', "worker-secret-assignment"],
+    ];
+
+    for (const [text, code] of cases) {
+      assert.deepEqual(
+        findTextViolations(text, "fixture").map((violation) => violation.code),
+        [code],
+        `expected ${code} for ${text}`,
+      );
+    }
+  });
+
+  it("does not flag legitimate documentation or binding names", () => {
+    const safe = [
+      "Add the secret names to `.dev.vars` for local development.",
+      "Set `API_BEARER` as a Worker secret.",
+      "env.API_BEARER is required for every route.",
+      'interface Env { API_BEARER: string; SECRET_KEY: string; RUNTIME_KEY: string }',
+    ];
+
+    for (const text of safe) {
+      assert.deepEqual(findTextViolations(text, "fixture"), []);
+    }
+  });
+
+  it("keeps path containment checks exact", () => {
+    assert.equal(isInside("/tmp/work", "/tmp/work/fixture"), true);
+    assert.equal(isInside("/tmp/work", "/tmp/work"), true);
+    assert.equal(isInside("/tmp/work", "/tmp/workshop"), false);
+  });
 });
 
 async function createTree(

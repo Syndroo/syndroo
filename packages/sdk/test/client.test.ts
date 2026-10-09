@@ -1,331 +1,273 @@
-import { createHash } from "node:crypto";
+/**
+ * Public `Syndroo` surface: request/result correlation, narrowed returns and
+ * request-identity rules. The "typed" assertions are compiled by
+ * `tsconfig.test.json`, so a wrong return type fails `npm run check`.
+ */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import {
-  SyndrooClient,
-  isPostDelivered,
-  isPostTerminal,
-  type SyndrooClientOptions,
+import { Syndroo, SyndrooError } from "../src/index.js";
+import type {
+  ConnectResult,
+  ConnectionView,
+  DoneConnectResult,
+  ExecutionResult,
+  OperationSummary,
+  ProviderView,
+  PublishResult,
 } from "../src/index.js";
+import { FakeHttp } from "./support/fake-http.js";
 import {
-  headerOf,
-  jsonResponse,
-  requestAt,
-  startFixtureServer,
-  type FixtureServer,
-} from "./support/loopback.js";
+  CONNECT_ACTION_REQUIRED,
+  CONNECTION_DONE,
+  EXECUTION_SUCCEEDED,
+  PREPARED,
+  STATUS_CONNECTIONS,
+  STATUS_OPERATION,
+  STATUS_OPERATIONS,
+  STATUS_OVERVIEW,
+  STATUS_PROVIDER,
+  errorEnvelope,
+  okEnvelope,
+} from "./support/wire-fixtures.js";
 
-const API_KEY = "test-instance-key-not-a-real-secret";
-const servers: FixtureServer[] = [];
+const BASE_URL = "https://syndroo.example";
 
-afterEach(async () => {
-  vi.restoreAllMocks();
+function client(http: FakeHttp): Syndroo {
+  return new Syndroo({ baseUrl: BASE_URL, apiKey: "sdk-test-key", fetch: http.fetch });
+}
 
-  while (servers.length > 0) {
-    const server = servers.pop();
-
-    if (server !== undefined) {
-      await server.close();
+async function errorOf(run: () => Promise<unknown>): Promise<SyndrooError> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof SyndrooError) {
+      return error;
     }
+    throw error;
   }
-});
-
-async function fixture(
-  ...args: Parameters<typeof startFixtureServer>
-): Promise<FixtureServer> {
-  const server = await startFixtureServer(...args);
-  servers.push(server);
-  return server;
+  throw new Error("expected the call to reject");
 }
 
-function client(
-  server: FixtureServer,
-  options: Partial<SyndrooClientOptions> = {},
-): SyndrooClient {
-  return new SyndrooClient({ baseUrl: server.url, apiKey: API_KEY, ...options });
-}
-
-const DETAIL = {
-  id: "post_1",
-  content: "Hello from Syndroo",
-  platforms: ["bluesky"],
-  status: "published",
-  createdAt: "2030-01-02T03:04:05.000Z",
-  publications: [
-    {
-      id: "pub_1",
-      postId: "post_1",
-      platform: "bluesky",
-      provider: "bluesky-native",
-      content: "Hello from Syndroo",
-      status: "published",
-      attempts: 1,
-      externalId: "bafyreiexample",
-      externalUrl: "https://bsky.app/profile/alice/post/3example",
-      errorAmbiguous: false,
-      createdAt: "2030-01-02T03:04:05.000Z",
-      publishedAt: "2030-01-02T03:04:06.000Z",
-    },
-  ],
-};
-
-describe("SyndrooClient.posts.create", () => {
-  it("sends the documented request and reports the 202 receipt as acceptance only", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 202, { id: "post_1", status: "queued" });
+describe("connect", () => {
+  it("returns an action_required step for a start", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECT_ACTION_REQUIRED) },
+    ]);
+    const result: ConnectResult = await client(http).connect({
+      type: "start",
+      provider: "bluesky",
     });
-
-    const receipt = await client(server).posts.create(
-      { content: "Hello from Syndroo", platforms: ["bluesky"] },
-      { idempotencyKey: "release-announcement-001" },
-    );
-
-    expect(receipt).toEqual({ id: "post_1", status: "queued" });
-    expect(isPostDelivered(receipt.status)).toBe(false);
-    expect(isPostTerminal(receipt.status)).toBe(false);
-
-    const sent = requestAt(server);
-    expect(sent.method).toBe("POST");
-    expect(sent.url).toBe("/v1/posts");
-    expect(headerOf(sent, "authorization")).toBe(`Bearer ${API_KEY}`);
-    expect(headerOf(sent, "content-type")).toBe("application/json");
-    expect(headerOf(sent, "idempotency-key")).toBe("release-announcement-001");
-    expect(JSON.parse(sent.body)).toEqual({
-      content: "Hello from Syndroo",
-      platforms: ["bluesky"],
-    });
+    expect(result.status).toBe("action_required");
   });
 
-  it("reports a replayed create without inventing a second post", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, {
-        id: "post_1",
-        status: "published",
-        replayed: true,
-      });
+  it("narrows an update to a done result", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECTION_DONE) },
+    ]);
+    const result: DoneConnectResult = await client(http).connect({
+      type: "update",
+      connectionId: "conn_1",
+      changes: { label: "mine" },
     });
-
-    const receipt = await client(server).posts.create(
-      { content: "Hello", platforms: ["bluesky"] },
-      { idempotencyKey: "same-key" },
-    );
-
-    expect(receipt.replayed).toBe(true);
-    expect(receipt.id).toBe("post_1");
-    expect(server.requestCount()).toBe(1);
+    expect(result.connection.connectionId).toBe("conn_1");
   });
 
-  it("preserves multilingual content, escapes, and per-platform overrides byte for byte", async () => {
-    const content = [
-      "リリースしました",
-      "새 릴리스를 공개했습니다",
-      "shipped 🚀 with emoji",
-      "line one\nline two\ttab",
-      `quotes "double" 'single' \`backtick\``,
-      "shell $(whoami) && rm -rf --fake",
-      "link https://example.com/a?b=c#d",
-    ].join("\n");
-    const overrides = {
-      threads: { content: "Threads: リリース 🚀" },
-      x: { content: "X: release" },
+  it("narrows a disconnect to a done result", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECTION_DONE) },
+    ]);
+    const result: DoneConnectResult = await client(http).connect({
+      type: "disconnect",
+      connectionId: "conn_1",
+    });
+    expect(result.status).toBe("done");
+  });
+
+  it("fails safe when an update does not end in a bound connection", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECT_ACTION_REQUIRED) },
+    ]);
+    const error = await errorOf(() =>
+      client(http).connect({ type: "update", connectionId: "conn_1", changes: {} }),
+    );
+    expect(error.code).toBe("INVALID_RESPONSE");
+  });
+
+  it("does not require request identity for a resume", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECTION_DONE) },
+    ]);
+    await client(http).connect({
+      type: "resume",
+      connectSessionId: "cs_1",
+      stepRevision: 1,
+      input: { type: "callback_complete" },
+    });
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("requires request identity for a start", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECT_ACTION_REQUIRED) },
+    ]);
+    await client(http).connect({ type: "start", provider: "bluesky" });
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("does not promise a bound connection for a start", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECT_ACTION_REQUIRED) },
+    ]);
+    const started: ConnectResult = await client(http).connect({
+      type: "start",
+      provider: "bluesky",
+    });
+    expect(started.status).toBe("action_required");
+    // Only update/disconnect narrow to `done`; a start can end in
+    // `action_required`, so reading `connection` off a start must not compile.
+    // The closure is never called; `npm run check` is what runs the assertion,
+    // and an unused `@ts-expect-error` (which is what an over-broad `done`
+    // overload would produce) fails the check.
+    const readConnectionId = async (): Promise<string> => {
+      const result = await client(http).connect({ type: "start", provider: "bluesky" });
+      // @ts-expect-error a start is not guaranteed to answer with a bound connection
+      return result.connection.connectionId;
     };
+    expect(readConnectionId).toBeTypeOf("function");
+  });
+});
 
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 202, { id: "post_2", status: "queued" });
+describe("publish", () => {
+  it("returns a prepared result for prepare", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", PREPARED) },
+    ]);
+    const result: PublishResult = await client(http).publish({
+      type: "prepare",
+      content: { text: "hello" },
+      targets: [{ provider: "bluesky" }],
     });
+    expect(result.status).toBe("confirmation_required");
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeTruthy();
+  });
 
-    await client(server).posts.create({
-      content,
-      platforms: ["bluesky", "threads", "x"],
-      overrides,
+  it("returns an execution result for execute and sends no idempotency key", async () => {
+    // A terminal execution is a completed protocol answer, so the server sends
+    // 200; 202 is reserved for an admitted, still-running execution.
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", EXECUTION_SUCCEEDED) },
+    ]);
+    const result: ExecutionResult = await client(http).publish({
+      type: "execute",
+      approvalToken: "approval_1",
     });
+    expect(result.phase).toBe("execution");
+    expect(result.status).toBe("succeeded");
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeUndefined();
+  });
 
-    const sent = requestAt(server);
-
-    expect(JSON.parse(sent.body)).toEqual({
-      content,
-      platforms: ["bluesky", "threads", "x"],
-      overrides,
+  it("lets a retry replay an already admitted execution", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", EXECUTION_SUCCEEDED) },
+    ]);
+    const result: PublishResult = await client(http).publish({
+      type: "retry",
+      retryOf: "op_1",
+      targets: [{ provider: "bluesky", connection: "conn_1" }],
     });
-    // JSON.stringify leaves non-ASCII intact, so the wire bytes carry the text.
-    expect(sent.body).toContain("リリースしました");
-    expect(sent.body).toContain("🚀");
-    expect(sha256(String(JSON.parse(sent.body).content))).toBe(sha256(content));
-    expect(String(JSON.parse(sent.body).overrides.threads.content)).toBe(
-      overrides.threads.content,
+    expect(result.status).toBe("succeeded");
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("fails safe when execute does not answer with an execution round", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", PREPARED) },
+    ]);
+    const error = await errorOf(() =>
+      client(http).publish({ type: "execute", approvalToken: "approval_1" }),
     );
+    expect(error.code).toBe("INVALID_RESPONSE");
   });
 
-  it("sends scheduledAt unchanged and never rewrites the caller's object", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 202, {
-        id: "post_3",
-        status: "scheduled",
-        scheduledAt: "2030-01-02T03:04:05.000Z",
-      });
-    });
-
-    const input = {
-      content: "Scheduled",
-      platforms: ["bluesky"],
-      scheduledAt: "2030-01-02T03:04:05.000Z",
-    };
-
-    const receipt = await client(server).posts.create(input);
-
-    expect(receipt.status).toBe("scheduled");
-    expect(receipt.scheduledAt).toBe("2030-01-02T03:04:05.000Z");
-    expect(input).toEqual({
-      content: "Scheduled",
-      platforms: ["bluesky"],
-      scheduledAt: "2030-01-02T03:04:05.000Z",
-    });
-    expect(JSON.parse(requestAt(server).body)).toEqual(input);
-  });
-});
-
-describe("SyndrooClient.posts.get and list", () => {
-  it("reads a post detail with per-platform publications", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, DETAIL);
-    });
-
-    const post = await client(server).posts.get("post_1");
-
-    expect(post.status).toBe("published");
-    expect(isPostTerminal(post.status)).toBe(true);
-    expect(post.publications).toHaveLength(1);
-    expect(post.publications[0]?.externalUrl).toBe(
-      "https://bsky.app/profile/alice/post/3example",
+  it("reuses a caller-supplied idempotency key verbatim", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", PREPARED) },
+    ]);
+    await client(http).publish(
+      { type: "prepare", content: { text: "hello" }, targets: [{ provider: "bluesky" }] },
+      { idempotencyKey: "req_abc" },
     );
-    expect(requestAt(server).url).toBe("/v1/posts/post_1");
-  });
-
-  it("percent-encodes the post id instead of injecting a path", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 404, {
-        error: { code: "POST_NOT_FOUND", message: "Post not found" },
-      });
-    });
-
-    await expect(client(server).posts.get("post_1/../health")).rejects.toThrow();
-    expect(requestAt(server).url).toBe("/v1/posts/post_1%2F..%2Fhealth");
-  });
-
-  it("passes the list limit through as a query parameter", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, { items: [DETAIL] });
-    });
-
-    const posts = await client(server).posts.list({ limit: 5 });
-
-    expect(posts).toHaveLength(1);
-    expect(posts[0]?.id).toBe("post_1");
-    expect(requestAt(server).url).toBe("/v1/posts?limit=5");
-  });
-
-  it("reads the list without a limit parameter when none is given", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, { items: [] });
-    });
-
-    expect(await client(server).posts.list()).toEqual([]);
-    expect(requestAt(server).url).toBe("/v1/posts");
+    expect(http.requests[0]?.headers["idempotency-key"]).toBe("req_abc");
   });
 });
 
-describe("SyndrooClient.health", () => {
-  it("calls the unauthenticated health endpoint without the API key", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, { status: "ok" });
+describe("status", () => {
+  it("types all five query results", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_OVERVIEW) },
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_PROVIDER) },
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_CONNECTIONS) },
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_OPERATION) },
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_OPERATIONS) },
+    ]);
+    const syndroo = client(http);
+
+    const overview: {
+      type: "overview";
+      initialized: boolean;
+      connectionCount: number;
+      stateHealth: "ok" | "recovery_required";
+    } = await syndroo.status({ type: "overview" });
+    expect(overview.initialized).toBe(true);
+
+    const provider: { type: "provider"; provider: ProviderView } = await syndroo.status({
+      type: "provider",
+      provider: "bluesky",
     });
+    expect(provider.provider.provider).toBe("bluesky");
 
-    expect(await client(server).health()).toEqual({ status: "ok" });
+    const connections: { type: "connections"; connections: readonly ConnectionView[] } =
+      await syndroo.status({ type: "connections" });
+    expect(connections.connections).toEqual([]);
 
-    const sent = requestAt(server);
-    expect(sent.method).toBe("GET");
-    expect(sent.url).toBe("/health");
-    expect(headerOf(sent, "authorization")).toBeUndefined();
+    const operation: { type: "operation"; operation: { phase: "execution" | "prepared" } } =
+      await syndroo.status({ type: "operation", operationId: "op_1" });
+    expect(operation.operation.phase).toBe("execution");
+
+    const operations: {
+      type: "operations";
+      operations: readonly OperationSummary[];
+    } = await syndroo.status({ type: "operations", limit: 20 });
+    expect(operations.operations).toEqual([]);
+
+    expect(http.callCount).toBe(5);
+  });
+
+  it("sends no idempotency key for a query", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_CONNECTIONS) },
+    ]);
+    await client(http).status({ type: "connections" });
+    expect(http.requests[0]?.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("fails safe when the result does not answer the query that was asked", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_PROVIDER) },
+    ]);
+    const error = await errorOf(() => client(http).status({ type: "connections" }));
+    expect(error.code).toBe("INVALID_RESPONSE");
+  });
+
+  it("surfaces a protocol rejection envelope as a static error", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 401, body: errorEnvelope("status", "UNAUTHORIZED") },
+    ]);
+    const error = await errorOf(() => client(http).status({ type: "connections" }));
+    expect(error.code).toBe("PROTOCOL");
+    expect(error.serverError?.code).toBe("UNAUTHORIZED");
+    expect(error.message).not.toContain("sdk-test-key");
+    expect(error.message).not.toContain(BASE_URL);
   });
 });
-
-describe("SyndrooClient.posts.wait", () => {
-  it("polls read-only until the post reaches a terminal status", async () => {
-    const statuses = ["queued", "publishing", "published"];
-    const server = await fixture((_request, response, index) => {
-      jsonResponse(response, 200, {
-        ...DETAIL,
-        status: statuses[index] ?? "published",
-      });
-    });
-
-    const post = await client(server).posts.wait("post_1", {
-      timeoutMs: 5_000,
-      pollIntervalMs: 10,
-    });
-
-    expect(post.status).toBe("published");
-    expect(server.requestCount()).toBe(3);
-    expect(server.requests.every(entry => entry.method === "GET")).toBe(true);
-  });
-
-  it("returns a partially delivered post instead of claiming success", async () => {
-    const server = await fixture((_request, response) => {
-      jsonResponse(response, 200, { ...DETAIL, status: "partial" });
-    });
-
-    const post = await client(server).posts.wait("post_1", { pollIntervalMs: 10 });
-
-    expect(post.status).toBe("partial");
-    expect(isPostTerminal(post.status)).toBe(true);
-    expect(isPostDelivered(post.status)).toBe(false);
-  });
-});
-
-describe("SyndrooClient output hygiene", () => {
-  it("never writes to the console, so credentials and content stay out of logs", async () => {
-    const logSpy = vi.spyOn(console, "log");
-    const infoSpy = vi.spyOn(console, "info");
-    const warnSpy = vi.spyOn(console, "warn");
-    const errorSpy = vi.spyOn(console, "error");
-    const debugSpy = vi.spyOn(console, "debug");
-    const server = await fixture((request, response) => {
-      if (request.method === "POST") {
-        jsonResponse(response, 202, { id: "post_1", status: "queued" });
-        return;
-      }
-
-      if (request.url === "/v1/posts") {
-        jsonResponse(response, 200, { items: [DETAIL] });
-        return;
-      }
-
-      if (request.url === "/health") {
-        jsonResponse(response, 200, { status: "ok" });
-        return;
-      }
-
-      jsonResponse(response, 200, DETAIL);
-    });
-
-    const syndroo = client(server);
-    const receipt = await syndroo.posts.create(
-      { content: "Hello", platforms: ["bluesky"] },
-      { idempotencyKey: "silent-1" },
-    );
-    await syndroo.posts.get(receipt.id);
-    await syndroo.posts.list();
-    await syndroo.health();
-
-    expect(logSpy).not.toHaveBeenCalled();
-    expect(infoSpy).not.toHaveBeenCalled();
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(errorSpy).not.toHaveBeenCalled();
-    expect(debugSpy).not.toHaveBeenCalled();
-  });
-});
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}

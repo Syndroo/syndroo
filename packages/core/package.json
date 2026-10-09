@@ -1,17 +1,28 @@
 {
   "name": "@syndroo/core",
-  "version": "0.1.0",
+  "version": "0.7.0-rc.1",
   "private": true,
   "type": "module",
+  "description": "Syndroo architecture v1 Core: wire protocol, domain records, ports and use cases. Private; bundled into public artifacts.",
+  "license": "Apache-2.0",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "dependencies": {
+    "@syndroo/provider-sdk": "0.7.0-rc.1",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "test": "npm run build && vitest run"
+    "test": "vitest run",
+    "prepack": "npm run build"
   }
 }

@@ -4,6 +4,6 @@ Copyright 2026 Grant Dai
 This distribution is part of the Syndroo project and is licensed under the
 Apache License, Version 2.0. See `LICENSE` for the full text.
 
-The published package has no runtime dependencies. It uses the global `fetch`
-implementation of the Node.js runtime and therefore bundles no third-party
-code.
+The CLI bundles private `@syndroo/core` code and third-party code (for example
+`commander`). A generated third-party license inventory is not part of this
+pre-release wiring; the packaging tasks must add it before any release.

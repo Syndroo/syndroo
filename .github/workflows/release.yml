@@ -5,20 +5,29 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "validate only, or publish the train when every gate passes"
+        type: choice
+        options:
+          - validate
+          - publish
+        default: validate
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  package:
+  release:
     if: github.repository == 'Syndroo/syndroo'
     runs-on: ubuntu-latest
+    # Publishing is opt-in and never implicit. A release event validates by
+    # default; set the repository variable SYNDROO_PUBLISH_ON_RELEASE to the
+    # exact string `true`, or dispatch this workflow with `mode: publish`, to
+    # let the train publish.
     env:
-      # The 0.6 candidate publishes @syndroo/cli only. The SDK and the Worker
-      # stay at their existing versions and are validated, never published, by
-      # this workflow.
-      SYNDROO_RELEASE_SET: cli
+      SYNDROO_PUBLISH_ON_RELEASE: ${{ vars.SYNDROO_PUBLISH_ON_RELEASE }}
 
     steps:
       - name: Check out repository
@@ -37,21 +46,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test
-
-      - name: Check types and generated bindings
+      - name: Check types, generated bindings and package graph
         run: npm run check
 
-      - name: Bundle Worker
-        run: npm run bundle
+      - name: Build every package
+        run: npm run build
 
-      - name: Check Worker startup
-        run: npm run startup
+      - name: Verify bundled artifacts
+        run: node scripts/check-v1.ts
 
-      # Read-only gate. It validates the three-package train, the release event,
-      # and the dist-tag the version implies, and reports which packages are
-      # still missing. It publishes nothing.
+      - name: Run package tests
+        run: npm test
+
+      - name: Run release-tooling tests
+        run: npm run test:scripts
+
+      # Read-only gate. It validates the ten-package train, the release event and
+      # the dist-tag the version implies, and reports what is still missing. It
+      # publishes nothing.
       - name: Validate release train
         id: train
         run: npm run release:train
@@ -59,21 +71,6 @@ jobs:
           SYNDROO_CHECK_REGISTRY: "true"
           SYNDROO_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           SYNDROO_RELEASE_TAG: ${{ github.event.release.tag_name }}
-
-      - name: Pack the CLI candidate
-        run: npm run pack:cli
-
-      - name: Install and exercise the CLI candidate in isolation
-        run: npm run e2e:cli-local
-
-      - name: Run installed-package consumer gate
-        run: npm run e2e:consumer -- --source tarball
-
-      - name: Report which packages the train still needs
-        run: |
-          echo "Release set ${{ steps.train.outputs.release_set }} at ${{ steps.train.outputs.version }} (${{ steps.train.outputs.dist_tag }}):"
-          echo "  cli    ${{ steps.train.outputs.cli_status }}"
-          echo "  @syndroo/sdk and @syndroo/cloudflare-worker are out of this release set."
 
       - name: Validate release metadata
         id: package
@@ -83,59 +80,97 @@ jobs:
           SYNDROO_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           SYNDROO_RELEASE_TAG: ${{ github.event.release.tag_name }}
 
-      - name: Report the release target
+      - name: Report the train
         run: |
+          echo "release set ${{ steps.train.outputs.release_set }} at ${{ steps.train.outputs.version }} (${{ steps.train.outputs.dist_tag }}):"
+          echo "  provider-sdk      ${{ steps.train.outputs['provider-sdk_status'] }}"
+          echo "  provider-bluesky  ${{ steps.train.outputs['provider-bluesky_status'] }}"
+          echo "  provider-threads  ${{ steps.train.outputs['provider-threads_status'] }}"
+          echo "  provider-linkedin ${{ steps.train.outputs['provider-linkedin_status'] }}"
+          echo "  provider-mastodon ${{ steps.train.outputs['provider-mastodon_status'] }}"
+          echo "  provider-devto    ${{ steps.train.outputs['provider-devto_status'] }}"
+          echo "  sdk               ${{ steps.train.outputs.sdk_status }}"
+          echo "  cli               ${{ steps.train.outputs.cli_status }}"
+          echo "  server            ${{ steps.train.outputs.server_status }}"
+          echo "  cloudflare        ${{ steps.train.outputs.cloudflare_status }}"
           echo "metadata target ${{ steps.package.outputs.package }} ${{ steps.package.outputs.version }} (${{ steps.package.outputs.dist_tag }})"
-          test "${{ steps.package.outputs.package }}" = "@syndroo/cli"
-          test "${{ steps.package.outputs.version }}" = "${{ steps.train.outputs.version }}"
-          test "${{ steps.package.outputs.dist_tag }}" = "${{ steps.train.outputs.dist_tag }}"
 
       - name: Inspect package contents
-        run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
-
-      - name: Inspect the CLI candidate contents
-        run: npm pack --workspace @syndroo/cli --dry-run
-
-      - name: Verify package artifact
-        run: npm run verify:package
-
-      - name: Run Mock SNS end-to-end suite
-        run: npm run test:e2e
-
-      - name: Publish package
-        if: >-
-          github.event_name == 'release' &&
-          steps.train.outputs.release_set == 'cli' &&
-          steps.train.outputs.publish_cli == 'true' &&
-          steps.package.outputs.package == '@syndroo/cli' &&
-          steps.package.outputs.published != 'true'
-        env:
-          DIST_TAG: ${{ steps.package.outputs.dist_tag }}
-          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          if [ "$PACKAGE_VERSION" != "${{ steps.train.outputs.version }}" ]; then
-            echo "Metadata version '$PACKAGE_VERSION' does not match the train version '${{ steps.train.outputs.version }}'; refusing to publish." >&2
+          npm pack --workspace @syndroo/provider-sdk --dry-run
+          npm pack --workspace @syndroo/sdk --dry-run
+          npm pack --workspace @syndroo/cli --dry-run
+          npm pack --workspace @syndroo/server --dry-run
+          npm pack --workspace @syndroo/cloudflare --dry-run
+
+      # Publish in train order: the provider contract, then the official
+      # providers, then the HTTP SDK, the CLI, the server and the Worker. Each
+      # package is published only when the train reports it as still missing, so
+      # a partially completed train resumes instead of failing on duplicates.
+      - name: Publish the train
+        if: >-
+          ${{ (github.event_name == 'release' && env.SYNDROO_PUBLISH_ON_RELEASE == 'true') ||
+              (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish') }}
+        env:
+          DIST_TAG: ${{ steps.train.outputs.dist_tag }}
+          TRAIN_VERSION: ${{ steps.train.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ "$TRAIN_VERSION" != "${{ steps.package.outputs.version }}" ]; then
+            echo "Metadata version '${{ steps.package.outputs.version }}' does not match the train version '$TRAIN_VERSION'; refusing to publish." >&2
             exit 1
           fi
 
           case "$DIST_TAG" in
-            next)
-              npm publish --workspace @syndroo/cli --tag next
-              ;;
-            latest)
-              echo "A CLI release candidate must publish under 'next'; refusing 'latest'." >&2
-              exit 1
-              ;;
+            next|latest) ;;
             *)
               echo "Unexpected dist-tag '$DIST_TAG'; refusing to publish." >&2
               exit 1
               ;;
           esac
 
-      - name: Report existing package
-        if: github.event_name == 'release' && steps.package.outputs.published == 'true'
-        run: echo "${{ steps.package.outputs.package }}@${{ steps.package.outputs.version }} already exists; skipping publish."
+          publish() {
+            slug="$1"
+            name="$2"
+            if [ "${{ steps.train.outputs.publish_required }}" != "true" ]; then
+              echo "train reports nothing to publish; skipping $name"
+              return 0
+            fi
+            if [ "${PUBLISH_STATUS[$slug]:-false}" != "true" ]; then
+              echo "$name already satisfies ${{ steps.train.outputs.version }}; skipping"
+              return 0
+            fi
+            echo "publishing $name under $DIST_TAG"
+            npm publish --workspace "$name" --tag "$DIST_TAG"
+          }
+
+          declare -A PUBLISH_STATUS=(
+            ["provider-sdk"]="${{ steps.train.outputs['publish_provider-sdk'] }}"
+            ["provider-bluesky"]="${{ steps.train.outputs['publish_provider-bluesky'] }}"
+            ["provider-threads"]="${{ steps.train.outputs['publish_provider-threads'] }}"
+            ["provider-linkedin"]="${{ steps.train.outputs['publish_provider-linkedin'] }}"
+            ["provider-mastodon"]="${{ steps.train.outputs['publish_provider-mastodon'] }}"
+            ["provider-devto"]="${{ steps.train.outputs['publish_provider-devto'] }}"
+            [sdk]="${{ steps.train.outputs.publish_sdk }}"
+            [cli]="${{ steps.train.outputs.publish_cli }}"
+            [server]="${{ steps.train.outputs.publish_server }}"
+            [cloudflare]="${{ steps.train.outputs.publish_cloudflare }}"
+          )
+
+          publish provider-sdk      @syndroo/provider-sdk
+          publish provider-bluesky  @syndroo/provider-bluesky
+          publish provider-threads  @syndroo/provider-threads
+          publish provider-linkedin @syndroo/provider-linkedin
+          publish provider-mastodon @syndroo/provider-mastodon
+          publish provider-devto    @syndroo/provider-devto
+          publish sdk               @syndroo/sdk
+          publish cli               @syndroo/cli
+          publish server            @syndroo/server
+          publish cloudflare        @syndroo/cloudflare
 
       - name: Report validation-only run
-        if: github.event_name != 'release'
-        run: echo "This event validates the release candidate only; publishing requires a release event."
+        if: >-
+          ${{ !((github.event_name == 'release' && env.SYNDROO_PUBLISH_ON_RELEASE == 'true') ||
+                (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish')) }}
+        run: echo "This event validated the release train only; publishing requires an explicit opt-in."

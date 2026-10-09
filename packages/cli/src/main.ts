@@ -1,184 +1,372 @@
-import {
-  detectLocalCommand,
-  parseArgs,
-  wantsJson,
-  type ParsedCommand,
-} from "./args.js";
+import { Command, CommanderError } from "commander";
+
 import { CliError } from "./cli-error.js";
-import type { CommandContext } from "./commands/context.js";
-import { classifyFailure, runDoctor } from "./commands/doctor.js";
-import { runLocalCommand } from "./commands/local/router.js";
-import {
-  runCreate,
-  runGet,
-  runList,
-  runValidate,
-  runWait,
-} from "./commands/posts.js";
-import { runSkillPath } from "./commands/skill.js";
-import { API_KEY_ENV } from "./config.js";
+import { loadConfig, resolveConfigPath } from "./config.js";
 import { EXIT_CODE } from "./exit-codes.js";
-import { commandHelp, generalHelp } from "./help.js";
 import type { CliIo } from "./io.js";
-import type { LocalRunOverrides } from "./local/composition.js";
-import { Reporter, type CommandResult } from "./output.js";
+import type { LocalRuntimeOverrides } from "./runtime/local/composition.js";
+import { createCommandContext, usageError, type CommandContext } from "./commands/context.js";
+import { runConnect, type ConnectOptions } from "./commands/connect.js";
+import { runPublish, type PublishOptions } from "./commands/publish.js";
+import { runStatus, type StatusOptions } from "./commands/status.js";
+import {
+  classify,
+  failureEnvelope,
+  staticMessage,
+  type Operation,
+} from "./render/envelope.js";
 import { cliVersion } from "./version.js";
 
-type Handler = (context: CommandContext) => Promise<CommandResult>;
-
-const HANDLERS: Readonly<Record<string, Handler>> = {
-  doctor: runDoctor,
-  "posts.validate": runValidate,
-  "posts.create": runCreate,
-  "posts.list": runList,
-  "posts.get": runGet,
-  "posts.wait": runWait,
-  "skill.path": runSkillPath,
-};
+const COMMANDS: readonly Operation[] = ["connect", "publish", "status"];
 
 /**
- * True when the invocation answers from local metadata only.
+ * Global flags, extracted before Commander sees the line.
  *
- * `help`, `version`, and `skill path` (and any `--help`/`-h` request) never
- * contact an instance, so they must not read the remote key or start the
- * keep-alive timer. Every other legacy command keeps the remote behavior.
+ * Commander parses options per command, so a root-level `--json` would be an
+ * unknown option after `status`. Scanning them here also means a duplicate flag
+ * is a usage error instead of a silent last-one-wins, and it removes the need
+ * for Commander to echo any part of the invocation.
  */
-function isStaticMetadataInvocation(argv: readonly string[]): boolean {
-  if (argv.some(token => token === "--help" || token === "-h")) {
-    return true;
+type Globals = {
+  readonly configPath?: string;
+  readonly json: boolean;
+  readonly verbose: boolean;
+  readonly noColor: boolean;
+  readonly help: boolean;
+  readonly version: boolean;
+  readonly rest: readonly string[];
+};
+
+function scanGlobals(argv: readonly string[]): Globals {
+  const rest: string[] = [];
+  let configPath: string | undefined;
+  let json = false;
+  let verbose = false;
+  let noColor = false;
+  let help = false;
+  let version = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] as string;
+
+    if (token === "--") {
+      rest.push(...argv.slice(index));
+      break;
+    }
+
+    if (token === "--json") {
+      if (json) {
+        throw usageError("USAGE");
+      }
+
+      json = true;
+      continue;
+    }
+
+    if (token === "--verbose") {
+      if (verbose) {
+        throw usageError("USAGE");
+      }
+
+      verbose = true;
+      continue;
+    }
+
+    if (token === "--no-color") {
+      if (noColor) {
+        throw usageError("USAGE");
+      }
+
+      noColor = true;
+      continue;
+    }
+
+    if (token === "--help" || token === "-h") {
+      help = true;
+      continue;
+    }
+
+    if (token === "--version") {
+      version = true;
+      continue;
+    }
+
+    if (token === "--config" || token.startsWith("--config=")) {
+      if (configPath !== undefined) {
+        throw usageError("USAGE");
+      }
+
+      const value = token === "--config" ? argv[index + 1] : token.slice("--config=".length);
+
+      if (value === undefined || value.length === 0) {
+        throw usageError("USAGE");
+      }
+
+      configPath = value;
+
+      if (token === "--config") {
+        index += 1;
+      }
+
+      continue;
+    }
+
+    rest.push(token);
   }
 
-  const [first, second] = argv.filter(token => !token.startsWith("-"));
+  return { ...(configPath === undefined ? {} : { configPath }), json, verbose, noColor, help, version, rest };
+}
 
+function detectOperation(rest: readonly string[]): Operation | undefined {
+  for (const token of rest) {
+    if (COMMANDS.includes(token as Operation)) {
+      return token as Operation;
+    }
+
+    if (!token.startsWith("-")) {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function reportFailure(
+  io: CliIo,
+  json: boolean,
+  operation: Operation | undefined,
+  error: unknown,
+): number {
+  const failure = classify(error);
+
+  io.stderr.write(`syndroo: ${staticMessage(failure.code)}\n`);
+
+  if (json && operation !== undefined) {
+    io.stdout.write(`${JSON.stringify(failureEnvelope(operation, failure.code))}\n`);
+  }
+
+  return failure.exit;
+}
+
+function buildProgram(io: CliIo): Command {
+  const program = new Command();
+
+  program
+    .name("syndroo")
+    .description("Local-first publish client: connect, prepare, execute and query status.")
+    .exitOverride()
+    .helpOption(false)
+    .allowExcessArguments(false)
+    .showHelpAfterError(false)
+    .showSuggestionAfterError(false);
+
+  program.configureOutput({
+    // Help goes to the real stdout; Commander's own error text is suppressed
+    // because it can echo an argv token that was meant to stay secret.
+    writeOut: (chunk: string) => {
+      io.stdout.write(chunk);
+    },
+    writeErr: () => undefined,
+  });
+
+  return program;
+}
+
+function attachCommands(
+  program: Command,
+  ensureContext: () => Promise<CommandContext>,
+  state: { exit: number },
+): void {
+  program
+    .command("connect")
+    .description("Connect, update or disconnect a provider account.")
+    .argument("[provider]", "provider id, for example bluesky")
+    .option("--label <label>", "connection label")
+    .option("--connection <connectionId>", "reconnect or refresh an existing connection")
+    .option("--from-env", "import credentials from SYNDROO_CREDENTIALS")
+    .option("--credential-file <path>", "import credentials from a JSON file")
+    .option("--update <connectionId>", "change a connection's label or default flag")
+    .option("--disconnect <connectionId>", "disconnect a stored connection")
+    .option("--input <file>", "machine ConnectRequest; '-' reads standard input")
+    .option("--redirect-uri <uri>", "OAuth redirect URI (default: a loopback URI)")
+    .option("--callback-url <url>", "redirected URL to verify; '-' reads it from standard input")
+    .option("--default", "mark the connection as default")
+    .option("--no-default", "clear the default flag")
+    .action(async (provider: string | undefined, options: Record<string, unknown>, command: Command) => {
+      const ctx = await ensureContext();
+      const source = command.getOptionValueSource("default");
+      const defaultFlag =
+        source === "cli" && typeof options["default"] === "boolean"
+          ? options["default"]
+          : undefined;
+      const connectOptions: ConnectOptions = {
+        ...(typeof options["label"] === "string" ? { label: options["label"] } : {}),
+        ...(typeof options["connection"] === "string" ? { connection: options["connection"] } : {}),
+        ...(options["fromEnv"] === true ? { fromEnv: true } : {}),
+        ...(typeof options["credentialFile"] === "string" ? { credentialFile: options["credentialFile"] } : {}),
+        ...(typeof options["update"] === "string" ? { update: options["update"] } : {}),
+        ...(typeof options["disconnect"] === "string" ? { disconnect: options["disconnect"] } : {}),
+        ...(typeof options["input"] === "string" ? { input: options["input"] } : {}),
+        ...(typeof options["redirectUri"] === "string" ? { redirectUri: options["redirectUri"] } : {}),
+        ...(typeof options["callbackUrl"] === "string" ? { callbackUrl: options["callbackUrl"] } : {}),
+        ...(defaultFlag === undefined ? {} : { default: defaultFlag }),
+      };
+
+      state.exit = await runConnect(ctx, provider, connectOptions);
+    });
+
+  program
+    .command("publish")
+    .description("Prepare, execute or retry a publication.")
+    .option("--input <file>", "request document; '-' reads standard input")
+    .option("--data <json>", "inline request document")
+    .option("--retry <operationId>", "retry an operation's eligible targets")
+    .option("--to <connectionId>", "retry target connection (repeatable)", collectTo, [])
+    .option("--request-id <id>", "stable request identity for this logical call")
+    .option("--dry-run", "offline preview; no state, credential or network access")
+    .action(async (options: Record<string, unknown>) => {
+      const ctx = await ensureContext();
+      const publishOptions: PublishOptions = {
+        ...(typeof options["input"] === "string" ? { input: options["input"] } : {}),
+        ...(typeof options["data"] === "string" ? { data: options["data"] } : {}),
+        ...(typeof options["retry"] === "string" ? { retry: options["retry"] } : {}),
+        ...(Array.isArray(options["to"]) ? { to: options["to"] as string[] } : {}),
+        ...(typeof options["requestId"] === "string" ? { requestId: options["requestId"] } : {}),
+        ...(options["dryRun"] === true ? { dryRun: true } : {}),
+      };
+
+      state.exit = await runPublish(ctx, publishOptions);
+    });
+
+  program
+    .command("status")
+    .description("Query providers, connections and operations.")
+    .option("--provider <providerId>", "one provider")
+    .option("--connections", "list stored connections")
+    .option("--operation <operationId>", "one operation")
+    .option("--operations", "page through operation summaries")
+    .option("--limit <count>", "page size for --operations (1-100)")
+    .option("--cursor <cursor>", "opaque cursor for --operations")
+    .action(async (options: Record<string, unknown>) => {
+      const ctx = await ensureContext();
+      const statusOptions: StatusOptions = {
+        ...(typeof options["provider"] === "string" ? { provider: options["provider"] } : {}),
+        ...(options["connections"] === true ? { connections: true } : {}),
+        ...(typeof options["operation"] === "string" ? { operation: options["operation"] } : {}),
+        ...(options["operations"] === true ? { operations: true } : {}),
+        ...(typeof options["limit"] === "string" ? { limit: options["limit"] } : {}),
+        ...(typeof options["cursor"] === "string" ? { cursor: options["cursor"] } : {}),
+      };
+
+      state.exit = await runStatus(ctx, statusOptions);
+    });
+}
+
+function collectTo(value: string, previous: readonly string[]): readonly string[] {
+  return [...previous, value];
+}
+
+function isCommanderHelp(error: unknown): boolean {
   return (
-    first === undefined ||
-    first === "help" ||
-    first === "version" ||
-    (first === "skill" && second === "path")
+    error instanceof CommanderError &&
+    (error.code === "commander.helpDisplayed" || error.code === "commander.help")
   );
 }
 
 /**
- * Runs one command and returns its exit code. Nothing here throws: a failure
- * becomes a reported result, so `bin.ts` only has to set `process.exitCode`.
- *
- * The optional overrides exist for tests: they inject a fake provider or clock
- * into the local composition. No command-line flag reaches them, so a released
- * binary has exactly one production wiring.
+ * Run one invocation and return its exit code. This never throws: every failure
+ * becomes a stable code, a static message on stderr, and an exit family.
  */
 export async function run(
   argv: readonly string[],
   io: CliIo,
-  overrides: LocalRunOverrides = {},
+  overrides: LocalRuntimeOverrides = {},
 ): Promise<number> {
-  const reporter = new Reporter(io, wantsJson(argv));
-
-  const localCommand = detectLocalCommand(argv);
-
-  if (localCommand !== undefined) {
-    return runLocalCommand(localCommand, argv, io, reporter, overrides);
-  }
-
-  return runLegacy(argv, io, reporter);
-}
-
-/**
- * The legacy remote surface, unchanged.
- *
- * The referenced keep-alive timer exists for `posts wait` only: the SDK
- * unrefs its polling timers, and a CLI must stay alive until its own deadline.
- * Local commands never create it.
- */
-async function runLegacy(
-  argv: readonly string[],
-  io: CliIo,
-  reporter: Reporter,
-): Promise<number> {
-  const staticMetadata = isStaticMetadataInvocation(argv);
-
-  if (!staticMetadata) {
-    // The remote instance key is registered only for the remote surface. A
-    // static metadata command must never read it, so an unrelated environment
-    // value cannot influence its output.
-    reporter.addSecret(io.env[API_KEY_ENV]);
-  }
-
-  // The keep-alive timer exists for `posts wait` only: the SDK unrefs its
-  // polling timers, and a CLI must stay alive until its own deadline. A static
-  // metadata command finishes without it.
-  const keepAlive = staticMetadata
-    ? undefined
-    : setInterval(() => {}, 1_000);
-  let parsed: ParsedCommand | undefined;
+  let globals: Globals;
 
   try {
-    parsed = parseArgs(argv);
-
-    if (parsed.command === "help" || parsed.help) {
-      const text =
-        parsed.command === "help" ? generalHelp() : commandHelp(parsed.spec);
-      reporter.finish({
-        payload: { command: "help", ok: true, help: text },
-        human: [text],
-        exitCode: EXIT_CODE.SUCCESS,
-      });
-      return EXIT_CODE.SUCCESS;
-    }
-
-    if (parsed.command === "version") {
-      const version = cliVersion();
-      reporter.finish({
-        payload: {
-          command: "version",
-          ok: true,
-          name: "@syndroo/cli",
-          version,
-          node: process.versions.node,
-        },
-        human: [`@syndroo/cli ${version} (node ${process.versions.node})`],
-        exitCode: EXIT_CODE.SUCCESS,
-      });
-      return EXIT_CODE.SUCCESS;
-    }
-
-    const handler = HANDLERS[parsed.command];
-
-    if (handler === undefined) {
-      throw new CliError(`no handler for "${parsed.command}"`, {
-        exitCode: EXIT_CODE.USAGE,
-        code: "USAGE",
-      });
-    }
-
-    const result = await handler({ parsed, io, reporter });
-    reporter.finish(result);
-    return result.exitCode;
+    globals = scanGlobals(argv);
   } catch (error) {
-    const failure = classifyFailure(error);
-    const details =
-      error instanceof CliError && error.details !== undefined
-        ? error.details
-        : undefined;
-
-    if (failure.code === "ABORTED") {
-      // A signal stops this process, never the post: waiting only reads.
-      reporter.diagnostic(
-        "Stopped locally. The server-side post is unchanged; resume with `syndroo posts get` or `syndroo posts wait`.",
-      );
-    }
-
-    reporter.fail({
-      command: parsed?.command,
-      code: failure.code,
-      message: failure.message,
-      details,
-      exitCode: failure.exitCode,
-    });
-
-    return failure.exitCode;
-  } finally {
-    if (keepAlive !== undefined) {
-      clearInterval(keepAlive);
-    }
+    return reportFailure(io, false, undefined, error);
   }
+
+  const operation = detectOperation(globals.rest);
+  const program = buildProgram(io);
+  const state = { exit: EXIT_CODE.SUCCESS as number };
+  let context: CommandContext | undefined;
+
+  /**
+   * Attaching the commands must happen before help is rendered, so `--help`
+   * lists the real surface. Reading the configuration stays lazy: help, version
+   * and a bare invocation must work on a machine that never configured Syndroo
+   * and must create nothing.
+   */
+  async function ensureContext(): Promise<CommandContext> {
+    if (context === undefined) {
+      const config = await loadConfig(resolveConfigPath(io.env, globals.configPath), io.env);
+      const color =
+        !globals.noColor &&
+        (io.env["NO_COLOR"] ?? "") === "" &&
+        io.stdoutIsTty;
+
+      context = createCommandContext({
+        io,
+        json: globals.json,
+        verbose: globals.verbose,
+        color,
+        config,
+        overrides,
+      });
+    }
+
+    return context;
+  }
+
+  attachCommands(program, ensureContext, state);
+
+  if (globals.version) {
+    io.stdout.write(`${cliVersion()} (node ${process.versions.node})\n`);
+
+    return EXIT_CODE.SUCCESS;
+  }
+
+  if (globals.help) {
+    const named = COMMANDS.find((command) => globals.rest.includes(command));
+    const target = named === undefined ? undefined : program.commands.find((command) => command.name() === named);
+
+    if (target === undefined) {
+      program.outputHelp();
+    } else {
+      target.outputHelp();
+    }
+
+    return EXIT_CODE.SUCCESS;
+  }
+
+  // A bare invocation answers from the help text and touches nothing.
+  if (globals.rest.length === 0) {
+    program.outputHelp();
+
+    return EXIT_CODE.SUCCESS;
+  }
+
+  try {
+    await program.parseAsync([...globals.rest], { from: "user" });
+  } catch (error) {
+    if (isCommanderHelp(error)) {
+      return EXIT_CODE.SUCCESS;
+    }
+
+    // Commander raises `CommanderError` for its own refusals (an unknown
+    // command or option, excess arguments). Those are reporting-free usage
+    // errors. Anything else came out of a command body and already carries its
+    // own stable code, so it must not be flattened into `USAGE`.
+    return error instanceof CommanderError
+      ? reportFailure(io, globals.json, operation, usageError("USAGE"))
+      : reportFailure(io, globals.json, operation, error);
+  }
+
+  return state.exit;
 }
+
+export { CliError };

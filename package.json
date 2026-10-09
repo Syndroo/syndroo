@@ -1,9 +1,9 @@
 {
   "name": "syndroo",
-  "version": "0.1.0",
+  "version": "0.7.0-rc.1",
   "private": true,
   "type": "module",
-  "description": "Local-first Syndroo CLI for publishing text to Bluesky and Threads, with the remote SDK, Worker, and adapters in the same monorepo.",
+  "description": "Syndroo: local-first publishing CLI, standalone HTTP SDK, Node server, Cloudflare Worker and official Provider plugins. Architecture v1 is under construction and not released.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -15,93 +15,68 @@
   "homepage": "https://github.com/Syndroo/syndroo#readme",
   "cloudflare": {
     "bindings": {
-      "SYNDROO_API_KEY": {
+      "API_BEARER": {
         "description": "Choose a long random string. API clients send it as the Syndroo Bearer token."
       },
-      "BLUESKY_IDENTIFIER": {
-        "description": "Your Bluesky handle, for example `alice.bsky.social`."
+      "SECRET_KEY": {
+        "description": "A long random string that encrypts stored provider credentials."
       },
-      "BLUESKY_PASSWORD": {
-        "description": "A Bluesky app password. Do not use your main account password."
+      "RUNTIME_KEY": {
+        "description": "A long random string used to derive opaque runtime identifiers."
       },
-      "BLUESKY_HOST": {
-        "description": "The Bluesky PDS hostname. Use `bsky.social` for the default service."
+      "SCOPE": {
+        "description": "Namespace for this deployment's rows and objects, for example `default`."
       },
-      "THREADS_ACCESS_TOKEN": {
-        "description": "A long-lived Threads user access token with `threads_basic` and `threads_content_publish`."
+      "QUEUE_NAME": {
+        "description": "Work queue name this Worker consumes, for example `syndroo-work`."
       },
-      "X_API_KEY": {
-        "description": "Optional: X OAuth 1.0a consumer API key for an app with Read and Write permissions."
+      "DLQ_NAME": {
+        "description": "Dead-letter queue name; must differ from QUEUE_NAME."
       },
-      "X_API_SECRET": {
-        "description": "Optional: X OAuth 1.0a consumer API secret."
-      },
-      "X_ACCESS_TOKEN": {
-        "description": "Optional: X OAuth 1.0a user access token, issued after enabling write permissions."
-      },
-      "X_ACCESS_TOKEN_SECRET": {
-        "description": "Optional: Secret paired with the X OAuth 1.0a user access token."
-      },
-      "TUMBLR_CONSUMER_KEY": {
-        "description": "Optional: Tumblr OAuth consumer key."
-      },
-      "TUMBLR_CONSUMER_SECRET": {
-        "description": "Optional: Tumblr OAuth consumer secret."
-      },
-      "TUMBLR_TOKEN": {
-        "description": "Optional: Tumblr user OAuth token."
-      },
-      "TUMBLR_TOKEN_SECRET": {
-        "description": "Optional: Tumblr user OAuth token secret."
-      },
-      "TUMBLR_BLOG": {
-        "description": "Optional: Target Tumblr blog name, for example alice (not a URL)."
-      },
-      "LINKEDIN_ACCESS_TOKEN": {
-        "description": "Optional: LinkedIn user access token authorized for publishing."
-      },
-      "LINKEDIN_AUTHOR": {
-        "description": "Optional: LinkedIn person or organization URN; one author per deployment."
-      },
-      "LINKEDIN_API_VERSION": {
-        "description": "Optional: Explicit supported LinkedIn API version in YYYYMM format."
+      "PUBLIC_FETCH_STRICT": {
+        "description": "Set the literal value `enabled`; any other value refuses to start."
       }
     }
   },
   "workspaces": [
-    "packages/*"
+    "packages/provider-sdk",
+    "packages/core",
+    "packages/sdk",
+    "packages/cli",
+    "packages/server",
+    "packages/cloudflare",
+    "packages/provider-bluesky",
+    "packages/provider-threads",
+    "packages/provider-linkedin",
+    "packages/provider-mastodon",
+    "packages/provider-devto"
   ],
   "scripts": {
-    "build": "npm run build --workspace @syndroo/core && npm run build --workspace @syndroo/bluesky && npm run build --workspace @syndroo/threads && npm run build --workspace @syndroo/linkedin && npm run build --workspace @syndroo/mastodon && npm run build --workspace @syndroo/devto && npm run build --workspace @syndroo/tumblr && npm run build --workspace @syndroo/x && npm run build --workspace @syndroo/sdk && npm run build --workspace @syndroo/cli",
-    "build:package": "npm run build && npm run build:package --workspace @syndroo/cloudflare-worker",
+    "build": "node scripts/build-v1.ts",
+    "build:allow-missing": "node scripts/build-v1.ts --allow-missing",
+    "check": "npm run check:v1-tools && node scripts/check-v1.ts",
+    "check:allow-missing": "npm run check:v1-tools && node scripts/check-v1.ts --allow-missing",
+    "check:v1-tools": "tsc -p tsconfig.v1-tools.json",
+    "check:pack": "npm run check:v1-tools && node scripts/check-v1.ts --pack",
+    "check:pack:allow-missing": "npm run check:v1-tools && node scripts/check-v1.ts --pack --allow-missing",
+    "test": "node scripts/check-v1.ts --tests",
+    "test:allow-missing": "node scripts/check-v1.ts --tests --allow-missing",
+    "test:v1": "vitest run --config vitest.v1.config.ts",
+    "generate:protocol": "node scripts/generate-protocol.ts",
+    "generate:provider-catalog": "node scripts/generate-provider-catalog.ts",
+    "check:provider-catalog": "node scripts/generate-provider-catalog.ts --check",
     "build:scripts": "tsc -p tsconfig.scripts.json",
-    "check": "npm run build && npm run check:scripts && npm run check:e2e && npm run check --workspaces --if-present",
     "check:scripts": "tsc -p tsconfig.scripts.json --noEmit",
-    "check:e2e": "tsc -p e2e/tsconfig.json --noEmit",
+    "check:e2e": "tsc -p e2e/local-only/tsconfig.json --noEmit",
     "dco:check": "npm run build:scripts && node .build/scripts/check-dco.js",
-    "test": "npm run test --workspace @syndroo/core && npm run test --workspace @syndroo/bluesky && npm run test --workspace @syndroo/threads && npm run test --workspace @syndroo/linkedin && npm run test --workspace @syndroo/mastodon && npm run test --workspace @syndroo/devto && npm run test --workspace @syndroo/tumblr && npm run test --workspace @syndroo/x && npm run test --workspace @syndroo/cloudflare-worker && npm run test --workspace @syndroo/sdk && npm run test --workspace @syndroo/cli && npm run test:scripts",
-    "test:scripts": "npm run build:scripts && node --test --test-concurrency=1 .build/scripts/check-release.spec.js .build/scripts/release-train.spec.js .build/scripts/e2e-tools.spec.js .build/scripts/bundle-worker.spec.js .build/scripts/package-licenses.spec.js .build/scripts/verify-package.spec.js .build/scripts/cli-support.spec.js .build/scripts/cli-licenses.spec.js .build/scripts/bundle-cli.spec.js",
-    "dev": "npm run dev --workspace @syndroo/cloudflare-worker",
-    "db:migrate:local": "npm run db:migrate:local --workspace @syndroo/cloudflare-worker",
-    "db:migrate:remote": "npm run db:migrate:remote --workspace @syndroo/cloudflare-worker",
-    "deploy": "npm run build:scripts && node .build/scripts/deploy.js",
-    "bundle": "npm run bundle --workspace @syndroo/cloudflare-worker",
-    "bundle:cli": "npm run build:scripts && node .build/scripts/bundle-cli.js",
-    "pack:cli": "npm run build:scripts && node .build/scripts/pack-cli.js",
-    "e2e:cli-local": "npm run build:scripts && node .build/scripts/e2e-cli-local.js",
-    "startup": "npm run startup --workspace @syndroo/cloudflare-worker",
-    "verify:package": "npm run build:scripts && npm run build:package && node .build/scripts/verify-package.js",
-    "test:e2e": "npm run e2e:local",
-    "e2e:local": "npm run build:package && vitest run --config e2e/vitest.config.ts",
-    "e2e:consumer": "npm run build:scripts && node .build/scripts/e2e-consumer.js",
-    "e2e:live": "npm run build:scripts && node .build/scripts/e2e-live.js",
+    "test:scripts": "npm run build:scripts && node --test --test-concurrency=1 .build/scripts/check-release.spec.js .build/scripts/release-train.spec.js .build/scripts/package-licenses.spec.js .build/scripts/cli-licenses.spec.js .build/scripts/cli-artifact.spec.js .build/scripts/bundle-v1-cli.spec.js .build/scripts/bundle-v1-server.spec.js .build/scripts/bundle-v1-cloudflare.spec.js",
     "release:check": "npm run build:scripts && node .build/scripts/check-release.js",
     "release:train": "npm run build:scripts && node .build/scripts/release-train.js",
     "e2e:local-only:build": "tsc -p e2e/local-only/tsconfig.json",
     "e2e:local-only": "npm run e2e:local-only:build && node .build/e2e-local-only/runner.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.19.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260915.1",

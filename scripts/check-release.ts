@@ -11,14 +11,15 @@ import { parseReleaseSet, type ReleaseSet } from "./release-train.js";
 /**
  * Which package this metadata check is about.
  *
- * `all` keeps the historical Worker check, which is the default so nothing that
- * relied on it changes. `cli` validates the 0.6 candidate, which publishes
- * alone; the Worker is neither versioned nor gated by that release.
+ * Architecture v1 has no deployable `@syndroo/cloudflare-worker`; the packaged
+ * Worker is `@syndroo/cloudflare`, so the default (`all`) target points at it.
+ * `cli` validates `@syndroo/cli`. The labels stay stable because the release
+ * workflow's `SYNDROO_RELEASE_SET` contract is expressed in terms of them.
  */
 const RELEASE_TARGETS: Readonly<
   Record<ReleaseSet, { readonly name: string; readonly directory: string }>
 > = {
-  all: { name: "@syndroo/cloudflare-worker", directory: "packages/cloudflare-worker" },
+  all: { name: "@syndroo/cloudflare", directory: "packages/cloudflare" },
   cli: { name: "@syndroo/cli", directory: "packages/cli" },
 };
 

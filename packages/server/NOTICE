@@ -1,0 +1,9 @@
+Syndroo
+Copyright 2026 Grant Dai
+
+This distribution is part of the Syndroo project and is licensed under the
+Apache License, Version 2.0. See `LICENSE` for the full text.
+
+The server bundles private `@syndroo/core` code. A generated third-party
+license inventory is not part of this pre-release wiring; the packaging tasks
+must add it before any release.

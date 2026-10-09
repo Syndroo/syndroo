@@ -1,25 +1,24 @@
 /**
- * Exit codes are part of the CLI contract: scripts and agents branch on them
+ * Exit codes are part of the CLI contract: agents and scripts branch on them
  * instead of parsing English.
  *
- * One distinction carries most of the weight. For `posts create`, `0` means
- * Syndroo accepted the request. It never means a platform published anything,
- * and it is deliberately not the same number as a confirmed delivery.
+ * `0` never means a platform published anything. It means the protocol call was
+ * handled: a connection action may still be required, a preview may still need
+ * explicit confirmation, or an execution may still be pending. An agent reads
+ * the JSON envelope, not the exit code alone.
  */
 export const EXIT_CODE = {
   /** The command finished and Syndroo answered as documented. */
   SUCCESS: 0,
-  /** The command failed: unreachable instance, rejected request, unexpected error. */
+  /** Internal or durability failure. Side effects are unknown. */
   FAILURE: 1,
-  /** Usage, configuration, or post-document problem. Nothing was sent. */
+  /** Usage, configuration, authentication or preflight rejection. Nothing was sent. */
   USAGE: 2,
-  /** `posts wait` reached its deadline. Waiting only reads; the post still exists. */
-  WAIT_TIMEOUT: 3,
-  /** A write may have reached Syndroo and no result is known. Reuse the same idempotency key. */
+  /** A write may have reached the provider and no result is known. */
   AMBIGUOUS: 4,
-  /** The operator declined the preview. Nothing was sent. */
+  /** A human explicitly declined at the confirmation step. Nothing was sent. */
   CANCELLED: 5,
-  /** The post reached a terminal state without full delivery (`failed` or `partial`). */
+  /** Execution finished and is known not to be fully successful. */
   NOT_DELIVERED: 6,
   /** The local process stopped on a signal. Server-side work was not cancelled. */
   INTERRUPTED: 130,

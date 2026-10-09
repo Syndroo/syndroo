@@ -20,13 +20,10 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
+        # engines.node is >=24.19.0; the architecture-v1 packages are not
+        # tested on older lines.
         node-version:
-          - "22"
           - "24"
-    env:
-      # The 0.6 candidate publishes the CLI alone. The Worker gates below still
-      # run in full; only the publishable release set is narrowed.
-      SYNDROO_RELEASE_SET: cli
 
     steps:
       - name: Check out repository
@@ -44,52 +41,46 @@ jobs:
         run: npm ci
 
       - name: Check DCO sign-offs
-        if: github.event_name == 'pull_request' && matrix.node-version == '24'
+        if: github.event_name == 'pull_request'
         run: npm run dco:check
         env:
           SYNDROO_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SYNDROO_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
-      - name: Run tests
-        run: npm test
-
-      - name: Check types and generated bindings
+      # Generated protocol bindings, the provider catalog and the package graph
+      # are checked for drift before any build, so a stale generator fails here
+      # rather than silently shipping.
+      - name: Check types, generated bindings and package graph
         run: npm run check
 
-      - name: Bundle Worker
-        run: npm run bundle
+      - name: Build every package
+        run: npm run build
 
-      - name: Check Worker startup
-        run: npm run startup
+      # The bundle gate only asserts inlining once an artifact exists, so it runs
+      # again after the build; before the build those rows honestly report
+      # PENDING instead of passing on faith.
+      - name: Verify bundled artifacts
+        run: node scripts/check-v1.ts
 
-      - name: Verify package artifact
-        if: matrix.node-version == '24' && matrix.os == 'ubuntu-latest'
-        run: npm run verify:package
+      - name: Run package tests
+        run: npm test
 
-      - name: Run Mock SNS end-to-end suite
-        run: npm run test:e2e
+      - name: Run release-tooling tests
+        run: npm run test:scripts
 
-      # The self-contained CLI candidate: built, packed, then installed into a
-      # throwaway directory outside the repository with a blank HOME.
-      - name: Pack the CLI candidate
-        run: npm run pack:cli
+      - name: Check e2e types and run the local-only suite
+        run: |
+          npm run check:e2e
+          npm run e2e:local-only
 
-      - name: Install and exercise the CLI candidate in isolation
-        run: npm run e2e:cli-local
+      - name: Inspect publishable packages
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm pack --workspace @syndroo/provider-sdk --dry-run
+          npm pack --workspace @syndroo/sdk --dry-run
+          npm pack --workspace @syndroo/cli --dry-run
+          npm pack --workspace @syndroo/server --dry-run
+          npm pack --workspace @syndroo/cloudflare --dry-run
 
-      # Layer 2: pack the artifacts, install them outside the monorepo, and run
-      # the real CLI against the local harness. It installs only local tarballs
-      # and contacts no registry for the Syndroo packages.
-      - name: Run installed-package consumer gate
-        if: matrix.node-version == '24'
-        run: npm run e2e:consumer -- --source tarball
-
-      - name: Inspect publish package
-        if: matrix.node-version == '24'
-        run: npm pack --workspace @syndroo/cloudflare-worker --dry-run
-
-      - name: Inspect the CLI candidate contents
-        run: npm pack --workspace @syndroo/cli --dry-run
-
-      - name: Verify generated files
+      - name: Verify no generated file is left uncommitted
         run: git diff --exit-code

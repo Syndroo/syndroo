@@ -9,7 +9,6 @@ import {
   isInside,
   type LicenseEntry,
   PACKAGE_NAME,
-  PACKAGE_PATH,
   planWorkerBundle,
   renderThirdPartyLicenses,
   resolveRepositoryRoot,
@@ -18,9 +17,9 @@ import {
 
 const repositoryRoot = resolveRepositoryRoot(process.cwd());
 const plan = planWorkerBundle(repositoryRoot);
-const packageDirectory = resolve(repositoryRoot, PACKAGE_PATH);
-const bundlePath = resolve(plan.outputDirectory, "index.js");
-const sourceMapPath = resolve(plan.outputDirectory, "index.js.map");
+const packageDirectory = plan.packageDirectory;
+const bundlePath = resolve(plan.outputDirectory, plan.bundleFileName);
+const sourceMapPath = resolve(plan.outputDirectory, plan.sourceMapFileName);
 const licensePath = resolve(plan.outputDirectory, "THIRD_PARTY_LICENSES.txt");
 const licensesDirectory = resolve(packageDirectory, "licenses");
 const supplementPath = resolve(
@@ -31,7 +30,7 @@ const supplementPath = resolve(
 for (const required of [bundlePath, sourceMapPath]) {
   if (!existsSync(required)) {
     throw new Error(
-      `Missing ${required}.\nRun \`npm run build:package\` before generating licenses.`,
+      `Missing ${required}.\nRun \`${plan.buildCommand}\` before generating licenses.`,
     );
   }
 }
@@ -164,7 +163,7 @@ entries.sort((left, right) =>
 
 await writeFile(
   licensePath,
-  renderThirdPartyLicenses(entries, `${PACKAGE_NAME} dist/index.js`),
+  renderThirdPartyLicenses(entries, `${PACKAGE_NAME} dist/worker.js`),
   "utf8",
 );
 

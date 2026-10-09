@@ -1,18 +1,20 @@
 import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
-export const PACKAGE_NAME = "@syndroo/cloudflare-worker";
-export const PACKAGE_PATH = "packages/cloudflare-worker";
-export const REPOSITORY_MARKERS = [
-  "wrangler.jsonc",
-  "package.json",
-] as const;
+export const PACKAGE_NAME = "@syndroo/cloudflare";
+export const PACKAGE_PATH = "packages/cloudflare";
+export const REPOSITORY_MARKERS = ["package.json"] as const;
 
 export type WorkerBundlePlan = {
   readonly repositoryRoot: string;
-  readonly configPath: string;
+  readonly packageDirectory: string;
   readonly outputDirectory: string;
-  readonly wranglerArguments: readonly string[];
+  /** Bundle file the published tarball ships (`main`/`exports` in the manifest). */
+  readonly bundleFileName: string;
+  /** Source map beside the bundle, when the bundler emits one. */
+  readonly sourceMapFileName: string;
+  /** The command an operator runs to produce the bundle. */
+  readonly buildCommand: string;
 };
 
 export type BundledSource = {
@@ -29,28 +31,21 @@ export type Violation = {
   readonly detail: string;
 };
 
-// Wrangler resolves `--outdir` relative to the directory of the `--config`
-// file, not relative to the working directory. Syndroo keeps its single
-// production manifest at the repository root, so a relative `--outdir` writes
-// the bundle into the root `dist/` and leaves the published package with a
-// stale artifact. Always hand Wrangler an absolute path.
+// Architecture v1 builds the Worker with esbuild (`scripts/bundle-v1-cloudflare.ts`,
+// run by the package's own `build` script) rather than Wrangler, so the plan
+// names the published package directory and the artifact files it ships instead
+// of a Wrangler `--outdir`/`--config` pair.
 export function planWorkerBundle(repositoryRoot: string): WorkerBundlePlan {
   const root = resolve(repositoryRoot);
-  const configPath = resolve(root, "wrangler.jsonc");
-  const outputDirectory = resolve(root, PACKAGE_PATH, "dist");
+  const packageDirectory = resolve(root, PACKAGE_PATH);
 
   return {
     repositoryRoot: root,
-    configPath,
-    outputDirectory,
-    wranglerArguments: [
-      "deploy",
-      "--dry-run",
-      "--outdir",
-      outputDirectory,
-      "--config",
-      configPath,
-    ],
+    packageDirectory,
+    outputDirectory: resolve(packageDirectory, "dist"),
+    bundleFileName: "worker.js",
+    sourceMapFileName: "worker.js.map",
+    buildCommand: `npm run build --workspace ${PACKAGE_NAME}`,
   };
 }
 
@@ -345,8 +340,9 @@ export function renderThirdPartyLicenses(
     "",
     `Bundled into ${generatedFor}.`,
     "",
-    "Generated from the built Worker bundle source map by `npm run",
-    "build:package`. Every package listed here contributes modules to the",
+    "Generated from the built Worker bundle source map by",
+    "`npm run build --workspace @syndroo/cloudflare`. Every package listed here",
+    "contributes modules to the",
     "shipped bundle. Each text is copied verbatim from the installed package,",
     "except where a `text source:` line records a reviewed supplement for a",
     "package that ships no license file of its own.",
@@ -407,6 +403,13 @@ const LEAK_PATTERNS: ReadonlyArray<{ code: string; pattern: RegExp }> = [
   {
     code: "api-key-assignment",
     pattern: /SYNDROO_API_KEY"?\s*[:=]\s*["'][^"'\s]{8,}["']/,
+  },
+  {
+    // Architecture v1's Worker reads these three Worker secrets directly from
+    // `env`; a literal assignment to any of them is a leaked deployment key.
+    code: "worker-secret-assignment",
+    pattern:
+      /\b(?:API_BEARER|SECRET_KEY|RUNTIME_KEY)\b"?\s*[:=]\s*["'][^"'\s]{8,}["']/,
   },
 ];
 

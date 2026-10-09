@@ -38,6 +38,15 @@ export interface CliIo {
   readonly signal: AbortSignal;
 }
 
+/**
+ * Bound for one interactive terminal read, in milliseconds.
+ *
+ * This is not an input timeout for a human: it only keeps a wedged terminal
+ * from blocking forever. A read that already collected characters returns them
+ * when the bound is reached, so a slow typist never loses a partial answer.
+ */
+export const INTERACTIVE_READ_LIMIT_MS = 600_000;
+
 const TTY_READ_SLICE_MS = 5;
 
 /**

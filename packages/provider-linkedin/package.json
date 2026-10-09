@@ -1,0 +1,35 @@
+{
+  "name": "@syndroo/provider-linkedin",
+  "version": "0.7.0-rc.1",
+  "type": "module",
+  "description": "LinkedIn Provider plugin for Syndroo architecture v1: text posts through the LinkedIn Posts API.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syndroo/syndroo.git",
+    "directory": "packages/provider-linkedin"
+  },
+  "bugs": {
+    "url": "https://github.com/Syndroo/syndroo/issues"
+  },
+  "homepage": "https://github.com/Syndroo/syndroo#readme",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "sideEffects": false,
+  "files": ["dist", "LICENSE", "NOTICE"],
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": { "@syndroo/provider-sdk": "0.7.0-rc.1" },
+  "devDependencies": {},
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "prepack": "npm run build"
+  }
+}

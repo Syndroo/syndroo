@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const PACKAGE_DIRECTORY = "packages/cloudflare-worker";
+const PACKAGE_DIRECTORY = "packages/cloudflare";
 const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
 const CHECKER_PATH = fileURLToPath(
   new URL("./check-release.js", import.meta.url),
@@ -42,7 +42,7 @@ const FAKE_REGISTRY_MODULE = [
 ].join("\n");
 
 const BASE_MANIFEST: Readonly<Record<string, unknown>> = {
-  name: "@syndroo/cloudflare-worker",
+  name: "@syndroo/cloudflare",
   version: "0.2.0",
   license: "Apache-2.0",
   repository: {
@@ -53,8 +53,8 @@ const BASE_MANIFEST: Readonly<Record<string, unknown>> = {
 };
 
 /**
- * The 0.6 candidate publishes the CLI alone, at a version the Worker does not
- * share. The legacy Worker layout above stays the default.
+ * The CLI is validated on its own release set, at a version it does not share
+ * with the packaged Worker. The default (Worker) layout above is unchanged.
  */
 const CLI_DIRECTORY = "packages/cli";
 const CLI_LAYOUT = {
@@ -225,7 +225,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
-      package: "@syndroo/cloudflare-worker",
+      package: "@syndroo/cloudflare",
       version: "0.2.0",
       published: "false",
       dist_tag: "latest",
@@ -245,7 +245,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
-      package: "@syndroo/cloudflare-worker",
+      package: "@syndroo/cloudflare",
       version: "0.2.0-rc.1",
       published: "false",
       dist_tag: "next",
@@ -276,7 +276,7 @@ describe("release channel", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
-      package: "@syndroo/cloudflare-worker",
+      package: "@syndroo/cloudflare",
       version: "0.2.0",
       published: "false",
       dist_tag: "latest",
@@ -433,7 +433,7 @@ describe("manifest guardrails", () => {
       [
         "another package name",
         { name: "@syndroo/other" },
-        /Expected package name @syndroo\/cloudflare-worker/,
+        /Expected package name @syndroo\/cloudflare/,
       ],
       ["a private package", { private: true }, /must not be private/],
       ["another license", { license: "MIT" }, /must use Apache-2\.0/],
@@ -530,7 +530,7 @@ describe("malformed versions", () => {
     assert.equal(existsSync(fixture.outputPath), false);
   });
 
-  it("writes exactly the three expected outputs", async () => {
+  it("writes exactly the four expected outputs", async () => {
     const fixture = await createFixture("output-shape", {
       version: "0.2.0-rc.3",
     });
@@ -570,7 +570,7 @@ describe("registry check", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readRegistryRequests(fixture), [
-      "https://registry.npmjs.org/%40syndroo%2Fcloudflare-worker/0.2.0",
+      "https://registry.npmjs.org/%40syndroo%2Fcloudflare/0.2.0",
     ]);
     assert.equal((await readOutputs(fixture))["published"], "false");
   });
@@ -590,7 +590,7 @@ describe("registry check", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(await readOutputs(fixture), {
-      package: "@syndroo/cloudflare-worker",
+      package: "@syndroo/cloudflare",
       version: "0.2.0-rc.1",
       published: "true",
       dist_tag: "next",
@@ -623,9 +623,9 @@ describe("registry check", () => {
 });
 
 /**
- * The CLI-only release set. Before this existed the checker always read the
- * Worker manifest, so a `v0.6.0-rc.1` event validated version 0.2.0 and failed
- * the release for the wrong package.
+ * The CLI release set. Before it existed the checker always read the packaged
+ * Worker's manifest, so a CLI release event validated the wrong version and
+ * failed the release for the wrong package.
  */
 describe("cli release set", () => {
   it("validates the CLI manifest for a matching candidate tag", async () => {
@@ -678,7 +678,7 @@ describe("cli release set", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       JSON.parse(result.stdout).package,
-      "@syndroo/cloudflare-worker",
+      "@syndroo/cloudflare",
     );
     assert.equal(JSON.parse(result.stdout).releaseSet, "all");
   });

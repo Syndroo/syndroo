@@ -1,458 +1,578 @@
 # Syndroo CLI manual
 
-This manual covers the `syndroo` command in the CLI-first `0.7.0-rc.1`
-candidate: local publishing to Bluesky, Threads, LinkedIn, Mastodon, and DEV.to, plus the retained remote
-path for a deployed Syndroo instance.
+This manual covers the architecture-v1 `syndroo` command: `connect`, `publish`
+and `status`. The CLI is the local runtime of protocol v1 and shares its contract
+with the self-hosted server ([remote-compatibility.md](remote-compatibility.md)).
 
-The candidate is not published to npm and has no live-account acceptance. The
-local providers are `fixture-tested`: their protocol paths are exercised
-against controlled endpoints, not against real accounts.
+Status: the CLI is **unreleased** (`0.7.0-rc.1`) and has **no live-account
+acceptance**. Provider paths are covered by tests against recorded API evidence
+and controlled fixtures. Every command and flag on this page was checked against
+the built `dist/bin.js`: each per-command `--help` and each documented invocation
+was run and its exit code recorded.
 
-## Install
+## Install and run
 
-The candidate is not on npm yet, so it is installed from the tarball this
-repository builds. From the repository root:
-
-```bash
-npm run pack:cli
-npm install --global ./artifacts/syndroo-cli-0.7.0-rc.1.tgz
-syndroo version
-```
-
-Install a tarball someone handed you directly:
+`@syndroo/cli` is not published. Build the workspace and run the bundle:
 
 ```bash
-npm install --global /path/to/syndroo-cli-0.7.0-rc.1.tgz
+npm ci
+npm run build
+node packages/cli/dist/bin.js --help
 ```
 
-`npm pack` inside `packages/cli` is not the release path; `pack:cli` produces
-the self-contained artifact that references no unpublished workspace package.
+`@syndroo/cli` requires Node.js `>=24.19.0`. The bundle inlines private
+`@syndroo/core` and `@syndroo/provider-sdk`, so it needs no unpublished package
+at runtime.
 
-Node.js 22 or newer is required. The packaged CLI is self-contained; you do not
-need to publish or install the internal workspace packages first.
+## Command surface
 
-## What the local path does
+Three business commands, plus help and version:
 
-Publish plain text to Bluesky, Threads, LinkedIn, and Mastodon, and articles to
-DEV.to, in the foreground from this machine.
-`publish` sends directly after confirmation; `--dry-run` is an optional preview.
-Bare `syndroo`, `syndroo -h`, and `syndroo --help` show help without config,
-state writes, credential access, or network calls.
-
-Out of scope for this version: scheduling, media, replies or threads, batch and
-watch modes, RSS, local OAuth on instances that do not advertise S256, or
-token refresh, and any automatic fallback to the remote path.
-
-## Set up local state
-
-```bash
-syndroo init --namespace default
-syndroo doctor --local
-syndroo providers list
+```text
+connect [options] [provider]  Connect, update or disconnect a provider account.
+publish [options]             Prepare, execute or retry a publication.
+status [options]              Query providers, connections and operations.
 ```
 
-| What | Where |
+A bare `syndroo`, `syndroo --help`, `syndroo -h`, `syndroo --version` and
+`syndroo <command> --help` need no configuration, credentials, state writes or
+network calls.
+
+### Global flags
+
+Extracted before the command, so they work anywhere on the line:
+
+| Flag | Effect |
 | --- | --- |
-| Config | `${XDG_CONFIG_HOME:-$HOME/.config}/syndroo/config.json` (`schemaVersion`, `namespace`) |
-| State | `${XDG_STATE_HOME:-$HOME/.local/state}/syndroo` |
+| `--config <absolute path>` | Select the configuration file. A relative path is refused. |
+| `--json` | Write exactly one JSON envelope to stdout; diagnostics and any human preview go to stderr. |
+| `--verbose` | Add diagnostics on stderr. `--json` output is unchanged. |
+| `--no-color` | Disable ANSI styling. `NO_COLOR` and a non-TTY stdout do the same. |
+| `--help`, `-h` | Print help and exit `0`. |
+| `--version` | Print `<version> (node <version>)` and exit `0`. |
 
-`--state-home <path>` overrides the state location for one run, and
-`--namespace <name>` overrides the namespace. The namespace is a
-deduplication domain, not a permission boundary: changing it creates an
-independent identity for the same text, which is why it is not a repair.
+A repeated global flag is a usage error, not last-one-wins.
 
-The state holds `installation.json`, `integrity.key`, `connections/`, `intents/`,
-`operations/`, `deliveries/`, a write lock, a recovery guard, and quarantine
-evidence. Directories are `0700` and files are `0600`. Those permissions limit
-access; they are not encryption, and intents and receipts contain the post text
-and the account identity. Older `plans/` records remain readable for existing
-operations; new publishing never writes that directory.
+### `connect`
 
-## Register an account
-
-The `connect` entrypoint defaults to local mode and reuses the existing auth
-binding. `--local` remains accepted, but is not required for `connect`:
-
-```bash
-syndroo connect bluesky
-syndroo connect bluesky --from-env --expect-account <verified-id> --yes --no-input
-```
-
-On an interactive terminal, the first command offers a credential-source
-choice; without a TTY or with `--no-input`, it refuses with source-selection
-guidance. It never guesses a source. The second command verifies and binds the
-explicitly selected account. Binding requires prior `syndroo init`. Remote
-instance environment variables cannot switch this command to a server. `--managed` is rejected
-before side effects; it does not enable a hosted service. The older `auth`
-commands below still require `--local`.
+| Flag | Effect |
+| --- | --- |
+| `[provider]` | Provider id to connect, for example `bluesky`. |
+| `--label <label>` | Set the connection label. |
+| `--connection <connectionId>` | Reconnect or refresh an existing connection. |
+| `--from-env` | Import credentials from `SYNDROO_CREDENTIALS`. |
+| `--credential-file <path>` | Import credentials from a JSON file. |
+| `--update <connectionId>` | Change a connection's label or default flag. |
+| `--disconnect <connectionId>` | Disconnect a stored connection. |
+| `--input <file>` | Read a whole machine `ConnectRequest`; `-` reads stdin. Cannot be combined with a provider positional. |
+| `--redirect-uri <uri>` | OAuth redirect URI to register; defaults to a loopback URI. |
+| `--callback-url <url>` | Redirected URL to verify; `-` reads it from standard input. |
+| `--default` | Mark the connection as default. Only valid with `--update`. |
+| `--no-default` | Clear the default flag. Only valid with `--update`. |
 
 ```bash
-syndroo auth set bluesky --local --from-env
-syndroo auth set threads --local --credential-file ./threads-credentials.json
-syndroo auth status --local
-syndroo auth status bluesky --local --verify
-syndroo auth remove bluesky --local
+node packages/cli/dist/bin.js connect bluesky
+node packages/cli/dist/bin.js connect bluesky --from-env
+node packages/cli/dist/bin.js connect bluesky --credential-file ./bluesky.json
+node packages/cli/dist/bin.js connect bluesky --label work
+node packages/cli/dist/bin.js connect bluesky --connection conn_example
+node packages/cli/dist/bin.js connect --input ./connect.json
+node packages/cli/dist/bin.js connect --update conn_example --label personal
+node packages/cli/dist/bin.js connect --update conn_example --default
+node packages/cli/dist/bin.js connect --update conn_example --no-default
+node packages/cli/dist/bin.js connect --disconnect conn_example
 ```
 
-`--from-env` reads one whole group: `BLUESKY_IDENTIFIER`, `BLUESKY_PASSWORD`,
-and optional `BLUESKY_HOST` (which must be `bsky.social`), or
-`THREADS_ACCESS_TOKEN`. A credential file is strict JSON:
+A provider positional starts a connection. On a terminal, a `credential_input`
+step is prompted field by field and secret fields are read with echo disabled.
+Without a terminal, or with `--json`, the CLI reports `action_required` and exits
+`0`; it never blocks waiting for input. `--from-env` and `--credential-file` are
+mutually exclusive, and neither is guessed when the provider needs credentials.
+
+The four entry points are mutually exclusive: a provider positional,
+`--input`, `--update` and `--disconnect`. `--label` and `--connection` belong to
+the provider positional; `--label`, `--default` and `--no-default` belong to
+`--update`. `--default` without `--update` is a usage error, so the default flag
+is set with `connect --update <connectionId> --default`, not on the initial
+connect.
+
+A `resume` request carries credentials or a callback exchange and is therefore
+only accepted from stdin (`--input -`), never from a named file.
+
+### `publish`
+
+| Flag | Effect |
+| --- | --- |
+| `--input <file>` | Read a request document; `-` reads stdin. |
+| `--data <json>` | Inline request document. |
+| `--retry <operationId>` | Retry an operation's eligible targets. |
+| `--to <connectionId>` | Retry target connection; repeatable. Required with `--retry`. |
+| `--request-id <id>` | Stable request identity for this logical call. |
+| `--dry-run` | Offline preview; no state, credential or network access. |
+
+Exactly one source: `--input <file>`, `--data <json>`, or `--retry <operationId>`
+with one or more `--to <connectionId>`. A conflict, a missing source, `--to`
+without `--retry`, or `--dry-run` with `--retry` is a usage error.
+
+```bash
+node packages/cli/dist/bin.js publish --input post.json
+node packages/cli/dist/bin.js publish --input post.json --dry-run
+node packages/cli/dist/bin.js publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
+node packages/cli/dist/bin.js publish --input - --json < execute.json
+node packages/cli/dist/bin.js publish --retry op_example --to conn_example
+```
+
+In human mode a `prepare` result prints the full preview and then asks the
+controlling terminal for an explicit `y`/`yes`. A confirmed run executes the same
+in-process token and prints the execution; a declined answer prints the exact
+later command and exits `5`; a run with no terminal prints the preview and the
+later command and exits `0` without sending. `--json` never prompts.
+
+An execute request carries a live approval token, so it is only ever read from
+stdin. A `retry` request built from `--retry`/`--to` resolves each connection id
+through `status --connections`; an unknown id is `NOT_FOUND` and a repeated id is
+`DUPLICATE_TARGET`.
+
+### `status`
+
+| Flag | Effect |
+| --- | --- |
+| `--provider <providerId>` | Ask about one provider. |
+| `--connections` | List stored connections. May be combined with `--provider`. |
+| `--operation <operationId>` | Read one operation. |
+| `--operations` | Page through operation summaries. |
+| `--limit <count>` | Page size for `--operations`, 1 to 100. |
+| `--cursor <cursor>` | Opaque cursor for `--operations`. |
+
+```bash
+node packages/cli/dist/bin.js status
+node packages/cli/dist/bin.js status --provider bluesky
+node packages/cli/dist/bin.js status --connections
+node packages/cli/dist/bin.js status --provider bluesky --connections
+node packages/cli/dist/bin.js status --operation op_example
+node packages/cli/dist/bin.js status --operations --limit 20
+node packages/cli/dist/bin.js status --operations --limit 20 --cursor <cursor>
+```
+
+At most one of `--connections`, `--operation` and `--operations` may be used.
+`--provider` cannot be combined with `--operation` or `--operations`. `--limit`
+and `--cursor` belong only to `--operations`. With no selector, the overview is
+returned. Nothing here creates the state root, takes a write lock, reads a secret
+or calls a provider: reads never mutate and never repair.
+
+## Configuration
 
 ```json
 {
-  "schemaVersion": 1,
-  "provider": "threads",
-  "credentials": { "accessToken": "USER_SUPPLIED_TOKEN_PLACEHOLDER" }
+  "version": 1,
+  "stateRoot": "/absolute/path/to/state",
+  "providers": { "bluesky": { "path": "./plugins/bluesky" } }
 }
 ```
 
-Exactly one source is used, the whole group is read once to take a snapshot,
-and the CLI never reads `.env`, never mixes sources, and never falls back to
-another source. The state stores a reference, a stable account id, a revision,
-and an installation-keyed group fingerprint; it stores no platform secret.
-Output never contains a value, a source path, or a fingerprint.
+| Key | Meaning |
+| --- | --- |
+| `version` | Must be `1`. Any other value is refused and never migrated. |
+| `stateRoot` | Optional. An absolute path, or a path resolved against the config file's directory. Defaults to `$XDG_STATE_HOME/syndroo/runtime-v1`. |
+| `providers` | Optional. Provider id to `{ "path": "<local package root>" }`, at most 100 entries. An override replaces the built-in catalog entry and its provenance. |
 
-A credential file must be a plain file the current user owns that nobody else
-can read. Create it yourself and tighten it before the first use:
+The default config file is `$XDG_CONFIG_HOME/syndroo/config.json`, falling back
+to `$HOME/.config/syndroo/config.json`. `--config` is the only way to select
+another one, and it must be an absolute path that exists. The file is at most
+64 KiB, must be strict JSON, rejects unknown top-level keys, and rejects any key
+that looks like a token, secret, password, API key or credential rather than
+ignoring it. State root and provider paths resolve against the config file's
+directory, so changing the working directory cannot change which plugin or which
+state a run uses.
 
-```bash
-chmod 600 ./threads-credentials.json
-syndroo auth set threads --local --credential-file ./threads-credentials.json
+## State
+
+State lives under the resolved state root. Directories are created `0700` and
+files `0600`. Those permissions limit access; they are not encryption. The state
+holds connection records, operation intent, deliveries and a request journal, and
+it contains post text and account identity in plain files.
+
+`status` never repairs state. A lock whose owner record is missing is fail-closed:
+the CLI will not delete or reclaim it on its own. Diagnose that condition by hand
+with every Syndroo process stopped, and keep the files as evidence.
+
+## Credentials
+
+Credentials are imported once and then managed by Core. Later calls read the
+Core credential store, never the original environment variable or file.
+
+`--from-env` reads exactly one variable, `SYNDROO_CREDENTIALS`, whose value is a
+strict-JSON object of the provider's credential fields. `--credential-file <path>`
+reads the same object from a plain JSON file.
+
+| Provider | Credential fields | Notes |
+| --- | --- | --- |
+| `bluesky` | `identifier`, `password` | `password` is an app password, not the account password. The positional `connect bluesky` form works. |
+| `devto` | `apiKey` | Sent as the `api-key` header; identity is `GET /api/users/me`. The positional `connect devto` form works. |
+| `linkedin` | `client_id`, `client_secret` | Authorization-code flow; needs a `start` request with `redirectUri`. PKCE is deliberately absent. |
+| `threads` | `client_id`, `client_secret` | Authorization-code flow; needs a `start` request with `redirectUri`. `threads_basic` and `threads_content_publish` are requested. |
+| `mastodon` | `{}` (empty object) | Authorization-code flow with PKCE (S256); needs a `start` request with `instance`, `redirectUri` and `scopes`. |
+
+These five credential shapes are the ones the official provider manifests
+declare, and each was checked against the built provider's `credentialInput`
+schema. Only `bluesky` and `devto` can be started from the positional
+`connect <provider>` form; `linkedin`, `threads` and `mastodon` require connect
+options, so they are started with a whole `ConnectRequest` through
+`connect --input -`.
+
+```json
+{ "identifier": "you.bsky.social", "password": "APP_PASSWORD" }
 ```
 
-The CLI refuses a group- or world-readable file, a symbolic link, and a
-directory, and it never changes permissions for you. The same check applies
-every time the source is re-read for an execution.
+Never paste a secret into a shell argument, a document, a chat or a screenshot.
+`--credential-file` reads a file you manage; `--from-env` reads one environment
+variable. The CLI never reads `.env`, never mixes sources and never falls back to
+another source.
 
-`auth set` verifies the account with the provider before registering it. A
-non-interactive run needs the stable account id the operator already checked:
+## Getting credentials per platform
+
+Each official platform is prepared differently. These steps come from the
+recorded API evidence this tree was written against
+(`outputs/provider-api-evidence.md`, kept outside this repository); where that
+evidence recorded an unresolved point, this guide repeats the gap instead of
+inventing a path.
+
+### Bluesky (`bluesky`)
+
+Registering nothing is needed: Bluesky posting uses an **app password**.
+
+1. Open your Bluesky account settings and find the app-password screen. The two
+   official pages the evidence checked give different navigation paths, so this
+   guide does not assert one — look for "App Passwords".
+2. Create a new app password and copy the value it shows once.
+3. Connect with `identifier` (your handle or email) and `password` (that app
+   password, not your account password):
+
+   ```bash
+   SYNDROO_CREDENTIALS='{"identifier":"you.bsky.social","password":"APP_PASSWORD"}' \
+     node packages/cli/dist/bin.js connect bluesky --from-env
+   ```
+
+The CLI exchanges those two fields for a session at
+`https://bsky.social/xrpc/com.atproto.server.createSession` by JSON body, not
+HTTP basic auth, and stores the session token. To revoke, delete the app password
+in the same settings area.
+
+### DEV.to (`devto`)
+
+1. Sign in and open your DEV.to account settings; the settings page issues a
+   personal **API key**.
+2. Store it as `apiKey`. The provider sends it in the `api-key` header and checks
+   identity with `GET https://dev.to/api/users/me`.
 
 ```bash
-syndroo auth set bluesky --local --from-env --expect-account <stable-id> --yes --no-input
+SYNDROO_CREDENTIALS='{"apiKey":"DEVTO_API_KEY"}' \
+  node packages/cli/dist/bin.js connect devto --from-env
 ```
 
-`auth remove` writes a tombstone. It does not delete your credential file and
-does not revoke anything at the platform.
+The evidence did not confirm a primary key-regeneration or revoke procedure.
+Rotate the key from the same settings page as a platform operation; the CLI
+itself has no revoke command (unverified).
 
-## Write the document
+### LinkedIn (`linkedin`)
+
+LinkedIn is a three-legged authorization-code flow that needs an app you
+register yourself, and it needs a redirect URI before it can start.
+
+1. Create a LinkedIn developer app and note its **client id** and **client
+   secret**.
+2. Request the scopes the flow asks for by default: `w_member_social` (post as
+   the member) plus the OIDC scopes `openid` and `profile`.
+3. Start the connect with a `start` request that carries `redirectUri`. The
+   positional form `connect linkedin` fails, because `redirectUri` is required
+   and only a whole `ConnectRequest` can set it:
+
+   ```bash
+   echo '{"type":"start","provider":"linkedin","options":{"redirectUri":"https://127.0.0.1:8080/callback"}}' \
+     | node packages/cli/dist/bin.js connect --input - --json
+   ```
+
+   The result is `action_required` with a `credential_input` action asking for
+   `client_id` and `client_secret`.
+4. Resume that session with the pair; the result is `action_required` with an
+   `open_url` action holding the authorization URL:
+
+   ```bash
+   echo '{"type":"resume","connectSessionId":"cs_example","stepRevision":1,
+          "input":{"type":"credentials","credentials":{"client_id":"CLIENT_ID","client_secret":"CLIENT_SECRET"}}}' \
+     | node packages/cli/dist/bin.js connect --input - --json
+   ```
+
+   The URL is built on `https://www.linkedin.com/oauth/v2/authorization` with
+   `scope="w_member_social openid profile"`; the code is exchanged at
+   `https://www.linkedin.com/oauth/v2/accessToken`. No PKCE parameter is sent:
+   the evidence found none documented on LinkedIn's token endpoint.
+
+Connect options: `redirectUri` (required), `scopes`, `clientId`, `clientSecret`.
+
+The evidence retrieved no primary permission-removal or token-revoke procedure;
+this guide does not assert a revoke URL.
+
+### Threads (`threads`)
+
+Threads is a Meta authorization-code flow and also needs an app you register.
+
+1. Create a Meta app with the Threads use case and note its **client id** and
+   **client secret**.
+2. The flow requests `threads_basic` (required for token exchange and refresh)
+   and `threads_content_publish`.
+3. Start the connect with a `start` request carrying `redirectUri` (again the
+   positional form fails without it):
+
+   ```bash
+   echo '{"type":"start","provider":"threads","options":{"redirectUri":"https://127.0.0.1:8080/callback"}}' \
+     | node packages/cli/dist/bin.js connect --input - --json
+   ```
+
+   The result is `action_required` with a `credential_input` action for
+   `client_id` and `client_secret`; resuming with the pair returns an `open_url`
+   action built on `https://www.threads.net/oauth/authorize`. The provider then
+   exchanges the code at `https://graph.threads.net/oauth/access_token` and
+   trades the short-lived token for a long-lived one. The short-lived token
+   lifetime is unresolved in the evidence, so no expiry is documented here.
+
+Connect options: `redirectUri` (required), `scopes`, `apiHost`,
+`authorizationHost`, `clientId`, `clientSecret`.
+
+The evidence retrieved no revoke procedure for Threads.
+
+### Mastodon (`mastodon`)
+
+Mastodon is per-instance. The instance host is a connect option, not a plugin
+constant, and it must be an `https://` URL.
+
+1. Note your instance host, for example `https://mastodon.social`.
+2. Start the connect with `instance`, `scopes` and `redirectUri`:
+
+   ```bash
+   echo '{"type":"start","provider":"mastodon","options":{"instance":"https://mastodon.social","scopes":["read:accounts","write:statuses"],"redirectUri":"http://127.0.0.1:8080/callback"}}' \
+     | node packages/cli/dist/bin.js connect --input - --json
+   ```
+
+   Without `clientId`/`clientSecret` in the options the provider first registers
+   an app with the instance (`POST /api/v1/apps`), which is a network call;
+   supplying a pre-registered pair skips it. With the pair supplied the result
+   is `action_required` with an `open_url` action on
+   `https://<instance>/oauth/authorize`; the pre-registered path is the one
+   exercised here, while the auto-registration path needs network access and was
+   not completed in this tree. The `credentialInput` for Mastodon is an empty
+   object: `SYNDROO_CREDENTIALS='{}'` carries no fields.
+3. PKCE with `S256` is used — Mastodon is the only provider here where PKCE
+   support was verified. The token exchange is
+   `POST https://<instance>/oauth/token`.
+
+Connect options: `instance`, `redirectUri`, `scopes` (all required), and
+optional `clientId`, `clientSecret`.
+
+Mastodon's `POST /oauth/revoke` is documented by the platform, but the CLI ships
+no revoke command; revoke from the instance or by the platform's own procedure.
+
+### Completing an OAuth callback from the local CLI
+
+LinkedIn, Threads and Mastodon reach an `open_url` / `wait_for_callback` step.
+The local CLI completes that step itself, in one of two ways.
+
+With a loopback redirect — the default, or the URI `--redirect-uri` names — the
+CLI binds exactly that host, port and path for one delivery and consumes the
+redirect in place. This needs a controlling terminal; without one the command
+prints the authorize URL, reports `action_required` and exits `0` instead of
+blocking.
+
+With a redirect registered elsewhere, open the printed authorize URL and hand
+back the URL the browser landed on: `connect <provider> --callback-url -` reads
+one line from standard input, either piped or pasted at the terminal. A
+delivered callback carries an authorization code, so the design forbids it on
+the argument vector: an argv value that carries `code` or `state` is refused
+with `CALLBACK_URL_INVALID` and exit `2` rather than used, and the session stays
+open for the stdin form.
+
+The redirected URL is never echoed, and neither the authorization code nor the
+token reaches stdout, the envelope or a log. The self-hosted server keeps its own
+`GET /oauth/callback/:provider` route
+([remote-compatibility.md](remote-compatibility.md)) for a deployment that owns
+the session. Bluesky and DEV.to do not need a callback.
+
+## Request envelopes
+
+Machine callers send strict JSON. The wire schema is
+`packages/core/src/protocol/protocol.schema.json`; the three families are
+`ConnectRequest`, `PublishRequest` and `StatusRequest`.
+
+### Connect
+
+```json
+{ "type": "start", "provider": "bluesky", "label": "work" }
+```
 
 ```json
 {
-  "key": "release-announcement-001",
-  "content": "Syndroo now publishes from the command line.",
-  "platforms": ["bluesky", "threads", "linkedin", "mastodon"],
-  "overrides": { "bluesky": { "content": "Shorter version for Bluesky." } }
+  "type": "resume",
+  "connectSessionId": "cs_example",
+  "stepRevision": 1,
+  "input": { "type": "credentials", "credentials": { "identifier": "you.bsky.social", "password": "APP_PASSWORD" } }
 }
 ```
 
-`key` is the stable logical identity (1-128 characters from `A-Z a-z 0-9 . _ :
--`). `content` is non-blank and at most 10000 Unicode code points. `platforms`
-must be non-empty, must not repeat, and may name `bluesky`, `threads`,
-`linkedin`, or `mastodon` for text, plus `devto` only for an explicit
-`schemaVersion: 2` article with `overrides.devto.content` and
-`overrides.devto.article.title` (see the article example below). `overrides`
-may only name a selected platform. `schemaVersion` is optional and defaults to
-`1`; explicit `2` also accepts text-only documents. Explicit null or unsupported
-versions are refused.
+`resume` `input` is either `{ "type": "credentials", "credentials": { ... } }`
+or `{ "type": "callback_complete" }` for an OAuth callback step.
 
-Every input is strict JSON: comments, trailing commas, repeated keys, invalid
-UTF-8, and unpaired surrogates are refused, and one leading byte-order mark is
-tolerated. The source limit is 64 KiB before decoding. `--input -` reads stdin.
-`--data <json>` accepts the same document inline. Choose exactly one source:
-inline JSON, file, or stdin. Conflicts fail before reading input or changing
-state. There is no text shortcut. Provider limits still apply.
-
-## Publish directly
-
-```bash
-syndroo publish --input post.json --yes --no-input --json
-syndroo publish --data '{"key":"agent-post-001","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
+```json
+{ "type": "update", "connectionId": "conn_example", "changes": { "label": "personal", "isDefault": true } }
 ```
 
-Use reusable files for maintained content, or inline JSON for generated content
-without a temporary file. Inline content may appear in shell history and
-process arguments. Use `--input -` with stdin for sensitive text. Keep
-credentials out of post JSON, and pass generated JSON as one argument rather
-than interpolating post text into a shell command.
-
-To validate and inspect before publishing, add an optional dry-run:
-
-```bash
-syndroo publish --input post.json --dry-run --json
+```json
+{ "type": "disconnect", "connectionId": "conn_example" }
 ```
 
-The preview requires existing local config and target bindings, but writes no
-state, takes no lock, resolves no credentials, and makes no network request.
-It shows text, accounts, binding revisions, and a business timestamp. A later
-publish reads the current input again; changing the file between commands
-changes that publish. Within one invocation, confirmation and sending use the
-same parsed snapshot, even if the source changes while the prompt is open.
+### Publish
 
-The execution holds the local write lock, re-checks that the account binding is
-still current, and sends at most one content request per target. Publishing a
-delivery that already succeeded reports the original result and sends
-nothing.
+Prepare one frozen snapshot:
 
-When a human can answer a prompt, the CLI asks before sending. When none can,
-the run needs both `--yes` and `--no-input`; a missing confirmation is exit `2`
-with zero content requests, and a decline is exit `5`.
-
-## Read the result
-
-```bash
-syndroo receipts list --limit 20
-syndroo receipts show <operation-id> --json
+```json
+{
+  "type": "prepare",
+  "content": { "text": "Syndroo now publishes from the command line." },
+  "targets": [{ "provider": "bluesky" }]
+}
 ```
 
-Each target reports `status` (`succeeded`, `failed`, `unknown`, `in_flight`,
-`not_started`), `reused`, `attempts`, `remoteId`, `url`,
-`writeDisposition`, and a `retry` verdict. The aggregate `status` is
-`succeeded`, `partial`, `failed`, `unknown`, or `blocked`, and `durability` is
-`committed` or `failed`.
+A target may name a stored connection and carry its own content and options:
 
-`unknown` means the write may have reached the platform. Report it as unknown
-and stop. A `null` url means no verified link is known, so do not build one.
-
-## Retry
-
-```bash
-syndroo retry <operation-id> --to threads --dry-run --json
-syndroo retry <operation-id> --to threads --yes --no-input --json
+```json
+{
+  "type": "prepare",
+  "content": { "text": "Hello" },
+  "targets": [
+    { "provider": "bluesky", "connection": "conn_example" },
+    { "provider": "mastodon", "options": { "visibility": "public" } }
+  ]
+}
 ```
 
-Retry executes directly; its optional dry-run is read-only. Only targets whose
-failure is provably `not_applied` are eligible, and only within three content
-attempts per logical delivery. A selection that includes an `unknown` target
-blocks the whole retry; narrow it to other safe targets instead. A succeeded
-target is never republished.
+Execute the token a prepare returned:
 
-If credentials were rotated, the retry preview shows the old and the new
-binding, and the same stable account must be re-verified before retrying.
-
-## State inspection and recovery
-
-```bash
-syndroo state inspect
-syndroo state recover --confirm-no-writers --yes
+```json
+{ "type": "execute", "approvalToken": "at_example" }
 ```
 
-`state inspect` is read-only: it reports the lock, schema versions, and any
-defects it can see. `state recover` is maintenance for a machine where every
-other writer has stopped. It takes an exclusive recovery guard, quarantines a
-stale lock with its evidence, and turns orphaned in-flight intent into
-`unknown`. It never sends content, never rewrites a committed outcome, and
-never steals a lock that a live process may hold.
+Retry explicit targets of an existing operation:
 
-One failure mode deliberately stops and asks a human. If a process dies
-immediately after creating the write lock but before its owner record is
-durable, the state is left holding a lock with no readable owner. Every writer
-and the recovery path refuse to proceed: the tool cannot tell a dead
-half-acquisition from one that is still in progress, so it will not reclaim the
-lock on its own. Diagnose that state by hand, with every Syndroo process
-stopped, and keep the lock file as evidence. Nothing in this manual or the CLI
-deletes, reclaims, or force-removes a lock automatically, and you should not
-either without first proving that no writer is alive.
+```json
+{ "type": "retry", "retryOf": "op_example", "targets": [{ "provider": "bluesky", "connection": "conn_example" }] }
+```
 
-Deleting the state, changing the namespace, or restoring an old backup does not
-prove that nothing was published. It removes the local record that prevents a
-duplicate.
+A document with no `type` is an ordinary `content` + `targets` document; the CLI
+adapts it by adding `"type": "prepare"` before the request reaches Core. The wire
+`PublishRequest` itself always carries a `type`. Choose exactly one source
+(`--input`, `--data`, or `--input -`); the request is at most 64 KiB and is
+strict JSON: comments, trailing commas, repeated keys, invalid UTF-8 and unpaired
+surrogates are refused.
 
-## Exit codes and JSON
+### Status
+
+```json
+{ "type": "overview" }
+{ "type": "provider", "provider": "bluesky" }
+{ "type": "connections", "provider": "bluesky" }
+{ "type": "operation", "operationId": "op_example" }
+{ "type": "operations", "limit": 20, "cursor": "…" }
+```
+
+`limit` must be an integer from 1 to 100 inclusive. `cursor` is at most 1024
+characters. `status` supports exactly these five queries and no query language.
+
+## Target options per provider
+
+`options` on a target is validated against the provider's `publishOptions`
+schema. `options` is rejected if the provider declares no options.
+
+| Provider | `publishOptions` |
+| --- | --- |
+| `bluesky` | none (text only) |
+| `threads` | `{ "text": string }` |
+| `linkedin` | `{ "commentary": string, "visibility": string, "author"?, "distribution"?, "linkedinVersion"? }` |
+| `mastodon` | `{ "visibility": string }` |
+| `devto` | `{ "title": string, "body_markdown": string, "published"?, "tags"?, "canonical_url"?, "description"? }` |
+
+`threads`/`linkedin`/`mastodon`/`devto` also accept shared `content.text` where
+their `content` schema declares it; `devto` declares `text` optional and its body
+comes from `body_markdown`.
+
+## JSON output
+
+With `--json`, stdout carries exactly one envelope and nothing else:
+
+```json
+{
+  "protocolVersion": 1,
+  "operation": "status",
+  "ok": true,
+  "result": { "type": "connections", "connections": [] },
+  "error": null
+}
+```
+
+On failure `ok` is `false`, `result` is `null`, and `error` is
+`{ "code": string, "message": string, "details"?: { "field"?, "operationId"?, "retryAt"? } }`.
+The message is a static, safe string; no raw error, stack, path or argv value is
+ever placed in it.
+
+Result shapes are declared by `StatusResult` and by the publish union:
+
+- prepare → `{ "status": "confirmation_required", "operationId", "approvalToken", "expiresAt", "preview": [...] }`
+- execute → `{ "phase": "execution", "operationId", "status", "deliveries": [...], "durabilityWarning"? }`
+- `status` → one of `overview`, `provider`, `connections`, `operation`, `operations`.
+
+`--dry-run` is a CLI-only preview and is **not** part of the wire schema. It
+returns `{ "status": "preview", "preview": [...], "unverified": [...] }` inside
+the publish envelope. `unverified` lists what the offline preview could not
+confirm; treat it as unknown, not as success. The dry-run result requires an
+existing connection for each target and fails with `NOT_FOUND` when a target has
+none.
+
+## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The command finished: a preview validated, a query read successfully, or a run fully succeeded |
-| `1` | Local I/O or runtime failure, or a trusted success that could not be persisted |
-| `2` | Admission failure: usage, config, document, confirmation, or binding. No content request |
-| `3` | A remote `posts wait` reached its deadline |
-| `4` | An unknown write result |
-| `5` | The operator declined before any content request |
-| `6` | The run ended without full delivery |
-| `130` | The process stopped on a signal |
+| `0` | The call was handled: a query read, a prepare/execute returned, or a run fully succeeded. A prepare that returns `confirmation_required` is `0`; it did not publish anything. |
+| `1` | Local failure: internal error, or a trusted result or state write that could not be persisted (`DURABILITY_ERROR`, `STATE_RECOVERY_REQUIRED`). |
+| `2` | Usage, configuration, input, authentication or preflight rejection. Nothing was sent. |
+| `4` | An execution round returned `unknown`: a write may have reached the provider. |
+| `5` | A human explicitly declined at the confirmation step. Nothing was sent. |
+| `6` | The execution finished and is known not to be fully successful (`failed` or `partial`). |
+| `130` | The local process stopped on a signal. Server-side or provider work is not cancelled. |
 
-With `--json`, stdout carries exactly one envelope:
-`{schemaVersion, command, mode, ok, result, error}`. Diagnostics, including the
-preview, go to stderr. `ok` is the command's own success: a preview can be `ok`
-while nothing was published. Read `result.status` as well as the exit code.
+Exit codes are part of the contract: an agent must read `result.status` as well
+as the code, because `0` never means a platform published anything.
 
-## Remote path (retained)
+## Transport and egress
 
-The pre-0.6 HTTP surface is unchanged and is selected explicitly:
+Every provider manifest declares its egress. The CLI resolves one transport per
+provider and fails closed for an origin that was not declared. Mastodon is
+`federated: true` with no fixed origins: its requests target the instance host
+supplied at connect time. A cross-origin redirect is refused; only a same-origin
+`https` redirect is followed.
 
-```bash
-export SYNDROO_BASE_URL=https://syndroo.example.com
-export SYNDROO_API_KEY=...
-syndroo doctor
-syndroo posts validate --file post.json
-syndroo posts create --file post.json --idempotency-key release-001 --yes
-syndroo posts list --limit 20
-syndroo posts get <post-id>
-syndroo posts wait <post-id> --timeout 60s
-```
+## Retired syntax
 
-Remote documents use `content`, `platforms`, `overrides`, and `scheduledAt`,
-with the same platform set the Worker supports. A local failure never falls
-back to this path, and this path never reads local state.
-
-## The bundled skill
-
-```bash
-syndroo skill path
-```
-
-The directory holds `SKILL.md` and its references. The skill describes direct
-publishing for an agent: prepare JSON, check authorization, optionally preview,
-publish, report every target. It is guidance, not an installer and not proof that
-any particular agent client will discover or run it.
+The v1 CLI has no `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`,
+`retry`, `state` or `local *` commands, and no `--yes`/`--no-input` flags. This
+paragraph is a historical note only; none of those are accepted by the current
+build.
 
 ## Evidence and limits
 
-The local publish, plan, store, provider, and command paths have focused tests,
-including real file-state tests, real subprocess tests for locking and signals,
-and provider tests against controlled endpoints.
-
-The packaged CLI has been verified as an isolated install: the self-contained
-tarball installs outside the repository and runs the documented local workflow
-against fake providers, without reaching a real platform. That is packaging and
-plumbing evidence, not platform acceptance.
-
-Limited Linux verification passed on Node.js 22.23.3 as uid 1000 with networking
-disabled: offline old and new CLI installs, explicit schema-1-to-2 state
-upgrade, actual old 0.6 CLI refusal without changing schema-2 state, 0700/0600
-permissions, and unsafe-state-file refusal. Evidence is recorded in
-`root-linux-state-verification.log` for prior candidate SHA-256
-`86c7bdf538db4c63bb67252b70b88086fae67b8b46f9f874e1a82af9b102ac12`.
-This proves state compatibility and permissions for that candidate, not the
-full Linux publishing flow. Root will verify the final repacked candidate
-separately.
-
-Still unverified: the full packaged-platform locality gate (its fixture errors
-remain unresolved), full Linux publishing, the complete macOS/Linux Node.js
-matrix, and live-account acceptance on any of the five providers. No npm
-publication has occurred.
-
-## R3 local release: commands, limits, and evidence
-
-### Commands
-
-```bash
-syndroo connect <provider> [--local] [--from-env | --credential-file <path> | --oauth --instance <url>]
-syndroo connect <provider> --from-env --save-credential-file <new-path> --yes --no-input --expect-account <id>
-syndroo state upgrade --to 2 --confirm-no-writers --yes --no-input
-syndroo state inspect
-```
-
-- `connect` is local-only. `--managed` and remote endpoint flags are refused before
-  any credential read, network call, or state write. `auth set/status/remove`
-  keep their explicit `--local` requirement.
-- `--credential-file` imports an existing file read-only. `--save-credential-file`
-  creates a **new** file: exclusive create, mode 0600, parent directory must
-  already be 0700 (never chmodded), no overwrite, symlinks refused. If the file
-  is written but the binding revision changed, the result reports
-  `credentialFileSaved:true, bindingChanged:false`; the file stays, nothing is
-  deleted, and no path or secret is printed.
-- `--oauth` is Mastodon-only and needs `--instance` plus
-  `--save-credential-file`. It registers one local app on that instance after
-  explicit approval, uses a one-shot loopback callback with PKCE S256, verifies
-  the real account, and then binds. An instance without S256 is refused with a
-  static message; importing a BYO user token is a separate, explicitly chosen
-  `--credential-file` command, never an automatic downgrade. No app secret is
-  cached or reused.
-- `state upgrade` is the only migration. `publish`/`dry-run` never upgrade.
-  Both confirmations are mandatory; an interrupted upgrade leaves a marker that
-  old and new binaries refuse, and rerunning the command resumes it.
-
-### DEV.to article document (v2)
-```json
-{
-  "schemaVersion": 2,
-  "key": "article-2026-10-04",
-  "content": "Summary for the text providers.",
-  "platforms": ["bluesky", "mastodon", "devto"],
-  "overrides": {
-    "devto": {
-      "content": "# Heading\n\nFull Markdown body.",
-      "article": {
-        "title": "A verified publishing workflow",
-        "tags": ["typescript", "opensource"],
-        "canonicalUrl": "https://example.com/posts/safe-publishing"
-      }
-    }
-  }
-}
-```
-Four providers take plain text (`bluesky`, `threads`, `linkedin`, `mastodon`);
-only `devto` takes the v2 article. A v2 document that does not select `devto`
-is still a valid text document. Mastodon env: `MASTODON_INSTANCE`,
-`MASTODON_ACCESS_TOKEN`. DEV.to env: `DEVTO_API_KEY`. Mastodon publishes public
-statuses only; DEV.to publishes individual public articles only, with no media,
-series, organization, or scheduling fields.
-
-### Interactive connect
-`connect` without a credential source on a real terminal prints the platform
-guidance and offers env, an existing file, hidden local entry, or Mastodon
-OAuth. Non-interactive or no-TTY runs refuse immediately with the actionable
-usage error; a missing source is never guessed.
-
-### Limits and guarantees
-
-- Five local providers: Bluesky, Threads, LinkedIn, Mastodon (plain text),
-  DEV.to (articles). Every provider publishes publicly in the foreground; there
-  is no scheduler, daemon, media upload, series, or organization article.
-- Article input is an explicit `schemaVersion: 2` document with
-  `overrides.devto.content` and `article.title`. Product limits: title 1-128
-  code points, at most 4 unique lowercase-alphanumeric tags of 1-30 characters,
-  canonical URL an HTTPS URL of at most 2048 characters, body at most 10000
-  code points, 64 KiB source, YAML front matter and Liquid directives refused.
-  These are Syndroo product limits, not platform-official limits.
-- A frozen plan is the approved bytes. The preview shows the account, title,
-  full Markdown, ordered tags, canonical URL, and public visibility; the
-  execution path re-checks the frozen payload and the current account, and a
-  successful target replays from its receipt with zero credential or network
-  work.
-- Machine off means no publishing. There is no automatic token refresh or
-  revocation; `auth remove` writes a local tombstone and the token must be
-  revoked in the platform settings. State is one active ledger on one machine;
-  backups and the integrity key are the operator's responsibility, and
-  restoring an old ledger or copying state to a second machine is not a
-  deduplication boundary. Switching to the remote API is a different
-  deduplication authority, not a fallback.
-- Never paste a token into a chat or a document. Agents need command execution
-  on this device and explicit publish authorization; an unknown result is never
-  retried automatically, never re-keyed, and never routed through another
-  channel.
-- Third-party services and platforms can change their APIs, limits, and prices;
-  this release makes no availability, delivery, or cost promise.
-
-### Fixture-tested release notes
-
-`0.7.0-rc.1` is fixture-tested: five providers are wired with controlled
-fixtures, the CLI bundles its internal adapters with no bare `@syndroo/*`
-runtime dependency, and the local state upgrade has executed fault-injection
-and real-old-binary evidence. No live account was connected and no real post
-was published for this candidate; live validation stays a separate, authorized
-gate.
-
-### Voluntary U0 trial (proposed, not recruited)
-
-Design values only: five technical users who publish repeatedly, each on their
-own device, over two weeks. Each participant runs connect, a dry-run preview,
-an authorized publish, and a receipt read-back on their own account; they
-record what broke, how they recovered, and whether they used it again. Records
-are supplied voluntarily and redacted by the participant. This release neither
-recruits participants, automates the trial, nor collects telemetry.
-
-### Voluntary U0 record template
-Each participant supplies this voluntarily; never include tokens, secrets, real
-account identifiers, or post contents.
-```
-record-version:
-os-and-node:
-task (connect | preview | publish | receipt | retry):
-date-started: / date-finished:
-time-to-connect-minutes:
-errors (static code + what you saw):
-recovery (what fixed it):
-reused-within-two-weeks (yes/no + how often):
-notes:
-```
+- Commands and flags in this manual were verified against the built
+  `node packages/cli/dist/bin.js`, including each per-command `--help`.
+- JSON examples on this page were validated against the Core-generated
+  validators for `ConnectRequest`, `PublishRequest` and `StatusRequest`.
+- No live end-to-end call to any platform has been made. `dry-run` output,
+  provider payloads and write outcomes are fixture-tested only.
+- LinkedIn pins `LINKEDIN_VERSION` and is awaiting re-verification; Threads uses
+  a single `auto_publish_text=true` call; see [releasing.md](releasing.md) and
+  [testing.md](testing.md).

@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/build-v1.ts",
+    "scripts/bundle-v1-cloudflare.ts",
+    "scripts/bundle-v1-cli.ts",
+    "scripts/bundle-v1-server.ts",
+    "scripts/check-v1.ts",
+    "scripts/generate-provider-catalog.ts",
+    "scripts/lib/bundle-v1.ts",
+    "scripts/lib/v1-stages.ts"
+  ]
+}

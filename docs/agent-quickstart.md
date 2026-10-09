@@ -1,82 +1,100 @@
-# Agent quickstart: local publishing
+# Agent quickstart
 
-This is the short path for an agent or automation that drives the `syndroo`
-CLI. The bundled skill at `syndroo skill path` carries the same workflow with
-more detail; this page is the repo-side summary.
+The short path for an agent or automation that drives the `syndroo` CLI. The
+packaged Skill (`packages/cli/skills/syndroo/SKILL.md`) carries the same workflow
+with more detail; this page is the repo-side summary.
 
-The rule that matters: **publish sends; dry-run only previews**. An authorized
-agent can publish serialized JSON directly, without a temporary file or a
-mandatory preview.
+The CLI is protocol v1: three commands, `connect`, `publish`, `status`. Publishing
+is two explicit phases. `publish` with a `prepare` request returns a
+`confirmation_required` result and an approval token; a second `publish` with an
+`execute` request carries that token. Nothing is sent until the execute call.
 
 ## The sequence
 
 ```bash
-syndroo version
-syndroo skill path
-syndroo doctor --local
-syndroo auth status --local
+node packages/cli/dist/bin.js --version
+node packages/cli/dist/bin.js status --json
 
-# after checking authorization for exactly this content and these accounts
-syndroo publish --data '{"key":"agent-post-001","content":"Hello from Syndroo","platforms":["bluesky"]}' --yes --no-input --json
+# prepare, then show the preview to the user and get explicit approval
+echo '{"type":"prepare","content":{"text":"Hello from Syndroo"},"targets":[{"provider":"bluesky"}]}' \
+  | node packages/cli/dist/bin.js publish --input - --request-id req_agent_001 --json
 
-syndroo receipts show <operation-id> --json
+# execute only after that approval, with the token the prepare returned
+echo '{"type":"execute","approvalToken":"at_example"}' \
+  | node packages/cli/dist/bin.js publish --input - --json
+
+node packages/cli/dist/bin.js status --operation op_example --json
 ```
 
-1. Confirm the CLI exists and which providers have an active binding. Both
-   checks read only; `auth status --local` stays offline unless `--verify` is
-   added.
-2. Build one strict JSON document with a stable `key` and an explicit
-   `platforms` list. There is no default target; `schemaVersion` defaults to `1`.
-3. Optionally add `--dry-run` to inspect content, target accounts and binding
-   revisions. It is read-only, resolves no credentials, and makes no network
-   request. It still requires existing config and target bindings.
-4. If the user already authorized this content, these accounts, and this
-   action, continue. Ask only when that authorization does not cover what the
-   input contains.
-5. Publish with `--data <json>` and `--yes --no-input`, or use
-   `--input post.json` for a reusable file and `--input -` for stdin. Choose one
-   source. Confirmation grants no permission. A separate publish reads its
-   current input; within that invocation, it confirms and sends one snapshot.
-6. Report every target separately: status, attempts, remote id, and the
-   durability of the result.
+1. Confirm the CLI runs here and which providers have an active connection.
+   `status` is read-only and never calls a provider or reads a secret.
+2. Save a request identity. `--request-id <id>` is the stable key for one logical
+   call; reuse it if you must retry a lost response, and never reuse it for
+   different content.
+3. Prepare. The result is `confirmation_required` with the full `preview`,
+   `operationId`, `approvalToken` and `expiresAt`. A `prepare` does not publish.
+4. Show the preview to the user and get explicit approval. A zero exit from a
+   prepare is not approval.
+5. Execute with the token. In `--json` there is never an implicit prompt; an
+   execute request is accepted only from stdin.
+6. Report every target from the execution result, then read `status --operation`
+   if you need the settled record.
+
+## Request shapes
+
+```json
+{ "type": "prepare", "content": { "text": "…" }, "targets": [{ "provider": "bluesky" }] }
+```
+```json
+{ "type": "execute", "approvalToken": "at_example" }
+```
+```json
+{ "type": "retry", "retryOf": "op_example", "targets": [{ "provider": "bluesky", "connection": "conn_example" }] }
+```
+
+A `prepare` or `retry` uses `--request-id`; an `execute` does not need one.
+`--dry-run` is an optional offline preview of a `prepare` document: it writes no
+state, resolves no credentials and makes no network call. It requires an existing
+connection for every target.
 
 ## Rules an agent must not break
 
-- Never republish to hide a failure. Keep the same key, the same namespace, and
-  the same state directory, and read the receipt. A new key, namespace, or
-  state directory publishes the same text under a new identity.
-- Never retry an `unknown` result blindly. Use
-  `syndroo retry <operation-id> --to threads --yes --no-input --json` only for
-  authorized targets whose failure is provably `not_applied`; add `--dry-run`
-  to inspect without retrying.
-- Serialize JSON and pass it as one argument, never interpolate generated text
-  into a shell command. Inline content may appear in shell history and process
-  arguments; prefer stdin for sensitive text. A temporary file is not required.
-- Never put credentials in the conversation, in command arguments, or in a
-  screenshot. `auth set` reads the user's environment group or a credential
-  file the user manages.
-- Never include credentials in post JSON.
-- Never claim a post was published because a preview exited `0`. A preview
-  only validated the input. Only the execution result tells you what each target did, and a
-  `partial` run can already have published some targets; report exactly the
-  targets the result shows.
-- Never switch to the remote HTTP path because the local path failed. The
-  remote path is a separate, explicitly chosen surface.
+- Never treat a zero exit as proof of publication. Read `result.status` and each
+  delivery: `pending`, `running`, `succeeded`, `partial`, `failed`, `unknown`.
+- Never retry an `unknown` outcome blindly. `unknown` means the write may have
+  reached the platform. Read `status --operation <id>` and stop; a deliberate
+  retry is a separate, user-authorized decision.
+- Reuse the same `--request-id` to recover a lost response for the same call. A
+  reused id with different content is `IDEMPOTENCY_CONFLICT`.
+- Keep secrets out of the conversation, command arguments and screenshots.
+  Credentials come from the user's own `SYNDROO_CREDENTIALS` environment variable
+  or a credential file the user manages. Never put credentials in a post request.
+- Pass serialized JSON as one argument or on stdin; never interpolate generated
+  text into a shell command. Inline JSON may appear in shell history and process
+  arguments, so prefer stdin for sensitive text.
+- Do not switch to the HTTP server because the local path failed. They share
+  contracts, not state.
 
 ## What to report back
 
-The operation id, the aggregate status, the
-durability, and one line per target. Keep three outcomes apart: delivered, not
-delivered, and unknown. When a url is `null`, say that no verified link is
-known instead of constructing one.
+The `operationId`, the aggregate status, and one line per target: provider,
+connection, outcome status and attempt count. Keep three outcomes apart:
+delivered (`succeeded`), not delivered (`failed`), and unknown (`unknown`). When
+a `url` is absent, say that no verified link is known instead of constructing one.
 
 ## Limits
 
-The `0.7.0-rc.1` candidate publishes plain text and DEV.to articles to five local providers, in
-the foreground, with no scheduling, media, batch mode, or automatic token refresh; Mastodon OAuth is an explicit, separately approved connect flow. Provider
-maturity is `fixture-tested`; there is no live-account acceptance for this
-candidate. Packaged end-to-end checks use fake providers, not live accounts.
+`0.7.0-rc.1` is unreleased and fixture-tested: five providers are wired with
+controlled fixtures; no live account has been connected and no real post has been
+published. There is no scheduling, media, threads/replies, batch or watch mode,
+and no automatic token refresh. LinkedIn, Threads and Mastodon connect through
+an OAuth `open_url` step that needs connect options and a browser callback; the
+local CLI completes that callback itself, either by binding the loopback
+redirect `--redirect-uri` registers or by reading the redirected URL from
+standard input with `--callback-url -`. No live account has been connected, so
+the platform side of those three flows stays unverified. Bluesky and DEV.to
+connect with credentials only.
 
-See [cli-manual.md](cli-manual.md) for the full command reference, and the
-bundled `references/cli.md`, `references/delivery-semantics.md`, and
-`references/http-fallback.md` for the agent-facing detail.
+See [cli-manual.md](cli-manual.md) for the full command and envelope reference,
+and the packaged `references/cli.md` and `references/delivery-semantics.md` for
+the agent-facing detail.

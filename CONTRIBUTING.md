@@ -5,31 +5,34 @@ Thank you for helping improve Syndroo.
 ## Before opening a pull request
 
 1. Open an issue before starting a large behavioral or architectural change.
-2. Keep changes focused and preserve the reliability invariants in
-   [AGENTS.md](AGENTS.md).
+2. Keep changes focused and preserve the protocol invariants described in
+   [AGENTS.md](AGENTS.md) and the specs under
+   [docs/superpowers/specs/architecture-v1/](docs/superpowers/specs/architecture-v1/).
 3. Add or update tests for behavior changes.
-4. Run:
+4. Run, from the repository root:
 
    ```bash
-   export SYNDROO_RELEASE_SET=cli   # candidate versions are split
-   npm test
-   npm run check
-   npm run e2e:cli-local            # local CLI packaging and workflow
-   npm run bundle                   # Worker or Wrangler changes
-   npm run startup                  # Worker imports or startup changes
+   npm ci
+   npm run build        # build all eleven v1 packages
+   npm run check        # type-check and bundle assertions
+   npm test             # per-package tests
    git diff --check
    ```
 
-   The default `SYNDROO_RELEASE_SET=all` train stays strict and reports the
-   current version mismatch by design; use the `cli` set while the candidate
-   versions differ.
-
 5. Documentation changes: keep the root `README.md` a local CLI operating guide,
-   keep the retained remote path in
+   keep the self-hosted and Worker surface in
    [docs/remote-compatibility.md](docs/remote-compatibility.md), and keep
    [docs/testing.md](docs/testing.md) and
-   [docs/releasing.md](docs/releasing.md) aligned with the real gates. Do not
-   claim live validation or a published package before either exists.
+   [docs/releasing.md](docs/releasing.md) aligned with the real commands and
+   unverified areas. Never claim a live validation, a published package or a
+   deployment before one exists.
+
+Release automation now belongs to architecture v1: `.github/workflows/ci.yml`
+runs the v1 gates, and `.github/workflows/release.yml` validates the ten-package
+train and publishes only after an operator opts in — repository variable
+`SYNDROO_PUBLISH_ON_RELEASE` set to `true` on a release event, or a manual
+dispatch with `mode: publish`. Add new acceptance gates to the workflow rather
+than reintroducing the deleted pre-v1 scripts.
 
 ## Developer Certificate of Origin
 
@@ -42,9 +45,11 @@ Create it with:
 git commit --signoff
 ```
 
-Pull-request CI checks every commit in the branch. Amend and force-push your
-contribution branch if a sign-off is missing; never force-push repository
-`main`.
+Pull-request CI runs `npm run dco:check` over the branch's commit range, which
+requires `SYNDROO_BASE_SHA` and `SYNDROO_HEAD_SHA` to hold full commit SHAs. There
+is no bare local form of that command; locally, just use `git commit --signoff`.
+Amend and force-push your contribution branch if a sign-off is missing; never
+force-push repository `main`.
 
 By contributing, you agree that your contribution is licensed under
 Apache License 2.0. Do not submit code you do not have the right to contribute.

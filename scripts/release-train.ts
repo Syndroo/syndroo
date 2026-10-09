@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * Validates the whole v0.4.0 release train, not one package.
+ * Validates the whole architecture-v1 release train, not one package.
  *
- * The release is three public packages that must agree on one version and one
- * dist-tag, must be published in dependency order, and cannot be published
- * atomically. This checker answers one question before any publish step runs:
- * is this checkout a complete, internally consistent release train, and which
- * of its packages still have to be published?
+ * The release train is every public workspace in this repository. They must
+ * agree on one version and one dist-tag, must be published in dependency order,
+ * and cannot be published atomically. This checker answers one question before
+ * any publish step runs: is this checkout a complete, internally consistent
+ * release train, and which of its packages still have to be published?
+ *
+ * The train names the public packages; the private workspaces (`@syndroo/core`)
+ * are bundled into them and are validated as workspace coverage rather than as
+ * release entries, because a private package must never be published.
  *
  * Hard rules enforced here:
  *
@@ -25,6 +29,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MIN_NODE_ENGINE } from "./lib/v1-stages.js";
 import { resolveRepositoryRoot } from "./package-support.js";
 import {
   classifyVersion,
@@ -50,10 +55,60 @@ export type TrainPackage = {
 };
 
 /**
- * The publish order is the array order: the CLI cannot install without the SDK,
- * and the Worker is the deployable artifact that ships last.
+ * The publish order is the array order: `@syndroo/provider-sdk` is the contract
+ * every provider and the CLI build against, so it ships first; the five
+ * official providers come next; `@syndroo/cli` composes the providers and
+ * `@syndroo/server` composes the CLI's runtime, so both follow them; the
+ * packaged Worker is the deployable artifact that ships last.
  */
 export const RELEASE_TRAIN: readonly TrainPackage[] = [
+  {
+    name: "@syndroo/provider-sdk",
+    directory: "packages/provider-sdk",
+    slug: "provider-sdk",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+  },
+  {
+    name: "@syndroo/provider-bluesky",
+    directory: "packages/provider-bluesky",
+    slug: "provider-bluesky",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/provider-sdk",
+  },
+  {
+    name: "@syndroo/provider-threads",
+    directory: "packages/provider-threads",
+    slug: "provider-threads",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/provider-sdk",
+  },
+  {
+    name: "@syndroo/provider-linkedin",
+    directory: "packages/provider-linkedin",
+    slug: "provider-linkedin",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/provider-sdk",
+  },
+  {
+    name: "@syndroo/provider-mastodon",
+    directory: "packages/provider-mastodon",
+    slug: "provider-mastodon",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/provider-sdk",
+  },
+  {
+    name: "@syndroo/provider-devto",
+    directory: "packages/provider-devto",
+    slug: "provider-devto",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/provider-sdk",
+  },
   {
     name: "@syndroo/sdk",
     directory: "packages/sdk",
@@ -67,38 +122,45 @@ export const RELEASE_TRAIN: readonly TrainPackage[] = [
     slug: "cli",
     requiredFiles: ["dist", "skills", "LICENSE", "NOTICE", "README.md"],
     requiredBins: { syndroo: "./dist/bin.js" },
-    dependsOn: "@syndroo/sdk",
+    dependsOn: "@syndroo/provider-sdk",
   },
   {
-    name: "@syndroo/cloudflare-worker",
-    directory: "packages/cloudflare-worker",
-    slug: "worker",
+    name: "@syndroo/server",
+    directory: "packages/server",
+    slug: "server",
+    requiredFiles: ["dist", "LICENSE", "NOTICE"],
+    requiredBins: {},
+    dependsOn: "@syndroo/cli",
+  },
+  {
+    name: "@syndroo/cloudflare",
+    directory: "packages/cloudflare",
+    slug: "cloudflare",
     requiredFiles: [
-      "dist",
-      "licenses",
-      "migrations",
-      "types",
+      "dist/worker.js",
+      "dist/index.d.ts",
+      "dist/worker.d.ts",
+      "dist/d1.d.ts",
       "LICENSE",
       "NOTICE",
-      "README.md",
     ],
-    requiredBins: { "syndroo-deploy": "./dist/deploy.js" },
+    requiredBins: {},
   },
 ];
 
 export const REPOSITORY_URL = "git+https://github.com/Syndroo/syndroo.git";
 export const REGISTRY_URL = "https://registry.npmjs.org";
 export const REQUIRED_LICENSE = "Apache-2.0";
-export const REQUIRED_NODE_ENGINE = ">=22";
+export const REQUIRED_NODE_ENGINE = MIN_NODE_ENGINE;
 
 /**
  * Which packages this run is allowed to publish.
  *
- * `all` is the historical train: one uniform version, and a CLI that installs
- * the exact SDK it was built against. `cli` is the 0.6 candidate: the CLI ships
- * self-contained, so it is validated on its own and must carry no runtime
- * dependency on any workspace package. Selecting `all` never stops being a
- * meaningful check; `cli` narrows the set instead of relaxing a rule.
+ * `all` (the default) is the whole train: every public workspace shares one
+ * version and one dist-tag, and every `dependsOn` pin must be exact. `cli`
+ * narrows the set to `@syndroo/cli` for a release event that carries only the
+ * CLI tag; it never relaxes a rule, and the CLI's exact
+ * `@syndroo/provider-sdk` pin is still enforced.
  */
 export type ReleaseSet = "all" | "cli";
 
@@ -210,6 +272,13 @@ async function main(): Promise<void> {
 
   const selected = releaseSetPackages(releaseSet);
 
+  // The train is the public half of the workspace set: every declared workspace
+  // is either private (bundled into a published artifact, never published) or a
+  // train entry, and every train entry is a declared workspace.
+  for (const problem of await workspaceCoverageProblems(root)) {
+    fail(problem);
+  }
+
   for (const definition of selected) {
     const path = resolve(root, definition.directory, "package.json");
     let parsed: Manifest;
@@ -225,7 +294,7 @@ async function main(): Promise<void> {
     }
 
     manifests.push(parsed);
-    checkManifest(definition, parsed, manifests, releaseSet);
+    checkManifest(definition, parsed, manifests);
   }
 
   const declared = manifests[0]?.version;
@@ -306,10 +375,79 @@ function statusOf(packages: readonly PackagePlan[], name: string): string {
 }
 
 /**
- * Recovery guidance for a partly published train. The three publications are
- * not atomic, so the only safe continuation is to publish exactly the packages
- * that are still missing and then re-check; an already published version is
- * skipped and never overwritten.
+ * Every declared workspace must be accounted for: either it is a train entry,
+ * or its manifest is private and it is bundled into a published artifact.
+ *
+ * A fixture with no `workspaces` array is not a monorepo, so the check is a
+ * no-op there rather than a failure.
+ */
+async function workspaceCoverageProblems(root: string): Promise<string[]> {
+  let manifest: { workspaces?: unknown };
+
+  try {
+    manifest = JSON.parse(
+      await readFile(resolve(root, "package.json"), "utf8"),
+    ) as { workspaces?: unknown };
+  } catch {
+    return [];
+  }
+
+  const workspaces = Array.isArray(manifest.workspaces)
+    ? manifest.workspaces.filter(
+        (entry): entry is string => typeof entry === "string",
+      )
+    : [];
+
+  if (workspaces.length === 0) {
+    return [];
+  }
+
+  const problems: string[] = [];
+  const trainDirectories = new Set(
+    RELEASE_TRAIN.map((definition) => definition.directory),
+  );
+
+  for (const directory of workspaces) {
+    if (trainDirectories.has(directory)) {
+      continue;
+    }
+
+    let declared: { private?: unknown; name?: unknown };
+
+    try {
+      declared = JSON.parse(
+        await readFile(resolve(root, directory, "package.json"), "utf8"),
+      ) as { private?: unknown; name?: unknown };
+    } catch {
+      problems.push(
+        `workspace ${directory} has no readable package.json and is not in the release train.`,
+      );
+      continue;
+    }
+
+    if (declared.private !== true) {
+      problems.push(
+        `workspace ${directory} (${typeof declared.name === "string" ? declared.name : "unnamed"}) is public but is not in the release train.`,
+      );
+    }
+  }
+
+  for (const definition of RELEASE_TRAIN) {
+    if (!workspaces.includes(definition.directory)) {
+      problems.push(
+        `${definition.name} is in the release train but ${definition.directory} is not a declared workspace.`,
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Recovery guidance for a partly published train. The publications are not
+ * atomic, so the only safe continuation is to publish exactly the packages that
+ * are still missing and then re-check; an already published version is skipped
+ * and never overwritten.
  */
 function nextStep(result: TrainResult): { readonly nextStep: string } {
   if (!result.ok) {
@@ -370,7 +508,6 @@ function checkManifest(
   definition: TrainPackage,
   manifest: Manifest,
   collected: readonly Manifest[],
-  releaseSet: ReleaseSet,
 ): void {
   if (manifest.name !== definition.name) {
     fail(
@@ -397,7 +534,7 @@ function checkManifest(
     const expected = collected[0]?.version;
     if (manifest.version !== expected) {
       fail(
-        `${definition.name} declares version ${JSON.stringify(manifest.version)} but the train version is ${JSON.stringify(expected)}. All three packages must ship the same version.`,
+        `${definition.name} declares version ${JSON.stringify(manifest.version)} but the train version is ${JSON.stringify(expected)}. Every package in the release train must ship the same version.`,
       );
     }
   }
@@ -460,25 +597,15 @@ function checkManifest(
     }
   }
 
-  // A self-contained release set publishes the CLI alone, so the CLI must carry
-  // no runtime dependency on a workspace package at all. The historical train
-  // keeps its exact-version pin.
-  if (releaseSet === "cli") {
-    for (const name of Object.keys(manifest.dependencies ?? {})) {
-      if (name.startsWith("@syndroo/")) {
-        fail(
-          `${definition.name} must be self-contained; it must not depend on ${name} at runtime.`,
-        );
-      }
-    }
-  }
-
-  if (definition.dependsOn !== undefined && releaseSet === "all") {
+  // The narrowing `cli` release set never relaxes this rule: whichever set is
+  // selected, a train package must install the exact published version of the
+  // package it builds against, so a resumed publish cannot mix releases.
+  if (definition.dependsOn !== undefined) {
     const range = manifest.dependencies?.[definition.dependsOn];
 
     if (range !== manifest.version) {
       fail(
-        `${definition.name} must depend on exactly ${definition.dependsOn}@${manifest.version}; found ${JSON.stringify(range)}. A range would let a published CLI install a different SDK than the one in this train.`,
+        `${definition.name} must depend on exactly ${definition.dependsOn}@${manifest.version}; found ${JSON.stringify(range)}. A range would let a consumer install a different release than the one this train describes.`,
       );
     }
   }
@@ -792,7 +919,10 @@ async function writeGithubOutput(
   }
 
   const lines = outputs.map(([key, value]) => {
-    if (!/^[a-z][a-z0-9_]*$/.test(key)) {
+    // Train slugs contain hyphens (`provider-sdk`), and GitHub Actions accepts
+    // them in an output name, so the guard only refuses characters that could
+    // break the `name=value` file format or inject a new output.
+    if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
       throw new Error(`Refusing to write unsafe output name ${JSON.stringify(key)}.`);
     }
 

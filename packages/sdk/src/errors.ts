@@ -1,237 +1,201 @@
 /**
- * Typed error hierarchy for the public Syndroo SDK.
+ * Error surface of `@syndroo/sdk`.
  *
- * Every failure the SDK raises is a `SyndrooError`, so callers can narrow on
- * one base class and still classify the outcome precisely. The
- * `requestMayHaveBeenApplied` flag is the state that decides whether a resend
- * is safe: it is true whenever a write may already have reached Syndroo, which
- * is exactly the case where retrying with a new idempotency key could create a
- * second post.
+ * Every error the SDK raises carries a stable `code` and a fixed message. The
+ * message never contains a base URL, a path, an idempotency key, a bearer token
+ * or any part of a server response, because SDK errors reach logs. The only
+ * server-authored data that can appear is `serverError`, and only after the
+ * envelope that carried it passed the generated wire validator.
+ *
+ * A validated envelope is not enough on its own: the wire schema legitimately
+ * allows arbitrary `code`/`message` strings and tolerates extra fields, so the
+ * server object is never stored by reference. `projectServerError` copies it
+ * onto a fixed shape - an allowlisted code, a static message and bounded
+ * `details` values - so no server-authored text can reach a log through
+ * `JSON.stringify`, `util.inspect` or a stack trace.
  */
 
-import type { PostDetail } from "./types.js";
+import type { SafeError } from "./types.js";
 
+/**
+ * Protocol error codes the server may report verbatim (the stable set from the
+ * shared blueprint). A code outside this set is never retained.
+ */
+const SERVER_ERROR_CODES: ReadonlySet<string> = new Set<string>([
+  "INVALID_INPUT",
+  "BODY_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE",
+  "UNAUTHORIZED",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "TARGET_AMBIGUOUS",
+  "DUPLICATE_TARGET",
+  "CONNECTION_IDENTITY_CHANGED",
+  "CONNECTION_CAPACITY",
+  "PROVIDER_TRUST_REQUIRED",
+  "PROVIDER_INVALID",
+  "PROVIDER_UNAVAILABLE",
+  "STALE_INTENT",
+  "STALE_BINDING",
+  "APPROVAL_INVALID",
+  "APPROVAL_EXPIRED",
+  "IDEMPOTENCY_CONFLICT",
+  "REQUEST_IN_PROGRESS",
+  "RETRY_INELIGIBLE",
+  "CONNECT_SESSION_EXPIRED",
+  "CONNECT_STEP_CONFLICT",
+  "CONNECT_STEP_UNKNOWN",
+  "STATE_RECOVERY_REQUIRED",
+  "DURABILITY_ERROR",
+]);
+
+/** Static text kept in place of every server-authored message. */
+const SERVER_ERROR_MESSAGE = "the server rejected the request";
+
+/** Placeholder for a server code the SDK does not recognize. */
+const UNKNOWN_SERVER_ERROR_CODE = "UNKNOWN_ERROR";
+
+/** A dotted path with optional array indices, e.g. `targets[0].options.visibility`. */
+const FIELD_PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]{1,6}\])*$/;
+/**
+ * A Syndroo operation id. Core mints every id as `<prefix>_<base64url>` (for
+ * example `op_2f8c...`), so the shape - a short lowercase prefix, then a
+ * base64url token - is checkable without importing Core. A string that does not
+ * have it is not an id the SDK will echo back.
+ */
+const OPERATION_ID_PATTERN = /^[a-z][a-z0-9]{0,7}_[A-Za-z0-9_-]{1,118}$/;
+/** RFC 3339 date-time, the `IsoTime` shape the wire schema uses. */
+const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+function projectDetails(raw: unknown): SafeError["details"] | undefined {
+  if (raw === null || typeof raw !== "object") {
+    return undefined;
+  }
+  const source = raw as Record<string, unknown>;
+  const details: { field?: string; operationId?: string; retryAt?: string } = {};
+  const field = source["field"];
+  if (typeof field === "string" && field.length <= 256 && FIELD_PATH_PATTERN.test(field)) {
+    details.field = field;
+  }
+  const operationId = source["operationId"];
+  if (typeof operationId === "string" && OPERATION_ID_PATTERN.test(operationId)) {
+    details.operationId = operationId;
+  }
+  const retryAt = source["retryAt"];
+  if (typeof retryAt === "string" && ISO_TIME_PATTERN.test(retryAt)) {
+    details.retryAt = retryAt;
+  }
+  return Object.keys(details).length === 0 ? undefined : details;
+}
+
+/**
+ * Project a server-authored error onto a fixed, allowlisted shape.
+ *
+ * Only three fields survive, each of them validated: an allowlisted `code` (an
+ * unrecognized code becomes `UNKNOWN_ERROR`), a static `message`, and `details`
+ * rebuilt from scratch so unknown keys, wrong types and malformed values are
+ * dropped. Nothing is copied by reference, so mutating the original object
+ * afterwards cannot change what an error reports.
+ */
+export function projectServerError(raw: unknown): SafeError | undefined {
+  if (raw === null || typeof raw !== "object") {
+    return undefined;
+  }
+  const source = raw as Record<string, unknown>;
+  const rawCode = source["code"];
+  const code =
+    typeof rawCode === "string" && SERVER_ERROR_CODES.has(rawCode)
+      ? rawCode
+      : UNKNOWN_SERVER_ERROR_CODE;
+  const error: SafeError = { code, message: SERVER_ERROR_MESSAGE };
+  const details = projectDetails(source["details"]);
+  if (details !== undefined) {
+    error.details = details;
+  }
+  return error;
+}
+
+/** Stable, branchable error codes. Adding one is an API decision. */
 export type SyndrooErrorCode =
-  | "CONFIG"
-  | "VALIDATION"
-  | "ABORTED"
-  | "TIMEOUT"
-  | "NETWORK"
+  | "INVALID_ARGUMENT"
+  | "INSECURE_BASE_URL"
+  | "INVALID_REQUEST"
   | "INVALID_RESPONSE"
+  | "RESPONSE_TOO_LARGE"
+  | "REDIRECT_NOT_ALLOWED"
+  | "TRANSPORT"
+  | "HTTP_ERROR"
+  | "PROTOCOL"
+  | "TIMEOUT"
+  | "ABORTED"
   | "WAIT_TIMEOUT"
-  | (string & {});
+  | "CONFIRMATION_REQUIRED"
+  | "CONFIRMATION_EXPIRED";
 
-export interface SyndrooErrorInit {
-  cause?: unknown | undefined;
-  requestMayHaveBeenApplied?: boolean | undefined;
-}
+/** Fixed messages. Nothing here is interpolated from input or from a response. */
+const MESSAGES: Readonly<Record<SyndrooErrorCode, string>> = Object.freeze({
+  INVALID_ARGUMENT: "the SDK call was given an argument outside its documented bounds",
+  INSECURE_BASE_URL: "the base URL is not an acceptable Syndroo endpoint",
+  INVALID_REQUEST: "the request does not match the Syndroo wire protocol",
+  INVALID_RESPONSE: "the server response does not match the Syndroo wire protocol",
+  RESPONSE_TOO_LARGE: "the server response exceeded the protocol size bound",
+  REDIRECT_NOT_ALLOWED: "the server answered with a redirect, which the SDK never follows",
+  TRANSPORT: "the request could not be completed at the transport layer",
+  HTTP_ERROR: "the server answered with an unexpected HTTP status",
+  PROTOCOL: "the server rejected the request",
+  TIMEOUT: "the request deadline elapsed before a response arrived",
+  ABORTED: "the call was cancelled locally",
+  WAIT_TIMEOUT: "the wait deadline elapsed before the execution round completed",
+  CONFIRMATION_REQUIRED: "the operation is waiting for explicit confirmation",
+  CONFIRMATION_EXPIRED: "the prepared operation's confirmation window has expired",
+});
 
-export class SyndrooError<
-  Code extends SyndrooErrorCode = SyndrooErrorCode,
-> extends Error {
-  readonly code: Code;
-  readonly requestMayHaveBeenApplied: boolean;
-
-  constructor(
-    message: string,
-    init: SyndrooErrorInit & { code: Code },
-  ) {
-    super(message, { cause: init.cause });
-    this.name = "SyndrooError";
-    this.code = init.code;
-    this.requestMayHaveBeenApplied = init.requestMayHaveBeenApplied ?? false;
-  }
-}
-
-/** The client configuration itself is unusable, so no request was sent. */
-export class SyndrooConfigError extends SyndrooError<"CONFIG"> {
-  constructor(message: string) {
-    super(message, { code: "CONFIG" });
-    this.name = "SyndrooConfigError";
-  }
-}
-
-/** The caller's argument cannot become a valid Syndroo request. */
-export class SyndrooValidationError extends SyndrooError<"VALIDATION"> {
-  constructor(message: string) {
-    super(message, { code: "VALIDATION" });
-    this.name = "SyndrooValidationError";
-  }
-}
-
-/** The caller aborted through an AbortSignal. */
-export class SyndrooAbortError extends SyndrooError<"ABORTED"> {
-  constructor(message: string, init: SyndrooErrorInit = {}) {
-    super(message, {
-      code: "ABORTED",
-      cause: init.cause,
-      requestMayHaveBeenApplied: init.requestMayHaveBeenApplied,
-    });
-    this.name = "SyndrooAbortError";
-  }
-}
-
-/** The configured deadline elapsed before the response was received. */
-export class SyndrooTimeoutError extends SyndrooError<"TIMEOUT"> {
-  readonly timeoutMs: number;
-
-  constructor(
-    message: string,
-    init: SyndrooErrorInit & { timeoutMs: number },
-  ) {
-    super(message, {
-      code: "TIMEOUT",
-      cause: init.cause,
-      requestMayHaveBeenApplied: init.requestMayHaveBeenApplied,
-    });
-    this.name = "SyndrooTimeoutError";
-    this.timeoutMs = init.timeoutMs;
-  }
-}
+export type SyndrooErrorInit = {
+  /** HTTP status, when the error came from a response. Never a response body. */
+  status?: number;
+  /**
+   * `SafeError` from an `ok:false` envelope, or any object meant to stand in
+   * for one. It is projected onto the allowlisted shape, never stored as-is.
+   */
+  serverError?: SafeError;
+  /**
+   * Whether the SDK considers a same-key transport retry safe for this failure.
+   * Defaults to true for a bare transport failure and false otherwise.
+   */
+  retryable?: boolean;
+};
 
 /**
- * The request never produced an HTTP response. `networkCode` carries the
- * runtime's error code, such as `ECONNREFUSED`, when one is available.
+ * One error type for transport, protocol and local-cancellation failures.
+ *
+ * `retryable` describes the SDK's own transport-retry decision for this failure
+ * and is never advice to retry content: an `unknown` business outcome is a
+ * successful protocol call, not an error, and is never auto-retried.
  */
-export class SyndrooNetworkError extends SyndrooError<"NETWORK"> {
-  readonly networkCode?: string;
-
-  constructor(
-    message: string,
-    init: SyndrooErrorInit & { networkCode?: string | undefined },
-  ) {
-    super(message, {
-      code: "NETWORK",
-      cause: init.cause,
-      requestMayHaveBeenApplied: init.requestMayHaveBeenApplied,
-    });
-    this.name = "SyndrooNetworkError";
-
-    if (init.networkCode !== undefined) {
-      this.networkCode = init.networkCode;
-    }
-  }
-}
-
-/**
- * Syndroo answered, but the answer is not the documented JSON contract: a
- * non-JSON body, a missing required field, or a body above the configured
- * size limit. The outcome of a write is never inferred from a bad response.
- */
-export class SyndrooResponseError extends SyndrooError<"INVALID_RESPONSE"> {
+export class SyndrooError extends Error {
+  readonly code: SyndrooErrorCode;
   readonly status?: number;
-  readonly preview?: string;
+  readonly serverError?: SafeError;
+  readonly retryable: boolean;
 
-  constructor(
-    message: string,
-    init: SyndrooErrorInit & {
-      status?: number | undefined;
-      preview?: string | undefined;
-    } = {},
-  ) {
-    super(message, {
-      code: "INVALID_RESPONSE",
-      cause: init.cause,
-      requestMayHaveBeenApplied: init.requestMayHaveBeenApplied,
-    });
-    this.name = "SyndrooResponseError";
-
+  constructor(code: SyndrooErrorCode, init: SyndrooErrorInit = {}) {
+    super(MESSAGES[code]);
+    this.name = "SyndrooError";
+    this.code = code;
     if (init.status !== undefined) {
       this.status = init.status;
     }
-
-    if (init.preview !== undefined) {
-      this.preview = init.preview;
+    if (init.serverError !== undefined) {
+      const projected = projectServerError(init.serverError);
+      if (projected !== undefined) {
+        this.serverError = projected;
+      }
     }
+    this.retryable = init.retryable ?? code === "TRANSPORT";
   }
 }
 
-/**
- * Syndroo rejected the request with a documented error envelope. `code` is the
- * server's code such as `UNAUTHORIZED`, `POST_NOT_FOUND`,
- * `IDEMPOTENCY_CONFLICT`, or `PLATFORM_NOT_CONFIGURED`, and `HTTP_<status>`
- * when the body did not carry one.
- */
-export class SyndrooApiError extends SyndrooError {
-  readonly status: number;
-  readonly retryAfterMs?: number;
-
-  constructor(
-    message: string,
-    init: SyndrooErrorInit & {
-      code: SyndrooErrorCode;
-      status: number;
-      retryAfterMs?: number | undefined;
-    },
-  ) {
-    super(message, {
-      code: init.code,
-      cause: init.cause,
-      requestMayHaveBeenApplied: init.requestMayHaveBeenApplied,
-    });
-    this.name = "SyndrooApiError";
-    this.status = init.status;
-
-    if (init.retryAfterMs !== undefined) {
-      this.retryAfterMs = init.retryAfterMs;
-    }
-  }
-
-  /** Syndroo or an intermediary asked the client to slow down. */
-  get retryable(): boolean {
-    return this.status === 429 || this.status >= 500;
-  }
-}
-
-/** `posts.wait` reached its deadline before the post became terminal. */
-export class SyndrooWaitTimeoutError extends SyndrooError<"WAIT_TIMEOUT"> {
-  readonly postId: string;
-  readonly timeoutMs: number;
-  readonly lastStatus?: string;
-  readonly lastPost?: PostDetail;
-  readonly lastError?: SyndrooError;
-
-  constructor(
-    message: string,
-    init: {
-      postId: string;
-      timeoutMs: number;
-      lastStatus?: string | undefined;
-      lastPost?: PostDetail | undefined;
-      lastError?: SyndrooError | undefined;
-    },
-  ) {
-    super(message, { code: "WAIT_TIMEOUT", requestMayHaveBeenApplied: false });
-    this.name = "SyndrooWaitTimeoutError";
-    this.postId = init.postId;
-    this.timeoutMs = init.timeoutMs;
-
-    if (init.lastStatus !== undefined) {
-      this.lastStatus = init.lastStatus;
-    }
-
-    if (init.lastPost !== undefined) {
-      this.lastPost = init.lastPost;
-    }
-
-    if (init.lastError !== undefined) {
-      this.lastError = init.lastError;
-    }
-  }
-}
 
 export function isSyndrooError(value: unknown): value is SyndrooError {
   return value instanceof SyndrooError;
-}
-
-/**
- * Internal helper for bounded diagnostics. Error messages and response
- * previews must never grow with the size of an untrusted body.
- */
-export function truncate(value: string, limit: number): string {
-  if (value.length <= limit) {
-    return value;
-  }
-
-  return `${value.slice(0, limit)}...[${value.length - limit} more characters]`;
 }
