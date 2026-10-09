@@ -4,8 +4,10 @@ import type { JsonObject, ProviderConnectInput } from "@syndroo/provider-sdk";
 
 import plugin, {
   API_KEY_HEADER,
+  DEVTO_USER_AGENT,
   DevtoProviderError,
   USERS_ME_URL,
+  USER_AGENT_HEADER,
 } from "../src/index.js";
 import {
   API_KEY_CANARY,
@@ -79,6 +81,7 @@ describe("devto connect", () => {
     expect(call.url).toBe(USERS_ME_URL);
     expect(call.method).toBe("GET");
     expect(call.headers[API_KEY_HEADER]).toBe(API_KEY_CANARY);
+    expect(call.headers[USER_AGENT_HEADER]).toBe(DEVTO_USER_AGENT);
     expect(call.headers.authorization).toBeUndefined();
     expect(call.body).toBeUndefined();
 

@@ -72,6 +72,16 @@ export const CREATE_ARTICLE_URL = `${DEVTO_API_HOST}/api/articles`;
 /** Authentication header name. */
 export const API_KEY_HEADER = "api-key";
 
+/** User-Agent header name. */
+export const USER_AGENT_HEADER = "user-agent";
+
+/**
+ * User-Agent value. Forem (DEV.to) answers a request that carries no
+ * User-Agent with a 403, so the provider always sends one. Derived from the
+ * single version constant, so the value cannot drift from the package version.
+ */
+export const DEVTO_USER_AGENT = `${DEVTO_PROVIDER_ID}/${DEVTO_PROVIDER_VERSION}`;
+
 /**
  * Stable failure codes raised by this provider. Never carries a secret.
  *
@@ -206,7 +216,10 @@ async function requestIdentity(apiKey: string, context: ProviderContext): Promis
     result = await context.transport.request({
       url: USERS_ME_URL,
       method: "GET",
-      headers: { [API_KEY_HEADER]: apiKey },
+      headers: {
+        [API_KEY_HEADER]: apiKey,
+        [USER_AGENT_HEADER]: DEVTO_USER_AGENT,
+      },
       signal: context.signal,
     });
   } catch {
@@ -520,7 +533,11 @@ async function publishDevto(input: ProviderPublishInput): Promise<ProviderWriteO
     const request: ProviderHttpRequest = {
       url: CREATE_ARTICLE_URL,
       method: "POST",
-      headers: { "content-type": "application/json", [API_KEY_HEADER]: apiKey },
+      headers: {
+        "content-type": "application/json",
+        [API_KEY_HEADER]: apiKey,
+        [USER_AGENT_HEADER]: DEVTO_USER_AGENT,
+      },
       body: JSON.stringify(input.frozen.payload),
       signal: input.context.signal,
     };

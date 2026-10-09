@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { validateProviderWriteOutcome } from "@syndroo/provider-sdk/testing";
 import type { JsonObject, ProviderHttpResult, ProviderWriteOutcome } from "@syndroo/provider-sdk";
 
-import plugin, { API_KEY_HEADER, CREATE_ARTICLE_URL } from "../src/index.js";
+import plugin, {
+  API_KEY_HEADER,
+  CREATE_ARTICLE_URL,
+  DEVTO_USER_AGENT,
+  USER_AGENT_HEADER,
+} from "../src/index.js";
 import {
   API_KEY_CANARY,
   DEVTO_ACCOUNT,
@@ -62,6 +67,7 @@ describe("devto publish classification", () => {
     expect(call.method).toBe("POST");
     expect(call.headers["content-type"]).toBe("application/json");
     expect(call.headers[API_KEY_HEADER]).toBe(API_KEY_CANARY);
+    expect(call.headers[USER_AGENT_HEADER]).toBe(DEVTO_USER_AGENT);
     expect(call.headers.authorization).toBeUndefined();
     expect(call.body).toBe(JSON.stringify(frozen.payload));
   });
