@@ -205,16 +205,20 @@ describe("human publish", () => {
   it("executes only after an explicit yes and renders the execution result", async () => {
     const arrangement = await arrange();
     const calls = { tty: 0, hidden: 0 };
+    const writes = { text: "" };
     const result = await arrangement.run(["publish", "--input", arrangement.document], {
-      tty: { hasTty: true, lines: ["yes"], calls },
+      tty: { hasTty: true, lines: ["yes"], writes, calls },
     });
 
     expect(result.exit).toBe(0);
     expect(calls.tty).toBe(1);
     expect(arrangement.sent()).toBe(1);
-    expect(result.stdout).toContain("Confirm this publication?");
-    expect(result.stdout).toContain("Execution");
-    expect(result.stdout).toContain("succeeded");
+    // The preview and the prompt go to the controlling terminal, never stdout.
+    expect(writes.text).toContain("Review publication — nothing has been sent");
+    expect(writes.text).toContain("Publish to 1 account? [y/N/v]");
+    expect(result.stdout).not.toContain("[y/N]");
+    expect(result.stdout).toContain("Status:");
+    expect(result.stdout).toContain("Successful");
   });
 
   it("declines anything but an unambiguous yes, prints the later command and sends nothing", async () => {
@@ -222,7 +226,7 @@ describe("human publish", () => {
 
     for (const answer of ["", "n", "no", "yep", "sure"]) {
       const result = await arrangement.run(["publish", "--input", arrangement.document], {
-        tty: { hasTty: true, lines: [answer] },
+        tty: { hasTty: true, lines: [answer], writes: { text: "" } },
       });
 
       expect(result.exit).toBe(5);
@@ -243,8 +247,7 @@ describe("human publish", () => {
     expect(result.exit).toBe(0);
     expect(calls.tty).toBe(0);
     expect(arrangement.sent()).toBe(0);
-    expect(result.stdout).toContain("Confirm this publication");
-    expect(result.stdout).toContain("nothing was sent");
+    expect(result.stdout).toContain("no terminal is available: nothing was sent");
     expect(result.stdout).toContain("syndroo publish --input -");
     expect(result.stdout).not.toContain("[y/N]");
   });
@@ -328,12 +331,15 @@ describe("human publish", () => {
       JSON.stringify({ content: { text: raw }, targets: [{ provider: "fake" }] }),
     );
 
+    const writes = { text: "" };
     const result = await arrangement.run(["publish", "--input", arrangement.document], {
-      tty: { hasTty: true, lines: ["yes"] },
+      tty: { hasTty: true, lines: ["yes"], writes },
     });
 
     expect(result.exit).toBe(0);
     expect(arrangement.sent()).toBe(1);
+    expect(writes.text).toContain("\\x07");
+    expect(writes.text).toContain("\\x1b");
     expect(result.stdout).toContain("\\x07");
     expect(result.stdout).toContain("\\x1b");
     expect(result.stdout).not.toContain("\u0007");

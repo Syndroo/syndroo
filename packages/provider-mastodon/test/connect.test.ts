@@ -307,8 +307,35 @@ describe("mastodon connect: verify a stored bundle", () => {
 
     expect(identity.account.accountId).toBe(ACCOUNT_ID);
     expect(identity.account.origin).toBe(TEST_INSTANCE);
+    expect(identity.presentation).toEqual({ accountName: "someone" });
     expect(scripted.calls).toHaveLength(2);
     expect(scripted.calls[0]!.headers.authorization).toBe(`Bearer ${TOKEN_CANARY}`);
+  });
+
+  it("keeps a safe public profile URL and drops an unsafe one", async () => {
+    const safe = scriptedTransport([
+      response(200, { ...verifyBody(), url: "https://social.example/@someone" }),
+      response(200, instanceLimitBody()),
+    ]);
+    const safeIdentity = await plugin.connect.verify(
+      { instance: TEST_INSTANCE, accessToken: TOKEN_CANARY },
+      contextFor(safe.transport),
+    );
+    expect(safeIdentity.presentation).toEqual({
+      accountName: "someone",
+      profileUrl: "https://social.example/@someone",
+    });
+
+    const unsafe = scriptedTransport([
+      response(200, { ...verifyBody(), url: "https://user:secret@social.example/@someone" }),
+      response(200, instanceLimitBody()),
+    ]);
+    const unsafeIdentity = await plugin.connect.verify(
+      { instance: TEST_INSTANCE, accessToken: TOKEN_CANARY },
+      contextFor(unsafe.transport),
+    );
+    expect(unsafeIdentity.presentation).toEqual({ accountName: "someone" });
+    expect(containsCanary(unsafeIdentity)).toBe(false);
   });
 
   it("maps a rejected token and a missing bundle to stable failures", async () => {

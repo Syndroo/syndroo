@@ -206,9 +206,17 @@ Use focused package tests while iterating. Before handing off code changes:
   commands and unverified areas.
 - Every command and flag a doc prints must be one the built CLI accepts. Retired
   syntax (`doctor`, `posts`, `skill`, `auth`, `init`, `receipts`, `retry`,
-  `state`, `local *`, `--yes`, `--no-input`) may appear only in a clearly
-  labelled historical note. Every JSON example must validate against the
+  `state`, `local *`, `--no-input`) may appear only in a clearly labelled
+  historical note. Every JSON example must validate against the
   corresponding schema in `packages/core/src/protocol/`.
+- `--yes` is not retired. `publish --yes` auto-confirms the frozen intent the
+  same process just prepared; it skips no credential, identity, expiry, provider,
+  frozen-payload or idempotency check, creates no second `prepare`, and leaves
+  `--dry-run --yes` offline. Document it with that narrow meaning, never as a
+  blanket authorization.
+- `--json` prints exactly one envelope per run. `--json --verbose` keeps that one
+  stdout envelope and sends the extra diagnostics to stderr, and never echoes the
+  approval token as a second payload.
 - Keep the bundled Skill (`packages/cli/skills/syndroo/`) as the single shipped
   Skill source; it must teach the v1 prepare → confirm → execute → status flow,
   and its commands, flags and exit codes must match the built `--help`.

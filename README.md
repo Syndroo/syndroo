@@ -94,12 +94,32 @@ node packages/cli/dist/bin.js publish --input post.json --dry-run
 node packages/cli/dist/bin.js publish --input post.json
 ```
 
-`publish` prepares one frozen snapshot, prints the full preview, asks for an
-explicit yes on the terminal, and only then executes that same snapshot. An
-optional `--dry-run` previews without writing state, resolving credentials or
+`publish` prepares one frozen snapshot, prints a short summary of it, asks for an
+explicit yes on the terminal, and only then executes that same snapshot. The
+summary is at most three lines per target; `v` expands the full frozen preview
+before you answer, `y`/`yes` executes, and any other answer stops. The snapshot
+is frozen before the prompt, so editing the input file, reconnecting an account
+or a provider update while the prompt is open cannot change what an accepted `y`
+sends.
+
+```bash
+node packages/cli/dist/bin.js publish --input post.json --yes
+```
+
+`--yes` auto-confirms the frozen intent this process just prepared, so a script
+or an agent can prepare and execute in one call. It is an authorization shortcut,
+not a shortcut around the safety checks: credentials, identity binding, expiry,
+provider validation, the frozen payload and idempotency are still enforced.
+`--dry-run --yes` is still a dry run that never sends, and `--yes` on an explicit
+`execute` or `retry` request adds nothing.
+
+An optional `--dry-run` previews without writing state, resolving credentials or
 making a network call. A request without a `type` is an ordinary document and
 becomes a `prepare` request; `{"type":"execute","approvalToken":"..."}` is only
 read from standard input.
+
+When no terminal can both show the preview and read the answer, the CLI prepares
+and returns the awaiting-confirmation result instead of blocking or sending.
 
 Agents should use `--json` and pass a machine request on stdin:
 
@@ -107,6 +127,14 @@ Agents should use `--json` and pass a machine request on stdin:
 echo '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}' \
   | node packages/cli/dist/bin.js publish --input - --json
 ```
+
+`--json` never prompts and prints exactly one envelope per run. Without `--yes`
+that envelope is the `prepared` result; with `--yes --json` the process prepares,
+auto-confirms and executes, and the single envelope is the final execution or
+error result — there is no second prepared envelope and the approval token is not
+echoed to stdout. `--verbose` adds full identifiers and any reviewed safe
+diagnostics, and those diagnostics go to stderr, so the stdout envelope stays one
+valid JSON document.
 
 ### 3. Inspect state
 
@@ -119,7 +147,10 @@ node packages/cli/dist/bin.js status --operations --limit 20
 ```
 
 `status` is read-only: it never calls a provider, reads a secret, or writes
-state.
+state. `status --operation <op_id>` reuses the same publication renderer as
+`publish`; it is one read that never polls or waits, and an operation whose
+stored state has not settled is labelled `Last recorded status:` so a saved
+record cannot be mistaken for a live confirmation.
 
 ## Configuration
 

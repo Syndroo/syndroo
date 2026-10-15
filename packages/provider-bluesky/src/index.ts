@@ -20,7 +20,7 @@
  * preview, a write outcome or a thrown error.
  */
 
-import { defineProvider } from "@syndroo/provider-sdk";
+import { defineProvider, safeHttpDiagnostic } from "@syndroo/provider-sdk";
 import type {
   AccountIdentity,
   ConnectAction,
@@ -41,6 +41,7 @@ import type {
   ProviderPlugin,
   ProviderPublishInput,
   ProviderWriteOutcome,
+  SafeDiagnostic,
   VerifiedIdentity,
 } from "@syndroo/provider-sdk";
 
@@ -186,17 +187,51 @@ function parseJsonObject(body: string): JsonObject | undefined {
   }
 }
 
-type SessionMaterial = { readonly accessJwt: string; readonly did: string };
+type SessionMaterial = {
+  readonly accessJwt: string;
+  readonly did: string;
+  /**
+   * The handle the session response carried, when it carried one.
+   *
+   * It is display metadata only: identity stays keyed by the DID, and no handle
+   * is ever invented when the response omits it.
+   */
+  readonly handle?: string;
+};
 
-/** The verified identity for one session, keyed by the immutable DID. */
+/**
+ * Handles that may be rendered as the readable `@handle` and its profile link.
+ *
+ * AT Protocol handles are domain-like. A value carrying a slash, an `@`, a
+ * scheme or whitespace could otherwise build a link that points somewhere else,
+ * so it is dropped and the identity falls back to the stable DID alone.
+ */
+const READABLE_HANDLE = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+
+/**
+ * The verified identity for one session, keyed by the immutable DID.
+ *
+ * When the session response carried a handle, the identity also carries an
+ * optional `presentation`: the readable `@handle` and the deterministic public
+ * profile URL for that handle. Presentation never participates in identity,
+ * de-duplication, authentication or the binding revision, and it is sanitized
+ * again by Core before it is stored or rendered.
+ */
 function identityFor(session: SessionMaterial, now: IsoTime): VerifiedIdentity {
   const account: AccountIdentity = {
     provider: BLUESKY_PROVIDER_ID,
     accountId: session.did,
     origin: BLUESKY_ORIGIN,
   };
+  const handle =
+    session.handle !== undefined && READABLE_HANDLE.test(session.handle) ? session.handle : undefined;
+  const presentation =
+    handle === undefined
+      ? undefined
+      : { accountName: `@${handle}`, profileUrl: `${BLUESKY_ORIGIN}/profile/${handle}` };
   return {
     account,
+    ...(presentation === undefined ? {} : { presentation }),
     evidence: [
       { capability: "identity", value: "supported", source: BLUESKY_API_HOST, verifiedAt: now },
     ],
@@ -239,10 +274,11 @@ async function requestSession(
     const parsed = parseJsonObject(result.body);
     const accessJwt = readString(parsed, "accessJwt");
     const did = readString(parsed, "did");
+    const handle = readString(parsed, "handle");
     if (accessJwt === undefined || did === undefined) {
       throw new BlueskyProviderError("provider_unavailable", SESSION_INCOMPLETE_MESSAGE);
     }
-    return { accessJwt, did };
+    return { accessJwt, did, ...(handle === undefined ? {} : { handle }) };
   }
 
   if (result.status === 400 || result.status === 401 || result.status === 403) {
@@ -414,6 +450,44 @@ function reasonForRejection(status: number): ProviderFailureReason {
 }
 
 /**
+ * AT Protocol error names this provider recognizes by name.
+ *
+ * Only these names are ever copied into a diagnostic `providerCode`. Anything
+ * else — an unknown name, a message field, a credential — is dropped instead of
+ * being reflected, so a platform response can never smuggle free text into a
+ * stored or rendered diagnostic.
+ */
+const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set([
+  "InvalidRequest",
+  "ExpiredToken",
+  "InvalidToken",
+  "AccountTakedown",
+  "AccountSuspended",
+  "RateLimitExceeded",
+]);
+
+/**
+ * A bounded diagnostic for one definite HTTP rejection.
+ *
+ * The HTTP status is the verified status this provider just received; the code
+ * is only ever a recognized platform error name; the message is a fixed
+ * sentence for the classified reason.
+ */
+function rejectionDiagnostic(
+  status: number,
+  reason: ProviderFailureReason,
+  body: string,
+): SafeDiagnostic | undefined {
+  const name = readString(parseJsonObject(body), "error");
+
+  return safeHttpDiagnostic({
+    httpStatus: status,
+    reason,
+    ...(name !== undefined && KNOWN_ERROR_CODES.has(name) ? { providerCode: name } : {}),
+  });
+}
+
+/**
  * Classify one returned transport result.
  *
  * - 2xx is a definite acceptance: the record exists, so the outcome is
@@ -449,21 +523,26 @@ function classifyWrite(result: ProviderHttpResult, now: IsoTime): ProviderWriteO
 
   if (status === 429) {
     const retryAfter = parseRetryAfter(headerValue(result.headers, "retry-after"), now);
+    const diagnostic = rejectionDiagnostic(status, "rate_limited", result.body);
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
       ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 400 && status < 500) {
+    const reason = reasonForRejection(status);
+    const diagnostic = rejectionDiagnostic(status, reason, result.body);
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: false,
-      reason: reasonForRejection(status),
+      reason,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 

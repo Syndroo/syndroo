@@ -339,6 +339,10 @@ describe("threads connect: verify a stored bundle", () => {
 
     expect(identity.account.accountId).toBe(ACCOUNT_ID);
     expect(identity.account.origin).toBe("https://www.threads.net");
+    expect(identity.presentation).toEqual({
+      accountName: "@syndroo",
+      profileUrl: "https://www.threads.net/@syndroo",
+    });
     expect(scripted.calls).toHaveLength(1);
     expect(scripted.calls[0]!.headers.authorization).toBe(`Bearer ${LONG_TOKEN_CANARY}`);
   });

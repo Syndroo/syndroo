@@ -364,16 +364,18 @@ describe("surface guarantees", () => {
       // Doc comments mention the subpath on purpose; only real specifiers count.
       return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     };
-    const [index, types, define] = await Promise.all([
+    const [index, types, define, presentation] = await Promise.all([
       source("index.ts"),
       source("types.ts"),
       source("define-provider.ts"),
+      source("presentation.ts"),
     ]);
 
     for (const [name, text] of [
       ["index.ts", index],
       ["types.ts", types],
       ["define-provider.ts", define],
+      ["presentation.ts", presentation],
     ] as const) {
       const specifiers = [...text.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
       expect(specifiers.some((specifier) => specifier?.includes("testing")), `${name} imports the testing subpath`)
@@ -383,7 +385,7 @@ describe("surface guarantees", () => {
       expect(text).not.toContain("node:child_process");
     }
     const indexSpecifiers = [...new Set([...index.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]))];
-    expect(indexSpecifiers.sort()).toStrictEqual(["./define-provider.js", "./types.js"]);
+    expect(indexSpecifiers.sort()).toStrictEqual(["./define-provider.js", "./presentation.js", "./types.js"]);
   });
 
   it("never writes a credential canary into an outcome or a frozen payload", async () => {

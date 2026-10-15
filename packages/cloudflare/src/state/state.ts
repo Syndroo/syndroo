@@ -170,6 +170,7 @@ export class D1State implements T.StateStore {
                     outcome: null,
                     state: "ready",
                     history: [],
+                    previewRevision: input.ticket.executionRevision,
                 }));
             }
             else {
@@ -334,6 +335,7 @@ export class D1State implements T.StateStore {
                 }
                 delivery.state = "ready";
                 delivery.outcome = null;
+                delivery.previewRevision = intent.executionRevision;
                 delete delivery.claim;
             }
             operation.status = aggregate(operation.deliveries);
@@ -818,6 +820,7 @@ export class D1State implements T.StateStore {
         return {
             connectionId: connection.connectionId,
             account: clone(connection.account),
+            ...(connection.presentation ? { presentation: clone(connection.presentation) } : {}),
             ...(connection.label ? { label: connection.label } : {}),
             isDefault: connection.isDefault,
             active: connection.active,

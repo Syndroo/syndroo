@@ -158,6 +158,12 @@ export type LocalRuntimeOverrides = {
     readonly ttlMs?: number;
     readonly loopbackPort?: number;
   };
+  /**
+   * Injected clock. Never reachable from a CLI flag; it exists so a test can
+   * put the runtime on the other side of a real deadline (an approval window,
+   * an attempt TTL) without waiting for wall-clock time to pass.
+   */
+  readonly clock?: Clock;
 };
 
 /**
@@ -227,7 +233,7 @@ export function createLocalRuntime(
   // One policy transport per provider, resolved from the provider's own
   // declaration and memoised for the life of this composition.
   const transportFor = createProviderTransportResolver({ catalog, providers });
-  const clock: Clock = runtime.clock;
+  const clock: Clock = overrides.clock ?? runtime.clock;
 
   const oauthOptions: LocalOAuthCallbackOptions = {
     stateRoot: runtime.root,

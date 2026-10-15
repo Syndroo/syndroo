@@ -42,7 +42,7 @@
  * errors.
  */
 
-import { defineProvider } from "@syndroo/provider-sdk";
+import { defineProvider, safeHttpDiagnostic } from "@syndroo/provider-sdk";
 import type {
   AccountIdentity,
   CallbackEvidence,
@@ -64,6 +64,7 @@ import type {
   ProviderPlugin,
   ProviderPublishInput,
   ProviderWriteOutcome,
+  SafeDiagnostic,
   VerifiedIdentity,
 } from "@syndroo/provider-sdk";
 
@@ -391,26 +392,40 @@ function classifyWrite(result: ProviderHttpResult, now: IsoTime): ProviderWriteO
 
   if (status === 429) {
     const retryAfter = parseRetryAfter(headerValue(result.headers, "retry-after"), now);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason: "rate_limited" });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
       ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 400 && status < 500) {
+    const reason = reasonForRejection(status);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: false,
-      reason: reasonForRejection(status),
+      reason,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 500) {
-    return { status: "unknown", disposition: "unknown", reason: "provider_unavailable" };
+    const diagnostic: SafeDiagnostic | undefined = safeHttpDiagnostic({
+      httpStatus: status,
+      reason: "provider_unavailable",
+    });
+    return {
+      status: "unknown",
+      disposition: "unknown",
+      reason: "provider_unavailable",
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    };
   }
 
   return { status: "unknown", disposition: "unknown", reason: "unknown" };
@@ -540,15 +555,42 @@ async function resolveAccount(
   throw new ThreadsProviderError("identity_unavailable", IDENTITY_UNAVAILABLE_MESSAGE);
 }
 
-/** The verified identity for one account, keyed by the Threads account id. */
-function identityFor(accountId: string, apiHost: string, now: IsoTime): VerifiedIdentity {
+/**
+ * Usernames that may be rendered as the readable `@username` and its profile
+ * link. A value carrying a slash, an `@` or whitespace could otherwise build a
+ * link that points somewhere else, so it is dropped and the identity stands
+ * alone on the stable account id.
+ */
+const READABLE_USERNAME = /^[A-Za-z0-9._]{1,64}$/;
+
+/**
+ * The verified identity for one account, keyed by the Threads account id.
+ *
+ * `GET /me` is already read for the id, so a username it returned alongside can
+ * be carried as optional `presentation` without a second request. It is display
+ * metadata only: identity, de-duplication and the binding revision stay keyed
+ * by the account id.
+ */
+function identityFor(
+  accountId: string,
+  apiHost: string,
+  now: IsoTime,
+  username?: string,
+): VerifiedIdentity {
   const account: AccountIdentity = {
     provider: THREADS_PROVIDER_ID,
     accountId,
     origin: THREADS_PROFILE_ORIGIN,
   };
+  const readable =
+    username !== undefined && READABLE_USERNAME.test(username) ? username : undefined;
+  const presentation =
+    readable === undefined
+      ? undefined
+      : { accountName: `@${readable}`, profileUrl: `${THREADS_PROFILE_ORIGIN}/@${readable}` };
   return {
     account,
+    ...(presentation === undefined ? {} : { presentation }),
     evidence: [
       {
         capability: "identity",
@@ -757,7 +799,7 @@ async function runConnect(
       accessToken,
       ...(account.username === undefined ? {} : { username: account.username }),
     },
-    identity: identityFor(account.id, material.apiHost, context.now),
+    identity: identityFor(account.id, material.apiHost, context.now, account.username),
   };
 }
 
@@ -772,7 +814,7 @@ async function verifyConnect(
     throw new ThreadsProviderError("credential_rejected", CREDENTIAL_MISSING_MESSAGE);
   }
   const account = await resolveAccount(apiHost, accessToken, context);
-  return identityFor(account.id, apiHost, context.now);
+  return identityFor(account.id, apiHost, context.now, account.username);
 }
 
 /**

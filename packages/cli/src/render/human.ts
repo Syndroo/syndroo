@@ -1,12 +1,10 @@
 import type {
   ConnectResult,
   ConnectionView,
-  DryRunResult,
   ExecutionResult,
   OperationSummary,
   OperationView,
   ProviderView,
-  PublishResult,
   StatusResultMap,
   TargetPreview,
 } from "@syndroo/core";
@@ -278,43 +276,4 @@ export function renderExecuteInstruction(
   );
 
   return lines;
-}
-
-export function renderPublish(result: PublishResult, options: RenderOptions): string[] {
-  if (result.status === "confirmation_required") {
-    return [
-      styled(options.color, "1", "Confirm this publication"),
-      `  operation: ${escapeControls(result.operationId)}`,
-      `  expires: ${escapeControls(result.expiresAt)}`,
-      "  nothing has been sent yet: this result is only a preview",
-      ...previewLines(result.preview),
-    ];
-  }
-
-  return [
-    styled(options.color, "1", "Execution"),
-    `  operation: ${escapeControls(result.operationId)}`,
-    `  status: ${escapeControls(result.status)}`,
-    ...deliveryLines(result),
-  ];
-}
-
-export function renderExecution(result: ExecutionResult, options: RenderOptions): string[] {
-  return [
-    styled(options.color, "1", "Execution"),
-    `  operation: ${escapeControls(result.operationId)}`,
-    `  status: ${escapeControls(result.status)}`,
-    ...deliveryLines(result),
-  ];
-}
-
-export function renderDryRun(result: DryRunResult, options: RenderOptions): string[] {
-  return [
-    styled(options.color, "1", "Dry run preview"),
-    "  no state, credential or network access was used",
-    ...previewLines(result.preview),
-    ...(result.unverified.length > 0
-      ? [`  unverified: ${result.unverified.map(escapeControls).join(", ")}`]
-      : []),
-  ];
 }

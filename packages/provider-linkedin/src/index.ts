@@ -30,7 +30,7 @@
  * outcome or a thrown error.
  */
 
-import { defineProvider } from "@syndroo/provider-sdk";
+import { defineProvider, safeHttpDiagnostic } from "@syndroo/provider-sdk";
 import type {
   AccountIdentity,
   CallbackEvidence,
@@ -53,6 +53,7 @@ import type {
   ProviderPlugin,
   ProviderPublishInput,
   ProviderWriteOutcome,
+  SafeDiagnostic,
   VerifiedIdentity,
 } from "@syndroo/provider-sdk";
 
@@ -360,26 +361,40 @@ function classifyWrite(result: ProviderHttpResult, now: IsoTime): ProviderWriteO
 
   if (status === 429) {
     const retryAfter = parseRetryAfter(headerValue(result.headers, "retry-after"), now);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason: "rate_limited" });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
       ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 400 && status < 500) {
+    const reason = reasonForRejection(status);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: false,
-      reason: reasonForRejection(status),
+      reason,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 500) {
-    return { status: "unknown", disposition: "unknown", reason: "provider_unavailable" };
+    const diagnostic: SafeDiagnostic | undefined = safeHttpDiagnostic({
+      httpStatus: status,
+      reason: "provider_unavailable",
+    });
+    return {
+      status: "unknown",
+      disposition: "unknown",
+      reason: "provider_unavailable",
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    };
   }
 
   return { status: "unknown", disposition: "unknown", reason: "unknown" };

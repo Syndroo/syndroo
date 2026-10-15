@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { validateProviderWriteOutcome } from "@syndroo/provider-sdk/testing";
-import type { JsonObject, ProviderHttpResult, ProviderWriteOutcome } from "@syndroo/provider-sdk";
+import type {
+  JsonObject,
+  ProviderFailureReason,
+  ProviderHttpResult,
+  ProviderWriteOutcome
+} from "@syndroo/provider-sdk";
 
 import plugin, { THREADS_CREATE_PATH } from "../src/index.js";
 import {
@@ -22,6 +27,21 @@ import {
 } from "./fixtures.js";
 
 const frozen = plugin.freeze(freezeInput());
+
+/**
+ * The fixed, reviewed diagnostic sentences in `@syndroo/provider-sdk`. Pinned
+ * here so a wording change is a visible test failure rather than silent drift.
+ */
+const FAILURE_MESSAGE: Readonly<Record<ProviderFailureReason, string>> = {
+  auth: "The platform rejected the credential.",
+  permission: "The platform refused the publish permission.",
+  validation: "The platform rejected the content or options.",
+  rate_limited: "The platform rate-limited the request.",
+  provider_unavailable: "The platform reported a server error.",
+  network: "The request could not be completed.",
+  unsupported: "The platform does not support this request.",
+  unknown: "The result could not be confirmed.",
+};
 
 const CREATE_URL = `${API_HOST}${THREADS_CREATE_PATH}`;
 const PROFILE_URL = `https://www.threads.net/@${USERNAME}`;
@@ -99,21 +119,30 @@ describe("threads publish classification", () => {
   });
 
   it("classifies a definite 4xx rejection as failed and never retried", async () => {
-    const cases: readonly { result: ProviderHttpResult; reason: string }[] = [
-      { result: response(400, { error: "Bad Request" }), reason: "validation" },
-      { result: response(401, { error: "Unauthorized" }), reason: "auth" },
-      { result: response(403, { error: "Forbidden" }), reason: "permission" },
-      { result: response(404, { error: "Not Found" }), reason: "validation" },
-      { result: response(422, { error: "Unprocessable Entity" }), reason: "validation" },
+    const cases: readonly {
+      status: number;
+      result: ProviderHttpResult;
+      reason: ProviderFailureReason;
+    }[] = [
+      { status: 400, result: response(400, { error: "Bad Request" }), reason: "validation" },
+      { status: 401, result: response(401, { error: "Unauthorized" }), reason: "auth" },
+      { status: 403, result: response(403, { error: "Forbidden" }), reason: "permission" },
+      { status: 404, result: response(404, { error: "Not Found" }), reason: "validation" },
+      {
+        status: 422,
+        result: response(422, { error: "Unprocessable Entity" }),
+        reason: "validation",
+      },
     ];
 
-    for (const { result, reason } of cases) {
+    for (const { status, result, reason } of cases) {
       const { outcome, calls } = await publishWith(result);
       expect(outcome).toEqual({
         status: "failed",
         disposition: "not_applied",
         retryable: false,
         reason,
+        diagnostic: { httpStatus: status, message: FAILURE_MESSAGE[reason] },
       });
       expect(calls).toHaveLength(1);
     }
@@ -127,6 +156,7 @@ describe("threads publish classification", () => {
       retryable: true,
       reason: "rate_limited",
       retryAfter: new Date(Date.parse(FIXED_NOW) + 30_000).toISOString(),
+      diagnostic: { httpStatus: 429, message: FAILURE_MESSAGE.rate_limited },
     });
     expect(withSeconds.calls).toHaveLength(1);
 
@@ -136,6 +166,7 @@ describe("threads publish classification", () => {
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
+      diagnostic: { httpStatus: 429, message: FAILURE_MESSAGE.rate_limited },
     });
     expect(Object.hasOwn(without.outcome, "retryAfter")).toBe(false);
   });
@@ -171,6 +202,7 @@ describe("threads publish classification", () => {
         status: "unknown",
         disposition: "unknown",
         reason: "provider_unavailable",
+        diagnostic: { httpStatus: status, message: FAILURE_MESSAGE.provider_unavailable },
       });
       expect(calls).toHaveLength(1);
     }

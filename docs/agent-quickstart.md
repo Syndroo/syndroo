@@ -31,14 +31,30 @@ node packages/cli/dist/bin.js status --operation op_example --json
 2. Save a request identity. `--request-id <id>` is the stable key for one logical
    call; reuse it if you must retry a lost response, and never reuse it for
    different content.
-3. Prepare. The result is `confirmation_required` with the full `preview`,
+3. Prepare. The result is `confirmation_required` with the `preview`,
    `operationId`, `approvalToken` and `expiresAt`. A `prepare` does not publish.
+   Each preview target now carries the frozen provider `preview`
+   (`content` + `fields`) and, when the provider supplied one, a `presentation`
+   (`accountName`/`profileUrl`); that is the payload the execute call will send,
+   not a re-derivation of it.
 4. Show the preview to the user and get explicit approval. A zero exit from a
    prepare is not approval.
 5. Execute with the token. In `--json` there is never an implicit prompt; an
    execute request is accepted only from stdin.
 6. Report every target from the execution result, then read `status --operation`
-   if you need the settled record.
+   if you need the settled record. `status --operation` renders the same
+   publication view as `publish`, is a single read that never polls or calls a
+   provider, and prefixes a not-yet-settled stored record with
+   `Last recorded status:` so a saved `in_flight` cannot look like a live
+   confirmation.
+
+When one specific publication already has the user's approval in this
+conversation, `publish --input post.json --yes --json` prepares, auto-confirms and
+executes in one call and prints exactly one final execution envelope — no second
+prepared payload and no approval token on stdout. `--yes` is not a blanket
+authorization: it re-mints no credential, bypasses no identity, expiry, provider
+validation, frozen-payload or idempotency rule, and creates no second `prepare`.
+With `--json` and no `--yes` the single envelope is the prepared result.
 
 ## Request shapes
 

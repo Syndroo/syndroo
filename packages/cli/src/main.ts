@@ -224,6 +224,7 @@ function attachCommands(
     .option("--to <connectionId>", "retry target connection (repeatable)", collectTo, [])
     .option("--request-id <id>", "stable request identity for this logical call")
     .option("--dry-run", "offline preview; no state, credential or network access")
+    .option("--yes", "auto-confirm the frozen intent this process just prepared")
     .action(async (options: Record<string, unknown>) => {
       const ctx = await ensureContext();
       const publishOptions: PublishOptions = {
@@ -233,6 +234,7 @@ function attachCommands(
         ...(Array.isArray(options["to"]) ? { to: options["to"] as string[] } : {}),
         ...(typeof options["requestId"] === "string" ? { requestId: options["requestId"] } : {}),
         ...(options["dryRun"] === true ? { dryRun: true } : {}),
+        ...(options["yes"] === true ? { yes: true } : {}),
       };
 
       state.exit = await runPublish(ctx, publishOptions);

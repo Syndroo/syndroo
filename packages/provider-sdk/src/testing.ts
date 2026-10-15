@@ -26,6 +26,7 @@
 import { isDeepStrictEqual } from "node:util";
 
 import { ProviderDefinitionError, defineProvider } from "./define-provider.js";
+import { sanitizeSafeDiagnostic } from "./presentation.js";
 import type {
   ContractCase,
   FrozenProviderPayload,
@@ -84,10 +85,13 @@ const FAILURE_REASONS: ReadonlySet<string> = new Set<ProviderFailureReason>([
 const OUTCOME_VARIANTS: Readonly<Record<string, { keys: readonly string[]; rule: string }>> = Object.freeze({
   succeeded: { keys: ["status", "remoteId", "url"], rule: "a succeeded outcome carries only remoteId and url" },
   failed: {
-    keys: ["status", "disposition", "retryable", "reason", "retryAfter"],
-    rule: "a failed outcome carries only disposition, retryable, reason and retryAfter",
+    keys: ["status", "disposition", "retryable", "reason", "retryAfter", "diagnostic"],
+    rule: "a failed outcome carries only disposition, retryable, reason, retryAfter and diagnostic",
   },
-  unknown: { keys: ["status", "disposition", "reason"], rule: "an unknown outcome carries only disposition and reason" },
+  unknown: {
+    keys: ["status", "disposition", "reason", "diagnostic"],
+    rule: "an unknown outcome carries only disposition, reason and diagnostic",
+  },
 });
 
 /**
@@ -104,6 +108,27 @@ function isIsoTime(value: unknown): value is string {
     return false;
   }
   return !Number.isNaN(Date.parse(value));
+}
+
+/**
+ * True when a value is exactly a well-formed `SafeDiagnostic`.
+ *
+ * Sanitizing it must keep every key it came in with: an unknown key or an
+ * invalid field is dropped by the sanitizer, so a surviving value with the same
+ * keys is the whole shape check. A rejected diagnostic is a shape error here,
+ * not a value that gets silently trimmed.
+ */
+function isWellFormedDiagnostic(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const sanitized = sanitizeSafeDiagnostic(value);
+  if (sanitized === undefined) {
+    return false;
+  }
+  const keys = Object.getOwnPropertyNames(value).sort();
+  const kept = Object.getOwnPropertyNames(sanitized).sort();
+  return keys.length === kept.length && keys.every((key, index) => key === kept[index]);
 }
 
 /** Stable failure codes raised by the harness. */
@@ -378,6 +403,9 @@ export function validateProviderWriteOutcome(
     if (outcome.retryAfter !== undefined && !isIsoTime(outcome.retryAfter)) {
       throw new ProviderContractError("malformed_outcome", "retryAfter must be an ISO 8601 date-time string", label);
     }
+    if (outcome.diagnostic !== undefined && !isWellFormedDiagnostic(outcome.diagnostic)) {
+      throw new ProviderContractError("malformed_outcome", "diagnostic must be a bounded, safe diagnostic", label);
+    }
     return;
   }
 
@@ -387,6 +415,9 @@ export function validateProviderWriteOutcome(
     }
     if (typeof outcome.reason !== "string" || !FAILURE_REASONS.has(outcome.reason)) {
       throw new ProviderContractError("malformed_outcome", "unknown requires a known failure reason", label);
+    }
+    if (outcome.diagnostic !== undefined && !isWellFormedDiagnostic(outcome.diagnostic)) {
+      throw new ProviderContractError("malformed_outcome", "diagnostic must be a bounded, safe diagnostic", label);
     }
     return;
   }

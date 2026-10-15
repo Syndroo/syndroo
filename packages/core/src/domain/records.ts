@@ -1,13 +1,24 @@
-import type { TargetInput, PostDocument, PrepareRequest, ExecuteRequest, RetryRequest, PublishRequest, ConnectRequest, ConnectionView, ConnectResult, TargetPreview, PreparedResult, ExecutionStatus, NotStarted, DeliveryResult, ExecutionResult, OperationView, ProviderView, OperationSummary, StatusRequest, StatusResultMap } from '../protocol/generated/types.js';
-export type { TargetInput, PostDocument, PrepareRequest, ExecuteRequest, RetryRequest, PublishRequest, ConnectRequest, ConnectionView, ConnectResult, TargetPreview, PreparedResult, ExecutionStatus, NotStarted, DeliveryResult, ExecutionResult, OperationView, ProviderView, OperationSummary, StatusRequest, StatusResultMap } from '../protocol/generated/types.js';
-import type { Json, JsonObject, Schema, IsoTime, Digest, ProviderId, OperationId, ConnectionId, SessionId, SecretRef, Revision, Content, AccountIdentity, Implementation, Capability, Observation, ProviderManifest, ConnectAction, CredentialBundle, ProviderEvidence, VerifiedIdentity, ProviderConnectResult, CallbackEvidence, ProviderConnectInput, OAuthMaterial, ProviderContext, ProviderConnect, PreviewField, ProviderPreview, FreezeInput, FrozenProviderPayload, ProviderFailureReason, ProviderWriteOutcome, ProviderPublishInput, ProviderPlugin, ProviderHttpRequest, ProviderHttpResult, ProviderTransport, ContractCase } from '@syndroo/provider-sdk';
-export type { Json, JsonObject, Schema, IsoTime, Digest, ProviderId, OperationId, ConnectionId, SessionId, SecretRef, Revision, Content, AccountIdentity, Implementation, Capability, Observation, ProviderManifest, ConnectAction, CredentialBundle, ProviderEvidence, VerifiedIdentity, ProviderConnectResult, CallbackEvidence, ProviderConnectInput, OAuthMaterial, ProviderContext, ProviderConnect, PreviewField, ProviderPreview, FreezeInput, FrozenProviderPayload, ProviderFailureReason, ProviderWriteOutcome, ProviderPublishInput, ProviderPlugin, ProviderHttpRequest, ProviderHttpResult, ProviderTransport, ContractCase } from '@syndroo/provider-sdk';
+import type { TargetInput, PostDocument, PrepareRequest, ExecuteRequest, RetryRequest, PublishRequest, ConnectRequest, ConnectionView, ConnectResult, TargetPreview, TargetPresentation, PreparedResult, ExecutionStatus, NotStarted, DeliveryResult, ExecutionResult, OperationView, ProviderView, OperationSummary, StatusRequest, StatusResultMap } from '../protocol/generated/types.js';
+export type { TargetInput, PostDocument, PrepareRequest, ExecuteRequest, RetryRequest, PublishRequest, ConnectRequest, ConnectionView, ConnectResult, TargetPreview, TargetPresentation, PreparedResult, ExecutionStatus, NotStarted, DeliveryResult, ExecutionResult, OperationView, ProviderView, OperationSummary, StatusRequest, StatusResultMap } from '../protocol/generated/types.js';
+import type { Json, JsonObject, Schema, IsoTime, Digest, ProviderId, OperationId, ConnectionId, SessionId, SecretRef, Revision, Content, AccountIdentity, AccountPresentation, Implementation, Capability, Observation, ProviderManifest, ConnectAction, CredentialBundle, ProviderEvidence, VerifiedIdentity, ProviderConnectResult, CallbackEvidence, ProviderConnectInput, OAuthMaterial, ProviderContext, ProviderConnect, PreviewField, ProviderPreview, FreezeInput, FrozenProviderPayload, ProviderFailureReason, ProviderWriteOutcome, ProviderPublishInput, ProviderPlugin, ProviderHttpRequest, ProviderHttpResult, ProviderTransport, ContractCase } from '@syndroo/provider-sdk';
+export type { Json, JsonObject, Schema, IsoTime, Digest, ProviderId, OperationId, ConnectionId, SessionId, SecretRef, Revision, Content, AccountIdentity, AccountPresentation, Implementation, Capability, Observation, ProviderManifest, ConnectAction, CredentialBundle, ProviderEvidence, VerifiedIdentity, ProviderConnectResult, CallbackEvidence, ProviderConnectInput, OAuthMaterial, ProviderContext, ProviderConnect, PreviewField, ProviderPreview, FreezeInput, FrozenProviderPayload, ProviderFailureReason, ProviderWriteOutcome, ProviderPublishInput, ProviderPlugin, ProviderHttpRequest, ProviderHttpResult, ProviderTransport, ContractCase } from '@syndroo/provider-sdk';
 export type PublishResult = PreparedResult | ExecutionResult;
 export type StatusResult<T extends StatusRequest> = StatusResultMap[T["type"]];
+/**
+ * One post-commit execution observation. It always carries a real projection
+ * of the stored operation, read back after the write that it describes.
+ */
+export type ExecutionProgress = {
+    type: 'admitted' | 'claimed' | 'recorded' | 'stopped' | 'finished';
+    execution: ExecutionResult;
+};
+/** Runtime-agnostic progress sink. It never travels over the HTTP wire. */
+export type ProgressSink = (event: ExecutionProgress) => void;
 export type CallContext = {
     principalId: string;
     idempotencyKey?: string;
     signal: AbortSignal;
+    onProgress?: ProgressSink;
 };
 export type SafeError = {
     code: string;
@@ -59,6 +70,7 @@ export type ConnectionRecord = {
     credentialRevision: Revision;
     secretRef: SecretRef;
     observations: readonly Observation[];
+    presentation?: AccountPresentation;
 };
 export type Binding = {
     connectionId: ConnectionId;
@@ -72,6 +84,7 @@ export type FrozenTarget = {
     canonicalContent: Content;
     canonicalOptions: JsonObject;
     frozen: FrozenProviderPayload;
+    presentation?: TargetPresentation;
 };
 export type FrozenIntent = {
     format: "syndroo-runtime-v1";
@@ -105,6 +118,14 @@ export type DeliveryRecord = DeliveryResult & {
         claim: Claim;
         outcome: ProviderWriteOutcome;
     }[];
+    /**
+     * Internal only: the execution round whose frozen target this delivery's
+     * preview and display snapshot belong to. Written atomically when a
+     * delivery is created or re-admitted, so the public projection never has
+     * to guess. It never enters the protocol and never changes the frozen
+     * intent digest.
+     */
+    previewRevision?: Revision;
 };
 export type OperationRecord = {
     operationId: OperationId;
@@ -426,7 +447,7 @@ export interface Notifier {
     notify(work: WorkRef): Promise<void>;
 }
 export interface Executor {
-    run(work: WorkRef, signal: AbortSignal): Promise<ExecutionResult>;
+    run(work: WorkRef, signal: AbortSignal, onProgress?: ProgressSink): Promise<ExecutionResult>;
 }
 export type CoreDependencies = {
     state: StateStore;

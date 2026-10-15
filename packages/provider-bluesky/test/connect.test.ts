@@ -99,6 +99,33 @@ describe("bluesky connect", () => {
     expect(containsCanary(result.identity)).toBe(false);
   });
 
+  it("carries the handle as optional presentation without touching the DID identity", async () => {
+    const scripted = scriptedTransport([response(200, SESSION_BODY)]);
+    const result = await plugin.connect.verify(
+      { identifier: IDENTIFIER_CANARY, password: PASSWORD_CANARY },
+      contextFor(scripted.transport),
+    );
+
+    expect(result.account.accountId).toBe(SESSION_DID);
+    expect(result.presentation).toEqual({
+      accountName: "@someone.test",
+      profileUrl: "https://bsky.app/profile/someone.test",
+    });
+  });
+
+  it("drops an unreadable handle rather than inventing a presentation", async () => {
+    const scripted = scriptedTransport([
+      response(200, { accessJwt: TOKEN_CANARY, did: SESSION_DID, handle: "not a handle" }),
+    ]);
+    const identity = await plugin.connect.verify(
+      { identifier: IDENTIFIER_CANARY, password: PASSWORD_CANARY },
+      contextFor(scripted.transport),
+    );
+
+    expect(identity.account.accountId).toBe(SESSION_DID);
+    expect(identity.presentation).toBeUndefined();
+  });
+
   it("verifies a stored bundle by posting the session request", async () => {
     const scripted = scriptedTransport([response(200, SESSION_BODY)]);
     const identity = await plugin.connect.verify(

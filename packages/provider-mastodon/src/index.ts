@@ -29,7 +29,12 @@
  * payload, a preview, a write outcome or a thrown error.
  */
 
-import { defineProvider } from "@syndroo/provider-sdk";
+import {
+  defineProvider,
+  safeHttpDiagnostic,
+  safePublicUrl,
+  sanitizeAccountName,
+} from "@syndroo/provider-sdk";
 import type {
   AccountIdentity,
   CallbackEvidence,
@@ -51,6 +56,7 @@ import type {
   ProviderPlugin,
   ProviderPublishInput,
   ProviderWriteOutcome,
+  SafeDiagnostic,
   VerifiedIdentity,
 } from "@syndroo/provider-sdk";
 
@@ -376,26 +382,40 @@ function classifyWrite(result: ProviderHttpResult, now: IsoTime): ProviderWriteO
 
   if (status === 429) {
     const retryAfter = parseRetryAfter(headerValue(result.headers, "retry-after"), now);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason: "rate_limited" });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
       ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 400 && status < 500) {
+    const reason = reasonForRejection(status);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: false,
-      reason: reasonForRejection(status),
+      reason,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 500) {
-    return { status: "unknown", disposition: "unknown", reason: "provider_unavailable" };
+    const diagnostic: SafeDiagnostic | undefined = safeHttpDiagnostic({
+      httpStatus: status,
+      reason: "provider_unavailable",
+    });
+    return {
+      status: "unknown",
+      disposition: "unknown",
+      reason: "provider_unavailable",
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    };
   }
 
   return { status: "unknown", disposition: "unknown", reason: "unknown" };
@@ -499,12 +519,22 @@ async function exchangeCode(
   throw new MastodonProviderError("provider_unavailable", UNAVAILABLE_MESSAGE);
 }
 
-/** Verify an access token and return the instance-local account id. */
+/** The account fields `verify_credentials` already returned, when usable. */
+type VerifiedAccount = {
+  accountId: string;
+  /** The instance-local `acct`, preferred over `username` for display. */
+  acct?: string;
+  username?: string;
+  /** The account's own profile URL, as the instance reported it. */
+  url?: string;
+};
+
+/** Verify an access token and return the instance-local account identity. */
 async function verifyToken(
   instance: string,
   accessToken: string,
   context: ProviderContext,
-): Promise<string> {
+): Promise<VerifiedAccount> {
   const result = await send(context, {
     url: `${instance}${VERIFY_CREDENTIALS_PATH}`,
     method: "GET",
@@ -521,7 +551,15 @@ async function verifyToken(
     if (id === undefined) {
       throw new MastodonProviderError("provider_unavailable", UNAVAILABLE_MESSAGE);
     }
-    return id;
+    const acct = readString(parsed, "acct");
+    const username = readString(parsed, "username");
+    const url = readString(parsed, "url");
+    return {
+      accountId: id,
+      ...(acct === undefined ? {} : { acct }),
+      ...(username === undefined ? {} : { username }),
+      ...(url === undefined ? {} : { url }),
+    };
   }
   if (result.status === 401 || result.status === 403) {
     throw new MastodonProviderError("credential_rejected", CREDENTIAL_REJECTED_MESSAGE);
@@ -574,15 +612,34 @@ async function loadInstanceLimit(instance: string, context: ProviderContext): Pr
   return maxCharacters;
 }
 
-/** The verified identity for one account, keyed by the instance-local id. */
-function identityFor(accountId: string, instance: string, now: IsoTime): VerifiedIdentity {
+/**
+ * The verified identity for one account, keyed by the instance-local id.
+ *
+ * `verify_credentials` is already read for the id, so the readable `acct` (or
+ * `username`) and the account's own `url` it returned alongside become optional
+ * `presentation` without a second request. The generic `display_name` is
+ * deliberately not used: a person's nickname is not an account identifier.
+ * Identity, de-duplication and the binding revision stay keyed by the
+ * instance-local id.
+ */
+function identityFor(verified: VerifiedAccount, instance: string, now: IsoTime): VerifiedIdentity {
   const account: AccountIdentity = {
     provider: MASTODON_PROVIDER_ID,
-    accountId,
+    accountId: verified.accountId,
     origin: instance,
   };
+  const accountName = sanitizeAccountName(verified.acct) ?? sanitizeAccountName(verified.username);
+  const profileUrl = safePublicUrl(verified.url);
+  const presentation =
+    accountName === undefined && profileUrl === undefined
+      ? undefined
+      : {
+          ...(accountName === undefined ? {} : { accountName }),
+          ...(profileUrl === undefined ? {} : { profileUrl }),
+        };
   return {
     account,
+    ...(presentation === undefined ? {} : { presentation }),
     evidence: [
       { capability: "identity", value: "supported", source: instance, verifiedAt: now },
     ],
@@ -754,7 +811,7 @@ async function runConnect(
     },
     context,
   );
-  const accountId = await verifyToken(material.instance, accessToken, context);
+  const verified = await verifyToken(material.instance, accessToken, context);
   await loadInstanceLimit(material.instance, context);
 
   return {
@@ -762,7 +819,7 @@ async function runConnect(
     // The bundle Core persists: the instance binding and the access token. It
     // never leaves the secret store.
     credentials: { instance: material.instance, accessToken },
-    identity: identityFor(accountId, material.instance, context.now),
+    identity: identityFor(verified, material.instance, context.now),
   };
 }
 
@@ -781,9 +838,9 @@ async function verifyConnect(
   if (instance === undefined || accessToken === undefined) {
     throw new MastodonProviderError("input_invalid", CONNECT_INPUT_MISSING_MESSAGE);
   }
-  const accountId = await verifyToken(instance, accessToken, context);
+  const verified = await verifyToken(instance, accessToken, context);
   await loadInstanceLimit(instance, context);
-  return identityFor(accountId, instance, context.now);
+  return identityFor(verified, instance, context.now);
 }
 
 /**

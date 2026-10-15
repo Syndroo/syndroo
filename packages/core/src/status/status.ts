@@ -1,12 +1,15 @@
 import type * as T from '../domain/records.js';
-import { clone, executionView } from '../domain/rules.js';
+import { clone } from '../domain/rules.js';
 import { fail } from '../protocol/validation.js';
 import { preview } from '../runtime-helpers.js';
+import { projectExecution } from '../publish/projection.js';
 export async function status<TRequest extends T.StatusRequest>(deps: T.CoreDependencies, request: TRequest, ctx: T.CallContext): Promise<T.StatusResult<TRequest>> {
     async function connectionView(c: T.ConnectionRecord): Promise<T.ConnectionView> {
         const provider = await deps.providers.describe(c.account.provider);
         return {
-            connectionId: c.connectionId, account: clone(c.account), ...(c.label ? {
+            connectionId: c.connectionId, account: clone(c.account), ...(c.presentation === undefined ? {} : {
+                presentation: clone(c.presentation)
+            }), ...(c.label ? {
                 label: c.label
             } : {}), isDefault: c.isDefault, active: c.active, observations: c.observations.map(o => ({
                 ...clone(o), stale: o.credentialRevision !== c.credentialRevision || o.artifactFingerprint !== provider.implementation?.artifactFingerprint || o.schemaFingerprint !== provider.implementation?.schemaFingerprint || !!(o.expiresAt && o.expiresAt <= deps.clock.now())
@@ -40,7 +43,7 @@ export async function status<TRequest extends T.StatusRequest>(deps: T.CoreDepen
                 fail('REQUEST_IN_PROGRESS');
             if (op.phase === 'execution')
                 result = {
-                    type: 'operation', operation: executionView(op)
+                    type: 'operation', operation: await projectExecution(deps.state, op)
                 };
             else {
                 const intent = await deps.state.getIntent({

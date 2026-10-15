@@ -254,6 +254,7 @@ export class SQLiteState implements T.StateStore {
           outcome: null,
           state: "ready",
           history: [],
+          previewRevision: input.ticket.executionRevision,
         }));
       } else {
         operation.preparedRetry = {
@@ -511,6 +512,7 @@ export class SQLiteState implements T.StateStore {
 
         delivery.state = "ready";
         delivery.outcome = null;
+        delivery.previewRevision = intent.executionRevision;
         delete delivery.claim;
       }
 
@@ -1191,6 +1193,7 @@ export class SQLiteState implements T.StateStore {
     return {
       connectionId: connection.connectionId,
       account: clone(connection.account),
+      ...(connection.presentation ? { presentation: clone(connection.presentation) } : {}),
       ...(connection.label ? { label: connection.label } : {}),
       isDefault: connection.isDefault,
       active: connection.active,

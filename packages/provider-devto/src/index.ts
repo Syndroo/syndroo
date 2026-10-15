@@ -23,7 +23,7 @@
  * outcome or a thrown error.
  */
 
-import { defineProvider } from "@syndroo/provider-sdk";
+import { defineProvider, safeHttpDiagnostic } from "@syndroo/provider-sdk";
 import type {
   AccountIdentity,
   ConnectAction,
@@ -45,6 +45,7 @@ import type {
   ProviderPlugin,
   ProviderPublishInput,
   ProviderWriteOutcome,
+  SafeDiagnostic,
   VerifiedIdentity,
 } from "@syndroo/provider-sdk";
 
@@ -188,15 +189,34 @@ function readIdNumber(record: JsonObject | undefined): string | undefined {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : undefined;
 }
 
-/** The verified identity for one user, keyed by the stable user id. */
-function identityFor(accountId: string, now: IsoTime): VerifiedIdentity {
+/**
+ * Usernames that may be rendered as the readable account name.
+ *
+ * A value carrying whitespace, a slash or an `@` is dropped rather than
+ * escaped; presentation is optional and the identity never depends on it.
+ */
+const READABLE_USERNAME = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * The verified identity for one user, keyed by the stable user id.
+ *
+ * `GET /api/users/me` is already read for the id, so a username it returned
+ * alongside is carried as optional `presentation` without a second request. It
+ * is display metadata only: identity, de-duplication and the binding revision
+ * stay keyed by the user id.
+ */
+function identityFor(accountId: string, now: IsoTime, username?: string): VerifiedIdentity {
   const account: AccountIdentity = {
     provider: DEVTO_PROVIDER_ID,
     accountId,
     origin: DEVTO_ORIGIN,
   };
+  const readable =
+    username !== undefined && READABLE_USERNAME.test(username) ? username : undefined;
+  const presentation = readable === undefined ? undefined : { accountName: readable };
   return {
     account,
+    ...(presentation === undefined ? {} : { presentation }),
     evidence: [
       { capability: "identity", value: "supported", source: DEVTO_API_HOST, verifiedAt: now },
     ],
@@ -210,7 +230,10 @@ function identityFor(accountId: string, now: IsoTime): VerifiedIdentity {
  * anything else is a stable provider failure. A thrown error carries a fixed
  * sentence only — the API key stays inside this function.
  */
-async function requestIdentity(apiKey: string, context: ProviderContext): Promise<string> {
+async function requestIdentity(
+  apiKey: string,
+  context: ProviderContext,
+): Promise<{ accountId: string; username?: string }> {
   let result: ProviderHttpResult;
   try {
     result = await context.transport.request({
@@ -233,11 +256,13 @@ async function requestIdentity(apiKey: string, context: ProviderContext): Promis
   }
 
   if (result.status >= 200 && result.status < 300) {
-    const accountId = accountIdFor(parseJsonObject(result.body));
+    const parsed = parseJsonObject(result.body);
+    const accountId = accountIdFor(parsed);
     if (accountId === undefined) {
       throw new DevtoProviderError("provider_unavailable", IDENTITY_INCOMPLETE_MESSAGE);
     }
-    return accountId;
+    const username = readString(parsed, "username");
+    return username === undefined ? { accountId } : { accountId, username };
   }
 
   if (result.status === 401 || result.status === 403) {
@@ -256,13 +281,13 @@ async function runConnect(
     if (apiKey === undefined) {
       throw new DevtoProviderError("credential_rejected", CONNECT_INPUT_MISSING_MESSAGE);
     }
-    const accountId = await requestIdentity(apiKey, context);
+    const resolved = await requestIdentity(apiKey, context);
     return {
       status: "done",
       // The bundle Core persists: the API key that re-authenticates later. It
       // never leaves the secret store.
       credentials: { apiKey },
-      identity: identityFor(accountId, context.now),
+      identity: identityFor(resolved.accountId, context.now, resolved.username),
     };
   }
 
@@ -278,8 +303,8 @@ async function verifyConnect(
   if (apiKey === undefined) {
     throw new DevtoProviderError("credential_rejected", CONNECT_INPUT_MISSING_MESSAGE);
   }
-  const accountId = await requestIdentity(apiKey, context);
-  return identityFor(accountId, context.now);
+  const resolved = await requestIdentity(apiKey, context);
+  return identityFor(resolved.accountId, context.now, resolved.username);
 }
 
 /** Read the article title, rejecting a missing or empty one. */
@@ -491,26 +516,40 @@ function classifyWrite(result: ProviderHttpResult, now: IsoTime): ProviderWriteO
 
   if (status === 429) {
     const retryAfter = parseRetryAfter(headerValue(result.headers, "retry-after"), now);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason: "rate_limited" });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
       ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 400 && status < 500) {
+    const reason = reasonForRejection(status);
+    const diagnostic = safeHttpDiagnostic({ httpStatus: status, reason });
     return {
       status: "failed",
       disposition: "not_applied",
       retryable: false,
-      reason: reasonForRejection(status),
+      reason,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     };
   }
 
   if (status >= 500) {
-    return { status: "unknown", disposition: "unknown", reason: "provider_unavailable" };
+    const diagnostic: SafeDiagnostic | undefined = safeHttpDiagnostic({
+      httpStatus: status,
+      reason: "provider_unavailable",
+    });
+    return {
+      status: "unknown",
+      disposition: "unknown",
+      reason: "provider_unavailable",
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    };
   }
 
   return { status: "unknown", disposition: "unknown", reason: "unknown" };

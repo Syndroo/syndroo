@@ -1,7 +1,8 @@
 import type * as T from '../domain/records.js';
-import { accountKey, clone, executionView, later, retryEligible } from '../domain/rules.js';
+import { accountKey, clone, later, retryEligible } from '../domain/rules.js';
 import { assertJson, fail } from '../protocol/validation.js';
-import { checkLoaded, credential, frozenPayload, preparedResult, requestIdentity, resolveConnection, safeError, validateProviderResult } from '../runtime-helpers.js';
+import { checkLoaded, credential, frozenPayload, frozenPresentation, preparedResult, requestIdentity, resolveConnection, safeError, validateProviderResult } from '../runtime-helpers.js';
+import { projectExecution } from './projection.js';
 export async function prepare(deps: T.CoreDependencies, request: T.PrepareRequest | T.RetryRequest, ctx: T.CallContext): Promise<T.PublishResult> {
     const identity = await requestIdentity(deps, 'publish', request, ctx);
     const now = deps.clock.now();
@@ -39,7 +40,7 @@ export async function prepare(deps: T.CoreDependencies, request: T.PrepareReques
             principalId: ctx.principalId, approvalDigest: intent.approvalDigest
         });
         if (admission?.admitted)
-            return executionView(admission.operation);
+            return await projectExecution(deps.state, admission.operation);
         return preparedResult(deps, intent);
     }
     const ticket = reservation.ticket;
@@ -81,7 +82,7 @@ export async function prepare(deps: T.CoreDependencies, request: T.PrepareReques
             catch {
                 return fail('PROVIDER_UNAVAILABLE');
             }
-            validateProviderResult('VerifiedIdentity', verified);
+            verified = validateProviderResult<T.VerifiedIdentity>('VerifiedIdentity', verified);
             if (accountKey(verified.account) !== accountKey(target.connection.account))
                 fail('STALE_BINDING');
             if (verified.evidence.some(e => e.capability === 'publish_permission' && e.value === 'unsupported'))
@@ -89,10 +90,18 @@ export async function prepare(deps: T.CoreDependencies, request: T.PrepareReques
             const payload = frozenPayload(loaded, {
                 content: target.content, options: target.options, account: target.connection.account, now, seed: ticket.operationId + ':' + target.deliveryId
             });
+            // Freeze the display snapshot with the rest of the intent: the name
+            // proven by this identity check, the saved connection fallback and
+            // the connection label at this moment. Later renames therefore never
+            // change this operation's history, and the snapshot is covered by
+            // the intent digest.
+            const presentation = frozenPresentation(verified.presentation, target.connection.presentation, target.connection.label);
             frozen.push({
                 deliveryId: target.deliveryId, binding: {
                     connectionId: target.connection.connectionId, account: clone(target.connection.account), bindingRevision: target.connection.bindingRevision
-                }, implementation: clone(loaded.implementation), canonicalContent: clone(target.content), canonicalOptions: clone(target.options), frozen: payload
+                }, implementation: clone(loaded.implementation), canonicalContent: clone(target.content), canonicalOptions: clone(target.options), frozen: payload, ...(presentation === undefined ? {} : {
+                    presentation
+                })
             });
         }
         const token = 'appr_' + deps.entropy.token();

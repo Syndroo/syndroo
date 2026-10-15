@@ -133,7 +133,7 @@ export async function connect(deps: T.CoreDependencies, request: T.ConnectReques
         catch {
             return fail('CONNECT_STEP_UNKNOWN');
         }
-        validateProviderResult('ProviderConnectResult', result);
+        result = validateProviderResult<T.ProviderConnectResult>('ProviderConnectResult', result);
         if (result.status === 'action_required') {
             if (!['credential_input', 'open_url', 'wait_for_callback'].includes(result.action.type))
                 fail('PROVIDER_INVALID');
@@ -177,7 +177,9 @@ export async function connect(deps: T.CoreDependencies, request: T.ConnectReques
             }, value: result.credentials
         });
         const connection: T.ConnectionRecord = {
-            connectionId: id, account: clone(result.identity.account), ...(session.label ?? old?.label ? {
+            connectionId: id, account: clone(result.identity.account), ...(result.identity.presentation === undefined ? {} : {
+                presentation: clone(result.identity.presentation)
+            }), ...(session.label ?? old?.label ? {
                 label: (session.label ?? old?.label)!
             } : {}), isDefault: old?.isDefault ?? false, active: true, revision: (old?.revision ?? 0) + 1, bindingRevision: (old?.bindingRevision ?? 0) + 1, credentialRevision, secretRef: secret.ref, observations: result.identity.evidence.map(e => ({
                 ...e, account: clone(result.identity.account), credentialRevision, artifactFingerprint: loaded.implementation.artifactFingerprint, schemaFingerprint: loaded.implementation.schemaFingerprint

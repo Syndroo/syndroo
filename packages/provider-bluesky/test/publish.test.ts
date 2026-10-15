@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { validateProviderWriteOutcome } from "@syndroo/provider-sdk/testing";
-import type { JsonObject, ProviderHttpResult, ProviderWriteOutcome } from "@syndroo/provider-sdk";
+import type {
+  JsonObject,
+  ProviderFailureReason,
+  ProviderHttpResult,
+  ProviderWriteOutcome
+} from "@syndroo/provider-sdk";
 
 import plugin, { CREATE_RECORD_URL } from "../src/index.js";
 import {
@@ -75,20 +80,53 @@ describe("bluesky publish classification", () => {
   });
 
   it("classifies a definite 4xx rejection as failed and never retried", async () => {
-    const cases: readonly { result: ProviderHttpResult; reason: string }[] = [
-      { result: response(400, { error: "InvalidRequest" }), reason: "validation" },
-      { result: response(401, { error: "ExpiredToken" }), reason: "auth" },
-      { result: response(403, { error: "Forbidden" }), reason: "permission" },
-      { result: response(422, { error: "InvalidSwap" }), reason: "validation" },
+    const cases: readonly {
+      status: number;
+      body: JsonObject;
+      reason: ProviderFailureReason;
+      providerCode?: string;
+      message: string;
+    }[] = [
+      {
+        status: 400,
+        body: { error: "InvalidRequest" },
+        reason: "validation",
+        providerCode: "InvalidRequest",
+        message: "The platform rejected the content or options.",
+      },
+      {
+        status: 401,
+        body: { error: "ExpiredToken" },
+        reason: "auth",
+        providerCode: "ExpiredToken",
+        message: "The platform rejected the credential.",
+      },
+      {
+        status: 403,
+        body: { error: "Forbidden" },
+        reason: "permission",
+        message: "The platform refused the publish permission.",
+      },
+      {
+        status: 422,
+        body: { error: "InvalidSwap" },
+        reason: "validation",
+        message: "The platform rejected the content or options.",
+      },
     ];
 
-    for (const { result, reason } of cases) {
-      const { outcome, calls } = await publishWith(result);
+    for (const { status, body, reason, providerCode, message } of cases) {
+      const { outcome, calls } = await publishWith(response(status, body));
       expect(outcome).toEqual({
         status: "failed",
         disposition: "not_applied",
         retryable: false,
         reason,
+        diagnostic: {
+          ...(providerCode === undefined ? {} : { providerCode }),
+          httpStatus: status,
+          message,
+        },
       });
       expect(calls).toHaveLength(1);
     }
@@ -102,6 +140,11 @@ describe("bluesky publish classification", () => {
       retryable: true,
       reason: "rate_limited",
       retryAfter: new Date(Date.parse(FIXED_NOW) + 30_000).toISOString(),
+      diagnostic: {
+        providerCode: "RateLimitExceeded",
+        httpStatus: 429,
+        message: "The platform rate-limited the request.",
+      },
     });
     expect(withSeconds.calls).toHaveLength(1);
 
@@ -113,6 +156,11 @@ describe("bluesky publish classification", () => {
       retryable: true,
       reason: "rate_limited",
       retryAfter: new Date(Date.parse(httpDate)).toISOString(),
+      diagnostic: {
+        providerCode: "RateLimitExceeded",
+        httpStatus: 429,
+        message: "The platform rate-limited the request.",
+      },
     });
 
     const without = await publishWith(response(429, { error: "RateLimitExceeded" }));
@@ -121,6 +169,11 @@ describe("bluesky publish classification", () => {
       disposition: "not_applied",
       retryable: true,
       reason: "rate_limited",
+      diagnostic: {
+        providerCode: "RateLimitExceeded",
+        httpStatus: 429,
+        message: "The platform rate-limited the request.",
+      },
     });
     expect(Object.hasOwn(without.outcome, "retryAfter")).toBe(false);
   });

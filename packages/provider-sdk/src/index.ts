@@ -18,5 +18,6 @@
  */
 
 export * from "./types.js";
+export * from "./presentation.js";
 export { DEFINITION_LIMITS, ProviderDefinitionError, defineProvider } from "./define-provider.js";
 export type { ProviderDefinitionErrorCode } from "./define-provider.js";

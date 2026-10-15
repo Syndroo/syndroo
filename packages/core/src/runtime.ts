@@ -1,13 +1,15 @@
 import type * as T from './domain/records.js';
-import { clone, executionView } from './domain/rules.js';
+import { clone } from './domain/rules.js';
 import { validateRequest } from './protocol/input.js';
 import { assertJson, fail, ProtocolError } from './protocol/validation.js';
 import { validateWire } from './protocol/generated/validators.js';
 import { connect } from './connect/connect.js';
 import { prepare } from './publish/prepare.js';
 import { createExecutor } from './publish/executor.js';
+import { projectExecution } from './publish/projection.js';
+import { emitProgress } from './publish/progress.js';
 import { status } from './status/status.js';
-import { checkBinding, checkImplementation, checkLoaded, frozenPayload, resolveConnection, verifyIntent } from './runtime-helpers.js';
+import { checkBinding, checkImplementation, checkLoaded, frozenPayload, frozenPresentation, resolveConnection, verifyIntent } from './runtime-helpers.js';
 export function createCore(deps: T.CoreDependencies): {
     core: T.Core;
     executor: T.Executor;
@@ -39,7 +41,7 @@ export function createCore(deps: T.CoreDependencies): {
             fail('APPROVAL_INVALID');
         // Consumed approval is an observation, even if a newer retry exists.
         if (saved.admitted)
-            return executionView(saved.operation);
+            return await projectExecution(deps.state, saved.operation);
         if (saved.intent.expiresAt <= deps.clock.now())
             fail('APPROVAL_EXPIRED');
         await verifyIntent(deps, saved.intent);
@@ -59,23 +61,24 @@ export function createCore(deps: T.CoreDependencies): {
                 principalId: ctx.principalId, approvalDigest
             });
             if (replay?.admitted)
-                return executionView(replay.operation);
+                return await projectExecution(deps.state, replay.operation);
             fail('STALE_INTENT');
         }
         if (admitted.type === 'replay')
-            return executionView(admitted.value);
+            return await projectExecution(deps.state, admitted.value);
         const work = {
             operationId: admitted.value.operationId, executionRevision: admitted.value.executionRevision
         };
+        await emitProgress(deps, ctx.onProgress, 'admitted', work, ctx.principalId);
         if (deps.execution.type === 'durable_async') {
             try {
                 await deps.execution.notifier.notify(work);
             }
             catch { /* Durable pending work remains authoritative. */
             }
-            return executionView(admitted.value);
+            return await projectExecution(deps.state, admitted.value);
         }
-        return executor.run(work, ctx.signal);
+        return executor.run(work, ctx.signal, ctx.onProgress);
     }
     const core: T.Core = {
         connect: (request, ctx) => boundary(() => {
@@ -111,8 +114,14 @@ export async function previewDocument(input: T.PostDocument, deps: {
         const frozen = frozenPayload(loaded, {
             content: target.content ?? input.content, options: target.options ?? {}, account: connection.account, now: deps.now, seed: deps.seed + ':' + index
         });
+        // A dry run is offline and verifies no credential, so it shows the
+        // presentation saved on the connection plus the current label instead of
+        // a fresh identity check.
+        const presentation = frozenPresentation(undefined, connection.presentation, connection.label);
         preview.push({
-            deliveryId: 'preview_' + index, connectionId: connection.connectionId, account: clone(connection.account), provider: target.provider, preview: frozen.preview
+            deliveryId: 'preview_' + index, connectionId: connection.connectionId, account: clone(connection.account), provider: target.provider, preview: frozen.preview, ...(presentation === undefined ? {} : {
+                presentation
+            })
         });
     }
     return {

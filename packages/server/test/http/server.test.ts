@@ -53,6 +53,44 @@ async function setup() {
   return result;
 }
 
+/**
+ * The real handler over the real Core and the shared fake provider harness.
+ *
+ * Deliberately socket-free: this sandbox refuses `listen(127.0.0.1)` with
+ * `EPERM`, so every case that needs a bound port is skipped here (see
+ * `docs/testing.md`). What remains under test is still the whole path a request
+ * takes — `createHttpHandler`, the real `@syndroo/core`, the SQLite state
+ * adapter on a temp directory, and the envelope serializer.
+ */
+async function handlerWithFakeProvider(h = harness()) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'syndroo-http-')));
+  roots.push(root);
+  const options: SelfHostedOptions = {
+    bearerSecret: randomBytes(32).toString('base64url'),
+    statePath: path.join(root, 'state.db'),
+    secretsPath: path.join(root, 'secrets.db'),
+    secretStoreKey: randomBytes(32).toString('hex'),
+    providers: h.providers,
+    providerContext: h.deps.providerContext,
+  };
+  const runtime = createSelfHostedRuntime(options);
+  runtimes.push(runtime);
+  const handler = createHttpHandler({
+    core: runtime.core, authenticate: () => true, principalId: 'deployment',
+  });
+  const post = (path: string, body: object, key?: string) => handler(new Request(`http://localhost${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(key === undefined ? {} : { 'idempotency-key': key }),
+    },
+    body: JSON.stringify(body),
+  }));
+  /** `POST /v1/publish`, the operation most cases here exercise. */
+  const call = (body: object, key?: string) => post('/v1/publish', body, key);
+  return { h, options, runtime, post, call };
+}
+
 function envelopeKeys(value: unknown): void {
   expect(Object.keys(value as object).sort()).toEqual(
     ['error', 'ok', 'operation', 'protocolVersion', 'result'].sort(),
@@ -174,6 +212,70 @@ it('uses 202 only for admitted nonterminal execute, and enforces request deadlin
   const timeout = await call('/v1/status', { type: 'connections' });
   expect(timeout.status).toBe(504);
   expect((await timeout.json() as { error: { code: string } }).error.code).toBe('REQUEST_TIMEOUT');
+});
+
+it('returns the frozen presentation without credential material and keeps 202 off a terminal round', async () => {
+  const r = await handlerWithFakeProvider();
+  r.h.plugin.connect.verify = async () => ({
+    account: { provider: 'fake', accountId: 'alice', origin: 'https://social.example' },
+    evidence: [],
+    presentation: { accountName: '@alice', profileUrl: 'https://social.example/@alice' },
+  });
+
+  // The connection has to live in the runtime's own SQLite state, so it is made
+  // through the real connect round trip rather than the memory fixture.
+  const start = await r.post('/v1/connect', { type: 'start', provider: 'fake', options: {} }, 'connect-start-1');
+  expect(start.status).toBe(200);
+  const started = (await start.json() as {
+    result: { status: string; connectSessionId: string; stepRevision: number };
+  }).result;
+  expect(started.status).toBe('action_required');
+  const resumed = await r.post('/v1/connect', {
+    type: 'resume',
+    connectSessionId: started.connectSessionId,
+    stepRevision: started.stepRevision,
+    input: { type: 'credentials', credentials: { token: 'fixture-credential' } },
+  }, 'connect-resume-1');
+  expect(resumed.status).toBe(200);
+  const connected = (await resumed.json() as {
+    result: { status: string; connection: { connectionId: string } };
+  }).result;
+  expect(connected.status).toBe('done');
+
+  const preparedResponse = await r.call({
+    type: 'prepare',
+    content: { text: 'hello' },
+    targets: [{ provider: 'fake', connection: connected.connection.connectionId }],
+  }, 'http-library-1');
+  expect(preparedResponse.status).toBe(200);
+  const prepared = (await preparedResponse.json() as {
+    result: { approvalToken: string; preview: readonly { preview?: unknown; presentation?: unknown }[] };
+  }).result;
+  // The frozen preview travels with the prepare result: the same content and
+  // the account presentation resolved when the intent was frozen.
+  expect(prepared.preview[0]?.preview).toEqual({ content: { text: 'hello' }, fields: [] });
+  expect(prepared.preview[0]?.presentation).toEqual({
+    accountName: '@alice', profileUrl: 'https://social.example/@alice',
+  });
+
+  const executeResponse = await r.call({ type: 'execute', approvalToken: prepared.approvalToken }, 'http-library-exec-1');
+  // A foreground execution is already terminal, so it answers 200. 202 belongs
+  // only to a durably admitted round that has not finished, and neither status
+  // means the platform user can see the post.
+  expect(executeResponse.status).toBe(200);
+  const text = await executeResponse.text();
+  const execution = (JSON.parse(text) as {
+    result: { status: string; deliveries: readonly { state?: string; preview?: unknown; presentation?: unknown }[] };
+  }).result;
+  expect(execution.status).toBe('succeeded');
+  expect(execution.deliveries[0]?.state).toBe('settled');
+  expect(execution.deliveries[0]?.preview).toEqual({ content: { text: 'hello' }, fields: [] });
+  expect(execution.deliveries[0]?.presentation).toEqual({
+    accountName: '@alice', profileUrl: 'https://social.example/@alice',
+  });
+  // Display metadata only: no credential, no canary, no store key.
+  expect(text).not.toContain('FAKE_SECRET_CANARY');
+  expect(text).not.toContain(r.options.secretStoreKey);
 });
 
 it('real socket: rejects declared over-limit body before the client sends it', async () => {

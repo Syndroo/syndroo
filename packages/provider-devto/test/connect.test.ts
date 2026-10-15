@@ -95,6 +95,7 @@ describe("devto connect", () => {
 
     expect(identity.account.accountId).toBe(String(USER_ID));
     expect(identity.account.origin).toBe("https://dev.to");
+    expect(identity.presentation).toEqual({ accountName: "syndroo" });
     expect(scripted.calls).toHaveLength(1);
   });
 

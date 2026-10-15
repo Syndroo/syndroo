@@ -52,12 +52,13 @@ const FAKE_VALIDATORS: T.LoadedProvider["validators"] = {
  */
 export function fakeRegistry(
   plugin: T.ProviderPlugin = createFakeProvider(),
+  implementation: T.Implementation = FAKE_IMPLEMENTATION,
 ): T.ProviderRegistry {
   const view: T.ProviderView = {
     provider: "fake",
     availability: "available",
     provenance: "third_party",
-    implementation: FAKE_IMPLEMENTATION,
+    implementation,
     manifest: plugin.manifest,
   };
 
@@ -81,7 +82,7 @@ export function fakeRegistry(
 
       return {
         plugin,
-        implementation: FAKE_IMPLEMENTATION,
+        implementation,
         validators: FAKE_VALIDATORS,
       };
     },

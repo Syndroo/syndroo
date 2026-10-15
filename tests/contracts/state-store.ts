@@ -163,6 +163,81 @@ export function stateStoreContract(name: string, factory: () => Promise<StateFix
                 }, deliveryId: 'delivery_two', expectedVersion: latest.version, claimId: 'claim_two', ownerId: 'second', submissionId: 'submit_two', now
             })).toBeNull();
         });
+        it('records the snapshot round on admission and keeps it through an outcome', async () => {
+            const f = await factory();
+            const { inputs } = await admitted(f, true);
+            await f.state.admitExecution(inputs);
+            const admittedOp = (await f.state.getOperation('op_one', principalId))!;
+            expect(admittedOp.deliveries.map(d => d.previewRevision)).toEqual([0, 0]);
+            const claim = await f.state.claimDelivery({
+                work: {
+                    operationId: 'op_one', executionRevision: 0
+                }, deliveryId: 'delivery_one', expectedVersion: admittedOp.version, claimId: 'claim_one', ownerId: 'first', submissionId: 'submit_one', now
+            });
+            expect((await f.state.recordOutcome({
+                claim: claim!, outcome: {
+                    status: 'succeeded'
+                }, now
+            })).type).toBe('applied');
+            // The round is a property of the record, not of live execution, so
+            // it survives settling and a later read round-trip.
+            expect((await f.state.getOperation('op_one', principalId))?.deliveries.map(d => d.previewRevision)).toEqual([0, 0]);
+        });
+        it('moves only the retried target to the new round on retry admission', async () => {
+            const f = await factory();
+            const { inputs, intent } = await admitted(f, true);
+            await f.state.admitExecution(inputs);
+
+            // A retry requires every delivery to be settled.
+            for (const deliveryId of ['delivery_one', 'delivery_two']) {
+                const current = (await f.state.getOperation('op_one', principalId))!;
+                const claim = await f.state.claimDelivery({
+                    work: {
+                        operationId: 'op_one', executionRevision: 0
+                    }, deliveryId, expectedVersion: current.version, claimId: 'claim_' + deliveryId, ownerId: 'worker', submissionId: 'submit_' + deliveryId, now
+                });
+                expect(claim).not.toBeNull();
+                expect((await f.state.recordOutcome({
+                    claim: claim!, outcome: {
+                        status: 'failed', disposition: 'not_applied', retryable: true, reason: 'network'
+                    }, now
+                })).type).toBe('applied');
+            }
+
+            const settled = (await f.state.getOperation('op_one', principalId))!;
+            const retryRequest: T.RequestIdentity = {
+                principalId, family: 'publish', key: 'retry', digest: 'retry'
+            };
+            const reservation = await f.state.prepareRetry({
+                request: retryRequest, operationId: 'op_one', expectedVersion: settled.version, deliveryIds: ['delivery_two'], ownerId: 'retry-owner', now
+            });
+            expect(reservation.type).toBe('owned');
+            if (reservation.type !== 'owned')
+                throw Error('expected retry ownership');
+            const secret = await f.credentials.put({
+                creationId: 'approval_retry', owner: {
+                    kind: 'approval', ownerId: 'op_one', version: 1
+                }, value: {
+                    approvalToken: 'fixture-retry'
+                }
+            });
+            const retryIntent: T.FrozenIntent = {
+                ...intent, executionRevision: 1, request: retryRequest, targets: [intent.targets[1]!], approvalDigest: 'approval_retry', approvalSecretRef: secret.ref, intentDigest: 'intent_retry'
+            };
+            expect((await f.state.savePreparedIntent({
+                ticket: reservation.ticket, intent: retryIntent, now
+            })).type).toBe('applied');
+
+            const prepared = (await f.state.getOperation('op_one', principalId))!;
+            expect((await f.state.admitExecution({
+                principalId, approvalDigest: 'approval_retry', intentDigest: 'intent_retry', expectedVersion: prepared.version, bindings: retryIntent.targets.map(t => t.binding), now
+            })).type).toBe('applied');
+
+            const after = (await f.state.getOperation('op_one', principalId))!;
+            // The selected target moves to round 1; the unselected target keeps
+            // the round it was frozen in.
+            expect(after.deliveries.map(d => [d.deliveryId, d.previewRevision])).toEqual([['delivery_one', 0], ['delivery_two', 1]]);
+        });
         it('fences delayed outcome after expired claim recovery and never reclaims', async () => {
             const f = await factory();
             const { inputs } = await admitted(f);

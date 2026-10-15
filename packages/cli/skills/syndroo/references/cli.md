@@ -103,6 +103,7 @@ syndroo publish [options]
 | `--to <connectionId>` | Retry target; repeatable and required with `--retry`. |
 | `--request-id <id>` | Stable request identity for this logical call. |
 | `--dry-run` | Offline preview; no state, credential or network access. |
+| `--yes` | Auto-confirm the frozen intent this process just prepared. |
 
 Exactly one of `--input`, `--data`, or `--retry`. A document without a `type` is a
 `content` + `targets` document and becomes a `prepare`: the wire `PublishRequest`
@@ -115,7 +116,24 @@ syndroo publish --input post.json --dry-run
 syndroo publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
 syndroo publish --input - --json < execute.json
 syndroo publish --retry op_example --to conn_example
+syndroo publish --input post.json --yes
+syndroo publish --input post.json --yes --json
 ```
+
+On a terminal a `prepare` prints a summary of the frozen preview (at most three
+render lines per target, measured against the terminal width) and asks
+`Publish to N accounts? [y/N/v]`. `v`/`view` expands the full frozen preview and
+asks again; the confirmation window is fixed at prepare time and `v` does not
+extend it. `y`/`yes` executes the same in-process token; `n`/`no`, an empty line
+and end-of-input cancel, printing the later command and exiting `5`; any other
+answer is not an authorization and asks again within the same fixed deadline. With no terminal that can show the preview and read
+the answer, the command prepares, prints the later command and exits `0`.
+
+`--yes` auto-confirms the intent this process just prepared, so one call can
+prepare and execute. It mints no credential and bypasses no identity binding,
+expiry, provider validation, frozen payload or idempotency rule, and it creates
+no second `prepare`. `--dry-run --yes` is still offline and sends nothing; on an
+explicit `execute` or a `retry` request it adds nothing.
 
 ### Publish requests
 
@@ -170,6 +188,11 @@ At most one of `--connections`, `--operation`, `--operations`. `--limit` and
 `--cursor` belong only to `--operations`. Read-only: no provider call, no secret
 read, no state write.
 
+`status --operation <id>` renders the same publication view as `publish`: one
+read, no polling, no provider call, no send. When the stored state has not
+settled it is prefixed with `Last recorded status:`, so a saved `in_flight`
+record cannot be read as a live confirmation.
+
 ## Credential fields
 
 | Provider | Fields |
@@ -199,6 +222,15 @@ Sources are never mixed or guessed.
 On failure `ok` is `false`, `result` is `null`, and `error` is
 `{ "code", "message", "details"? }` with a static safe message.
 
+One run prints exactly one envelope. `--json --verbose` keeps that single stdout
+envelope and writes its extra diagnostics to stderr; the approval token is never
+echoed as a second payload. A `prepare` result adds, per preview target, the
+frozen provider `preview` (`content` + `fields`) and any `presentation`
+(`accountName`, `profileUrl`, `label`); an execution delivery can carry the same
+fields plus an optional `diagnostic` (`SafeDiagnostic`: `providerCode`,
+`httpStatus`, `message`) on a failure. Those optional fields are a protocol extension, so a
+strict older client may reject them.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -216,4 +248,5 @@ Read `result.status` as well as the code: `0` never means a platform published.
 ## Retired syntax
 
 There is no `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`, `retry`,
-`state` or `local *` command, and no `--yes`/`--no-input`. Historical note only.
+`state` or `local *` command, and no `--no-input`. Historical note only.
+`--yes` is back in v1 with the narrow auto-confirm meaning documented above.

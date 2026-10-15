@@ -14,6 +14,14 @@ It speaks protocol v1 with three commands: `connect`, `publish`, `status`.
 Publishing is two explicit phases. A `prepare` returns a frozen preview and an
 approval token; nothing is sent until a separate `execute` carries that token.
 
+On a terminal the preview is a short summary — at most three lines per target —
+and the prompt is `Publish to N accounts? [y/N/v]`: `y`/`yes` executes; `n`/`no`,
+an empty line and end-of-input cancel; `v`/`view` expands the whole frozen
+preview and asks again; any other answer is not an authorization and asks again,
+within one fixed deadline. `--yes` skips that prompt by auto-confirming the frozen
+intent the same process just prepared; it is only for a publication the user
+already approved, and never a blanket authorization.
+
 ## References
 
 Read the one that matches the current branch:
@@ -45,17 +53,23 @@ Read the one that matches the current branch:
    it for different content, which is `IDEMPOTENCY_CONFLICT`.
    Done when the id is chosen and recorded.
 
-4. **Prepare and show the full preview.** Send a `prepare` document and read the
-   result: `status: "confirmation_required"`, the `preview` (every target,
-   account and option), `operationId`, `approvalToken` and `expiresAt`. A prepare
-   is not a publication and a zero exit is not approval.
+4. **Prepare and show the preview.** Send a `prepare` document and read the
+   result: `status: "confirmation_required"`, the `preview` (every target's
+   frozen provider `preview` of `content` + `fields`, the target's account and
+   any `presentation` such as `accountName`/`profileUrl`), `operationId`,
+   `approvalToken` and `expiresAt`. That `preview` is what the execute call
+   sends, not a re-derivation. A prepare is not a publication and a zero exit is
+   not approval.
    Done when you can show the user exactly what would be sent and to which
    accounts.
 
 5. **Get explicit approval.** Ask only when the user's existing authorization
    does not already cover this content, these accounts and this action. The
    approval token goes into the execute request; a token does not prove a human
-   read anything, so hold the confirmation yourself.
+   read anything, so hold the confirmation yourself. When the user has already
+   approved this exact publication in this conversation, you may prepare and
+   execute in one call with `--yes` instead of prompting; it bypasses no safety
+   check and creates no second `prepare`.
    Done when you can name the authorization you rely on, or you have the answer.
 
 6. **Execute, then read the result.** Send `{ "type": "execute", "approvalToken":
@@ -90,13 +104,28 @@ echo '{"type":"prepare","content":{"text":"Hello from Syndroo"},"targets":[{"pro
 echo '{"type":"execute","approvalToken":"at_example"}' \
   | syndroo publish --input - --json
 
+# or, when the user already approved this publication, steps 1 and 3 in one call
+# (one final execution envelope on stdout; no prompt, no prepared handoff):
+syndroo publish --input post.json --yes --json
+
 # 4. read the settled record
 syndroo status --operation op_example --json
 ```
 
 `--dry-run` (`syndroo publish --input post.json --dry-run`) previews offline
 without state, credentials or network, and needs an existing connection for each
-target. A prepare exits `0` even when it published nothing; read `result.status`.
+target; `--dry-run --yes` is still a dry run and sends nothing. A prepare exits
+`0` even when it published nothing; read `result.status`.
+
+`--json` prints exactly one envelope per run. Without `--yes` that envelope is
+the prepared result; with `--yes` it is the final execution or error result.
+`--json --verbose` keeps the single stdout envelope — verbose diagnostics go to
+stderr — and the approval token is never echoed as a second payload.
+
+`status --operation <id>` renders the same publication view as `publish` and is a
+single read: no polling, no provider call, no send. An operation whose stored
+state has not settled is labelled `Last recorded status:`, so a stored record
+cannot be read as a live confirmation.
 
 ## Account connection
 

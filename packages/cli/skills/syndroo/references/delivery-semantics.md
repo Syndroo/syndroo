@@ -25,9 +25,11 @@ each platform did.
 ```
 
 `preview` contains every target: its provider, its `connectionId`, the resolved
-`account`, the text or fields and any options. Show it in full before asking for
-confirmation. The token is consumed by the matching execute and never proves a
-human read the preview.
+`account`, the frozen provider `preview` (`content` + `fields`) and any options.
+A target can also carry a `presentation` (`accountName`, `profileUrl`, `label`).
+Show it before asking for confirmation; that frozen `preview` is what the execute
+will send, not a re-derivation. The token is consumed by the matching execute and
+never proves a human read the preview.
 
 ## Execution result
 
@@ -62,6 +64,41 @@ be written to local state. Report it and do not re-send.
 | `unknown` | The write may have reached the platform (`disposition: "unknown"`). The honest answer for a timeout, a dropped connection, or a response without a usable id. |
 | `not_started` | Frozen but never attempted (`disposition: "not_applied"`). |
 | `null` | No outcome is recorded yet; treat it as unresolved. |
+
+## Display metadata and diagnostics
+
+These optional fields are presentation only: they never change stable identity
+(`provider` + `origin` + `accountId`), target selection or the provider payload.
+The frozen presentation snapshot *is* covered by the intent digest, because it is
+frozen with the rest of the intent at prepare time; a later rename therefore
+cannot change what an already-reviewed approval covered.
+
+- `presentation` (`accountName`, `profileUrl`, and a target-only `label`) is the
+  account's display metadata as resolved when the intent was frozen. A later
+  reconnect or rename does not rewrite it in a historical record.
+- `preview` (`content` + `fields`) is the provider preview that was frozen.
+- `diagnostic` (`SafeDiagnostic`: `providerCode`, `httpStatus`, `message`) can appear on a
+  failed or unknown delivery. It is limited to verified code values and reviewed
+  text — never a raw provider body, a raw HTTP header or an `error.message`
+  stack. A missing diagnostic is not an error.
+
+`publish` and `status --operation` render the same shared view, so a status means
+the same thing in both. The human wording from that view:
+
+| Stored state | Rendered |
+| --- | --- |
+| `prepared` | `Awaiting confirmation`, or `Expired` past `expiresAt` |
+| `dry_run` | `Preview only` |
+| `succeeded` | `Successful` |
+| `failed` | `Failed` |
+| `not_started` | `Not sent` |
+| `unknown` | `Unknown` |
+| `in_flight` | `Publishing` |
+| `ready` | `Waiting` |
+
+A `status --operation` read of a record that has not settled is prefixed with
+`Last recorded status:`. It reports the stored record, not a live check, so it is
+not proof that a platform is still working.
 
 ## Unknown is a third outcome
 

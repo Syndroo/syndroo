@@ -26,7 +26,10 @@ export {
   successEnvelope,
 } from "./render/envelope.js";
 export type { CliEnvelope, Operation, SafeDetails } from "./render/envelope.js";
-export { escapeControls, renderConnect, renderDryRun, renderPublish, renderStatus } from "./render/human.js";
+export { escapeControls, renderConnect, renderExecuteInstruction, renderStatus } from "./render/human.js";
+export { renderPublication, type PublicationRenderOptions } from "./render/publication.js";
+export { publicationView, type PublicationView, type PublicationTargetView, type PublicationMode } from "./render/publication-view.js";
+export { summarizeText, displayWidth, truncateToWidth } from "./render/terminal-text.js";
 export {
   createLocalRuntime,
   type LocalRuntime,

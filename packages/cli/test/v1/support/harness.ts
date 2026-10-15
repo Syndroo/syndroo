@@ -126,6 +126,16 @@ export type RunOptions = {
   readonly overrides?: LocalRuntimeOverrides;
   /** Fake controlling terminal: presence, scripted answers, and read counters. */
   readonly tty?: TtyDouble;
+  /** Terminal columns for the appended layout; omitted means the 80-column fallback. */
+  readonly columns?: number;
+  /**
+   * Terminal height in rows.
+   *
+   * Supplying it (with `stdoutIsTty`) is what makes the dynamic publication
+   * block reachable from a CLI-level test; omitted means "unknown height", so
+   * the controller falls back to the appended log.
+   */
+  readonly rows?: number;
 };
 
 /**
@@ -142,6 +152,25 @@ export type TtyDouble = {
   readonly lines?: readonly string[];
   readonly hiddenLines?: readonly string[];
   readonly calls?: { tty: number; hidden: number };
+  /**
+   * Captures everything written to the controlling terminal.
+   *
+   * `writeTty` exists only when this is supplied, so a test that models a
+   * terminal which cannot be written to simply leaves it out.
+   */
+  readonly writes?: { text: string };
+  /**
+   * Index of the first `writeTty` call that reports failure.
+   *
+   * Models a controlling terminal that accepts the first writes and then
+   * refuses: the confirmation path must stop before reading an answer it could
+   * not have shown, and must never execute on one.
+   */
+  readonly writeFailsAt?: number;
+  /** The `readTtyLine` limit of each read, so a test can prove `v` never extends it. */
+  readonly limits?: number[];
+  /** Runs before read `index` returns: models a change while the human is deciding. */
+  readonly onRead?: (index: number) => void;
 };
 
 export type RunResult = {
@@ -159,6 +188,8 @@ function capture(options: RunOptions): { io: CliIo; out: () => string; err: () =
   const tty = options.tty ?? {};
   const ttyLines = [...(tty.lines ?? [])];
   const hiddenLines = [...(tty.hiddenLines ?? [])];
+  let ttyReads = 0;
+  let ttyWrites = 0;
 
   const io: CliIo = {
     stdin,
@@ -168,14 +199,35 @@ function capture(options: RunOptions): { io: CliIo; out: () => string; err: () =
     cwd: options.cwd,
     stdinIsTty: options.stdinIsTty ?? false,
     stdoutIsTty: options.stdoutIsTty ?? false,
+    ...(options.columns === undefined ? {} : { columns: options.columns }),
+    ...(options.rows === undefined ? {} : { rows: options.rows }),
     hasTty: () => tty.hasTty ?? false,
-    readTtyLine: () => {
+    readTtyLine: (limitMs: number) => {
+      const index = ttyReads;
+
+      ttyReads += 1;
+
       if (tty.calls !== undefined) {
         tty.calls.tty += 1;
       }
 
+      tty.limits?.push(limitMs);
+      tty.onRead?.(index);
+
       return ttyLines.shift();
     },
+    ...(tty.writes === undefined
+      ? {}
+      : {
+          writeTty: (text: string) => {
+            const index = ttyWrites;
+
+            ttyWrites += 1;
+            tty.writes!.text += text;
+
+            return tty.writeFailsAt === undefined || index < tty.writeFailsAt;
+          },
+        }),
     ...(tty.hiddenLines === undefined
       ? {}
       : {

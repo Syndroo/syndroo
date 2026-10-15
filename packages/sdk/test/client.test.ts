@@ -18,11 +18,13 @@ import type {
 } from "../src/index.js";
 import { FakeHttp } from "./support/fake-http.js";
 import {
+  ACCOUNT_PRESENTATION,
   CONNECT_ACTION_REQUIRED,
   CONNECTION_DONE,
   EXECUTION_SUCCEEDED,
   PREPARED,
   STATUS_CONNECTIONS,
+  STATUS_CONNECTIONS_WITH_PRESENTATION,
   STATUS_OPERATION,
   STATUS_OPERATIONS,
   STATUS_OVERVIEW,
@@ -250,6 +252,20 @@ describe("status", () => {
     ]);
     await client(http).status({ type: "connections" });
     expect(http.requests[0]?.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("exposes the optional presentation on a narrowed connection view", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_CONNECTIONS_WITH_PRESENTATION) },
+    ]);
+    // The narrowed return type is what `tsconfig.test.json` checks: a wrong
+    // return type makes these field reads a compile error, not a runtime one.
+    const connections: { type: "connections"; connections: readonly ConnectionView[] } =
+      await client(http).status({ type: "connections" });
+    const first = connections.connections[0];
+    expect(first?.connectionId).toBe("conn_1");
+    expect(first?.presentation?.accountName).toBe(ACCOUNT_PRESENTATION.accountName);
+    expect(first?.presentation?.profileUrl).toBe(ACCOUNT_PRESENTATION.profileUrl);
   });
 
   it("fails safe when the result does not answer the query that was asked", async () => {

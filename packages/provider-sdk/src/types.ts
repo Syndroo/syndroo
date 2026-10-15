@@ -71,7 +71,33 @@ export type ProviderEvidence = {
   capability: Observation["capability"]; value: Observation["value"];
   source: string; verifiedAt: IsoTime; expiresAt?: IsoTime;
 };
-export type VerifiedIdentity = { account: AccountIdentity; evidence: readonly ProviderEvidence[] };
+/**
+ * Optional, untrusted display metadata returned beside a stable identity.
+ *
+ * It is never part of the identity (`provider` + `origin` + `accountId`), never
+ * used for target selection, de-duplication or binding, and every optional
+ * field is validated and dropped when invalid rather than repaired.
+ */
+export type AccountPresentation = {
+  /** A meaningful platform handle or username, not a generic display name. */
+  accountName?: string;
+  /** A public profile URL on the provider's own origin. */
+  profileUrl?: string;
+};
+export type TargetPresentation = AccountPresentation & {
+  /** The connection label captured when the target was frozen. */
+  label?: string;
+};
+/** A bounded provider-side diagnostic restricted to reviewed, safe values. */
+export type SafeDiagnostic = {
+  providerCode?: string;
+  httpStatus?: number;
+  message?: string;
+};
+export type VerifiedIdentity = {
+  account: AccountIdentity; evidence: readonly ProviderEvidence[];
+  presentation?: AccountPresentation;
+};
 export type ProviderConnectResult =
   | { status: "action_required"; action: ConnectAction; privateState: JsonObject }
   | { status: "done"; credentials: CredentialBundle; identity: VerifiedIdentity };
@@ -109,8 +135,9 @@ export type ProviderFailureReason = "auth" | "validation" | "rate_limited"
 export type ProviderWriteOutcome =
   | { status: "succeeded"; remoteId?: string; url?: string }
   | { status: "failed"; disposition: "not_applied"; retryable: boolean;
-      reason: ProviderFailureReason; retryAfter?: IsoTime }
-  | { status: "unknown"; disposition: "unknown"; reason: ProviderFailureReason };
+      reason: ProviderFailureReason; retryAfter?: IsoTime; diagnostic?: SafeDiagnostic }
+  | { status: "unknown"; disposition: "unknown"; reason: ProviderFailureReason;
+      diagnostic?: SafeDiagnostic };
 export type ProviderPublishInput = {
   frozen: FrozenProviderPayload; account: AccountIdentity; credentials: CredentialBundle;
   submissionId: string; context: ProviderContext;

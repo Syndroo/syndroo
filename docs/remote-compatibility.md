@@ -61,6 +61,43 @@ a different body is a conflict.
 Business results live in `result`; a failure carries a stable `code`, a static
 `message`, and bounded `details`.
 
+### Result field extension
+
+The publish output design added optional result fields. The current tree — Core,
+the protocol schema and its generated validators, `@syndroo/sdk`, `@syndroo/server`,
+`@syndroo/cloudflare` and the bundled CLI — emits and accepts them together:
+
+- `presentation` (`{ "accountName"?, "profileUrl"? }`) on a connection view and
+  on a preview target, plus the target-only `label`;
+- `preview` (`{ "content", "fields" }`) on a preview target and on a delivery;
+- `diagnostic` (`SafeDiagnostic`: `{ "providerCode"?, "httpStatus"?, "message"? }`) on a failed
+  or unknown delivery, limited to verified code values and reviewed text.
+
+They are additive. A response or stored record without them is still valid and is
+read the same way, so an older *server or Worker* keeps working with a new client,
+and an old record is reported with the optional fields absent rather than
+rewritten.
+
+The reverse is not safe: the client is a strict validator, so a client built
+before this extension can reject a response from a server or Worker that now
+includes the new fields. `protocolVersion` stays `1`, because this is a
+field-level addition rather than a new protocol version; a matching
+`protocolVersion` is therefore not proof that both sides understand the new
+fields.
+
+| Client | Server / Worker | Expected result |
+| --- | --- | --- |
+| before this extension | before this extension | supported |
+| before this extension | after this extension | unsupported — may reject the unknown fields |
+| after this extension | before this extension | supported — optional fields absent |
+| after this extension | after this extension | supported |
+
+Only the last row, and only in-tree, has been exercised: `packages/sdk/test/transport.test.ts`
+covers a response with and without the optional fields plus a fail-safe on a
+malformed one, and `packages/cloudflare/test/publication-output.test.ts` covers
+the D1 round trip. No deployed server or Worker has served a real request, so no
+cross-version combination has been verified live.
+
 ### Status codes
 
 | Code | When |
@@ -179,6 +216,9 @@ own records.
 ## What is not verified
 
 - No server or Worker has been deployed from this tree.
+- The four client/server version combinations above are argued from the strict
+  validator and the additive field set; only the same-version rows have fixture
+  coverage.
 - No HTTP integration has been run against a real deployment; the handler,
   authentication, SQLite, D1 and Worker paths are covered by tests and fixtures.
 - The SDK README and the Worker README in `packages/` describe the pre-v1

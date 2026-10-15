@@ -50,15 +50,27 @@ path before reading anything into it.
 - **CLI** (`packages/cli`): argument parsing, human and JSON rendering, the local
   runtime adapters, the provider trust loader, transport policy, and the request
   journal. Provider-loader and egress tests cover trust, fingerprinting and
-  fail-closed origins.
+  fail-closed origins. The publish output layer — the shared publication view and
+  renderer, the confirmation loop (`y`/`N`/`v`, `--yes`, no-terminal fallback)
+  and the redraw-versus-appended output controller — is fixture-tested through
+  scripted terminal seams (`columns`, `rows`, `onResize`, `signal`).
 - **SDK** (`packages/sdk`): the HTTP client, transport, error contract, and
-  `wait` polling, with a fake HTTP implementation and wire fixtures.
+  `wait` polling, with a fake HTTP implementation and wire fixtures. The wire
+  fixtures cover a response with and without the optional `presentation`,
+  `preview` and `diagnostic` fields, plus fail-safe handling of a malformed
+  one.
 - **Server** (`packages/server`): the HTTP handler, mandatory Bearer
   authentication, SQLite state, encrypted secret storage, and the Node provider
-  composition.
+  composition. A socket-free publish round trip drives the real handler, Core and
+  SQLite adapter through connect → prepare → execute and asserts that the frozen
+  preview and presentation survive, that a terminal round answers `200`, and that
+  no credential material reaches the response.
 - **Cloudflare** (`packages/cloudflare`): D1 state, encrypted secrets with AAD
   binding and crypto-shred, the Worker entry gates, queue consumption and cron
-  recovery, against the D1 test harness.
+  recovery, against the D1 test harness. The D1 publication fixture re-reads a
+  prepared and an admitted operation through freshly constructed adapters, so the
+  frozen preview, the account presentation and the round marker are proven to come
+  out of the database rather than process memory.
 - **Build graph** (`scripts/`): stage order, Node engine floor, the private Core
   boundary, and the three bundle checks.
 
@@ -80,7 +92,10 @@ external packages and inlined workspace packages.
 ## Fixture versus live
 
 - **Fixture-tested**: every provider path here. Requests, responses, timeouts and
-  error classification run against controlled endpoints, never a real account.
+  error classification run against controlled endpoints, never a real account. The
+  publication-output fixtures are fixture-tested in the same sense: fake providers,
+  wire fixtures, a scripted terminal and an isolated state root, never a real
+  account or post.
 - **Recorded evidence**: `outputs/provider-api-evidence.md`, kept outside this
   repository, is the API research the providers were written against. It is not
   a test result.
@@ -93,8 +108,14 @@ authorization. No test in this repository contacts a real social account.
 ## Requirements
 
 - Node.js `>=24.19.0`, npm, and a POSIX host.
-- Provider, SDK and server fixtures bind a loopback port, so a sandbox that
-  denies `listen` needs those tests to run unsandboxed.
+- Some fixtures bind a loopback port, so a sandbox that denies `listen` fails
+  them with `listen EPERM: operation not permitted 127.0.0.1` — the same error a
+  bare `node -e` gets when it binds a port. That currently covers the four
+  real-socket cases in `packages/server/test/http/server.test.ts`, the nine in
+  `packages/server/test/oauth/callback.test.ts`, and the CLI OAuth
+  listener/loopback/loop tests. It is an environment failure, not a product
+  failure; those tests need to run unsandboxed. The CLI, SDK, Core, provider and
+  Cloudflare suites do not need a port and are unaffected.
 
 ## Release tooling tests
 
@@ -106,6 +127,14 @@ acceptance, and it is not part of the v1 protocol gates above.
 ## What is not verified
 
 - Live-account publishing for any provider.
+- The physical terminal behaviour behind the output seams: real resize, real
+  Ctrl-C during a redraw and a genuine `EPIPE` are argued from the scripted
+  `rows`, `onResize`, `signal` and `stdout.emit("error")` seams rather than
+  observed on a real pseudo-terminal, because no pseudo-terminal tool is
+  available here.
+- Cross-version client/server combinations: the optional-field extension is
+  argued from the strict validator, so only same-version pairings have fixture
+  coverage; see [remote-compatibility.md](remote-compatibility.md).
 - A deployed Cloudflare Worker against a real Cloudflare account. The Worker's
   deployment configuration is not part of this tree; see
   [remote-compatibility.md](remote-compatibility.md).

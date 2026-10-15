@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, openSync, readSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, readSync, writeSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { TextDecoder } from "node:util";
 
@@ -17,8 +17,39 @@ export interface CliIo {
   readonly cwd: string;
   readonly stdinIsTty: boolean;
   readonly stdoutIsTty: boolean;
+  /**
+   * Terminal width in columns, when one can be read.
+   *
+   * Optional: an appended log with no readable width uses a fixed 80-column
+   * layout instead. `--no-color` never changes this value.
+   */
+  readonly columns?: number | undefined;
+  /**
+   * Terminal height in rows, when one can be read.
+   *
+   * The dynamic publication block only redraws in place when it fits here;
+   * a missing height degrades to the appended log rather than guessing.
+   */
+  readonly rows?: number | undefined;
+  /**
+   * Subscribes to terminal resize events and returns the unsubscribe function.
+   *
+   * Optional so a test double with a fixed size keeps working; a terminal that
+   * cannot report resize simply never redraws on one.
+   */
+  readonly onResize?: (listener: () => void) => () => void;
   /** `true` when a controlling terminal can be opened for interactive confirmation. */
   readonly hasTty: () => boolean;
+  /**
+   * Writes to the controlling terminal, independent of stdout.
+   *
+   * A confirmation preview and its prompt must be visible even when stdout is
+   * redirected, so they never share the machine output channel. Returns
+   * `false` when no controlling terminal can be written; the caller must then
+   * not block on an answer it cannot show. Optional so test doubles that never
+   * touch a terminal keep working.
+   */
+  readonly writeTty?: (text: string) => boolean;
   /**
    * Reads one line from the controlling terminal. Reading from `/dev/tty`
    * rather than stdin matters: stdin may already be the post document.
@@ -141,6 +172,27 @@ function readTerminalSettings(fd: number): string | undefined {
   return /^[\x20-\x7e]{1,4096}$/.test(settings) ? settings : undefined;
 }
 
+/**
+ * Writes raw bytes to one controlling-terminal descriptor.
+ *
+ * `write` may accept fewer bytes than requested, so the loop continues until
+ * every byte is written or the terminal reports an error.
+ */
+function writeTtyFromFd(fd: number, text: string): boolean {
+  const bytes = Buffer.from(text, "utf8");
+  let offset = 0;
+
+  try {
+    while (offset < bytes.length) {
+      offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
 /** The writable controlling-terminal descriptor used only for `stty`. */
 function openHiddenTtyControl(): number | undefined {
   try {
@@ -231,12 +283,44 @@ export function createProcessIo(signal: AbortSignal): CliIo {
     cwd: process.cwd(),
     stdinIsTty: stdin.isTTY === true,
     stdoutIsTty: process.stdout.isTTY === true,
+    /**
+     * Read per access, not captured once: a redraw after a resize must see the
+     * new width and height (`process.stdout.columns` is itself a live getter).
+     */
+    get columns(): number | undefined {
+      return process.stdout.columns;
+    },
+    get rows(): number | undefined {
+      return process.stdout.rows;
+    },
+    onResize: (listener: () => void) => {
+      process.stdout.on("resize", listener);
+
+      return () => {
+        process.stdout.off("resize", listener);
+      };
+    },
     hasTty: () => {
       try {
         closeSync(openSync("/dev/tty", "r"));
         return true;
       } catch {
         return false;
+      }
+    },
+    writeTty: (text: string) => {
+      let fd: number;
+
+      try {
+        fd = openSync("/dev/tty", fsConstants.O_WRONLY);
+      } catch {
+        return false;
+      }
+
+      try {
+        return writeTtyFromFd(fd, text);
+      } finally {
+        closeSync(fd);
       }
     },
     readTtyLine: (limitMs: number) => {

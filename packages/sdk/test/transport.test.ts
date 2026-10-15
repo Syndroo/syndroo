@@ -9,10 +9,20 @@ import { LIMITS, Syndroo, SyndrooError } from "../src/index.js";
 import type { PrepareRequest } from "../src/index.js";
 import { FakeHttp, oversizedChunks, textBytes } from "./support/fake-http.js";
 import {
+  ACCOUNT_PRESENTATION,
+  CONNECTION_DONE_WITH_PRESENTATION,
+  EXECUTION_FAILED_WITH_DIAGNOSTIC,
   EXECUTION_PENDING,
   EXECUTION_SUCCEEDED,
+  EXECUTION_SUCCEEDED_LEGACY,
+  EXECUTION_SUCCEEDED_PROJECTED,
+  EXECUTION_UNKNOWN_WITH_DIAGNOSTIC,
   PREPARED,
+  PREPARED_WITH_PRESENTATION,
+  PROVIDER_PREVIEW,
   STATUS_CONNECTIONS,
+  STATUS_CONNECTIONS_WITH_PRESENTATION,
+  TARGET_PRESENTATION,
   okEnvelope,
 } from "./support/wire-fixtures.js";
 
@@ -125,6 +135,127 @@ describe("response handling", () => {
     ]);
     const result = await client(http).publish(prepareBody());
     expect(result.status).toBe("confirmation_required");
+  });
+
+  it("accepts a pre-design response that omits every optional output field", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", EXECUTION_SUCCEEDED_LEGACY) },
+    ]);
+    const result = await client(http).publish({ type: "execute", approvalToken: "approval_1" });
+    const delivery = result.deliveries[0];
+    // Absent, not defaulted: an older server never claims a phase it did not
+    // compute, and the SDK must not invent a value for a missing field.
+    expect(delivery?.state).toBeUndefined();
+    expect(delivery?.presentation).toBeUndefined();
+    expect(delivery?.preview).toBeUndefined();
+    expect(delivery?.outcome?.status).toBe("succeeded");
+  });
+
+  it("accepts a pre-design connection view without stored presentation", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_CONNECTIONS) },
+    ]);
+    const result = await client(http).status({ type: "connections" });
+    expect(result.connections).toEqual([]);
+  });
+
+  it("carries the new projected fields and keeps the fixture inside the response budget", async () => {
+    const body = okEnvelope("publish", EXECUTION_SUCCEEDED_PROJECTED);
+    expect(new TextEncoder().encode(JSON.stringify(body)).byteLength)
+      .toBeLessThan(LIMITS.maxResponseBytes);
+
+    const http = new FakeHttp([{ kind: "json", status: 200, body }]);
+    const result = await client(http).publish({ type: "execute", approvalToken: "approval_1" });
+    const delivery = result.deliveries[0];
+    expect(delivery?.state).toBe("settled");
+    expect(delivery?.presentation).toEqual(TARGET_PRESENTATION);
+    expect(delivery?.preview).toEqual(PROVIDER_PREVIEW);
+  });
+
+  it("accepts a connection view, a connect result and a prepared preview with presentation", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("status", STATUS_CONNECTIONS_WITH_PRESENTATION) },
+      { kind: "json", status: 200, body: okEnvelope("connect", CONNECTION_DONE_WITH_PRESENTATION) },
+      { kind: "json", status: 200, body: okEnvelope("publish", PREPARED_WITH_PRESENTATION) },
+    ]);
+    const listed = await client(http).status({ type: "connections" });
+    expect(listed.connections[0]?.presentation).toEqual(ACCOUNT_PRESENTATION);
+
+    const done = await client(http).connect({
+      type: "update",
+      connectionId: "conn_1",
+      changes: { label: "mine" },
+    });
+    expect(done.connection.presentation).toEqual(ACCOUNT_PRESENTATION);
+
+    const prepared = await client(http).publish(prepareBody());
+    if (prepared.status !== "confirmation_required") {
+      throw new Error("expected a prepared result");
+    }
+    expect(prepared.preview[0]?.presentation).toEqual(TARGET_PRESENTATION);
+  });
+
+  it("keeps the reviewed safe diagnostic of a failed and of an unknown outcome", async () => {
+    const http = new FakeHttp([
+      { kind: "json", status: 200, body: okEnvelope("publish", EXECUTION_FAILED_WITH_DIAGNOSTIC) },
+      { kind: "json", status: 200, body: okEnvelope("publish", EXECUTION_UNKNOWN_WITH_DIAGNOSTIC) },
+    ]);
+    const failed = await client(http).publish({ type: "execute", approvalToken: "approval_1" });
+    expect(failed.deliveries[0]?.outcome).toMatchObject({
+      status: "failed",
+      reason: "auth",
+      diagnostic: { providerCode: "AUTH_FAILED", httpStatus: 401, message: "Authentication failed." },
+    });
+
+    const unknown = await client(http).publish({ type: "execute", approvalToken: "approval_2" });
+    expect(unknown.status).toBe("unknown");
+    expect(unknown.deliveries[0]?.outcome).toMatchObject({
+      status: "unknown",
+      diagnostic: { providerCode: "NETWORK_ERROR" },
+    });
+  });
+
+  // The wire schema bounds `accountName`/`label` at 256 code points. The URL
+  // *policy* (https, no userinfo/query/fragment, at most 2048 characters) is a
+  // producer-and-display rule: `safePublicUrl` drops such a link before it is
+  // stored, and the renderer falls back to the verified origin if one ever
+  // arrives. `test/presentation.test.ts` and `publication-render.test.ts`
+  // prove both halves, so the SDK does not need to invent a third check.
+  it.each([
+    ["an over-long account name", { accountName: "x".repeat(257) }],
+    ["an empty account name", { accountName: "" }],
+    ["an over-long label", { label: "y".repeat(257) }],
+  ])("fails safe on a malformed presentation field: %s", async (_name, presentation) => {
+    const body = okEnvelope("publish", {
+      ...EXECUTION_SUCCEEDED_PROJECTED,
+      deliveries: [{ ...EXECUTION_SUCCEEDED_PROJECTED.deliveries[0], presentation }],
+    });
+    const http = new FakeHttp([{ kind: "json", status: 200, body }]);
+    const error = await errorOf(() =>
+      client(http).publish({ type: "execute", approvalToken: "approval_1" }),
+    );
+    expect(error.code).toBe("INVALID_RESPONSE");
+  });
+
+  it.each([
+    ["a code outside the reviewed alphabet", { providerCode: "bad code!" }],
+    ["an out-of-range status", { httpStatus: 99 }],
+    ["a message over the reviewed bound", { message: "y".repeat(513) }],
+  ])("fails safe on a malformed safe diagnostic: %s", async (_name, diagnostic) => {
+    const body = okEnvelope("publish", {
+      ...EXECUTION_FAILED_WITH_DIAGNOSTIC,
+      deliveries: [
+        {
+          ...EXECUTION_FAILED_WITH_DIAGNOSTIC.deliveries[0],
+          outcome: { ...EXECUTION_FAILED_WITH_DIAGNOSTIC.deliveries[0].outcome, diagnostic },
+        },
+      ],
+    });
+    const http = new FakeHttp([{ kind: "json", status: 200, body }]);
+    const error = await errorOf(() =>
+      client(http).publish({ type: "execute", approvalToken: "approval_1" }),
+    );
+    expect(error.code).toBe("INVALID_RESPONSE");
   });
 
   it("fails safe on an unknown enum value", async () => {

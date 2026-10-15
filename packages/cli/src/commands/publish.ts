@@ -9,15 +9,18 @@ import type {
   TargetInput,
 } from "@syndroo/core";
 
+import type { ExecutionResult } from "@syndroo/core";
+
 import { EXIT_CODE } from "../exit-codes.js";
 import { INTERACTIVE_READ_LIMIT_MS } from "../io.js";
 import { exitForExecution } from "../render/envelope.js";
+import { renderExecuteInstruction } from "../render/human.js";
+import { renderPublication } from "../render/publication.js";
 import {
-  renderDryRun,
-  renderExecuteInstruction,
-  renderExecution,
-  renderPublish,
-} from "../render/human.js";
+  publicationFailureView,
+  publicationView,
+  type PublicationView,
+} from "../render/publication-view.js";
 import {
   mintRequestId,
   RequestJournal,
@@ -27,6 +30,7 @@ import {
   callContext,
   isRecord,
   readJsonSource,
+  renderOptions,
   usageError,
   type CommandContext,
 } from "./context.js";
@@ -38,6 +42,15 @@ export type PublishOptions = {
   readonly to?: readonly string[];
   readonly requestId?: string;
   readonly dryRun?: boolean;
+  /**
+   * `--yes`: auto-confirm the same frozen intent this process just prepared.
+   *
+   * It is an authorization shortcut, never a safety shortcut: the token, the
+   * binding check, the approval window, the frozen payload and the idempotency
+   * rules are unchanged. With an explicit execute request it is redundant; with
+   * `--dry-run` it is ignored because a dry run never sends.
+   */
+  readonly yes?: boolean;
 };
 
 /** Where the request body came from; an execute token is stdin-only. */
@@ -109,7 +122,8 @@ export async function runPublish(
 
     return await finishPrepared(
       ctx,
-      await runtime.core.publish(request, callContext(ctx.io, requestId)),
+      await prepareWithReport(ctx, request, requestId),
+      options,
     );
   }
 
@@ -129,11 +143,7 @@ export async function runPublish(
   }
 
   if (request.type === "execute") {
-    const result = await runtime.core.publish(request, callContext(ctx.io));
-
-    ctx.report("publish", result, renderExecution(result, { color: ctx.color }));
-
-    return exitForExecution(result.status);
+    return await executeToken(ctx, request.approvalToken);
   }
 
   await journal.record({
@@ -148,85 +158,281 @@ export async function runPublish(
 
   return await finishPrepared(
     ctx,
-    await runtime.core.publish(request, callContext(ctx.io, requestId)),
+    await prepareWithReport(ctx, request, requestId),
+    options,
   );
 }
 
-async function finishPrepared(ctx: CommandContext, result: PublishResult): Promise<number> {
+/**
+ * Run one prepare, reporting a preparation that never produced a target.
+ *
+ * A failure before any target exists has no per-target outcome, so human mode
+ * prints the shared `Publication not started` view with the safe classified
+ * message and no invented query command. `--json` prints nothing here: the
+ * top-level handler still writes exactly one failure envelope.
+ */
+async function prepareWithReport(
+  ctx: CommandContext,
+  request: PrepareRequest | RetryRequest,
+  requestId: string,
+): Promise<PublishResult> {
+  try {
+    return await ctx.runtime().core.publish(request, callContext(ctx.io, requestId));
+  } catch (error) {
+    if (!ctx.json) {
+      const code = error instanceof ProtocolError ? error.code : "INTERNAL";
+
+      writeLines(
+        ctx,
+        renderPublication(publicationFailureView({ code }), renderOptions(ctx)),
+      );
+    }
+
+    throw error;
+  }
+}
+
+async function finishPrepared(
+  ctx: CommandContext,
+  result: PublishResult,
+  options: PublishOptions,
+): Promise<number> {
   if (result.status === "confirmation_required") {
-    return await confirmPrepared(ctx, result);
+    return await confirmPrepared(ctx, result, options);
   }
 
-  ctx.report("publish", result, renderPublish(result, { color: ctx.color }));
+  ctx.report("publish", result, executionLines(ctx, result));
 
   return exitForExecution(result.status);
 }
 
+function preparedLines(ctx: CommandContext, result: PublishResult): string[] {
+  return renderPublication(publicationView(result, "preview"), renderOptions(ctx));
+}
+
+function executionLines(ctx: CommandContext, result: ExecutionResult): string[] {
+  return renderPublication(publicationView(result, "live"), renderOptions(ctx));
+}
+
 /**
- * Human confirmation for one prepared publication.
+ * One prepared publication: confirm, auto-confirm, or report and stop.
  *
- * The complete preview is rendered first - every target and every field - and
- * only then is the terminal asked. JSON mode never prompts. A non-TTY prints
- * the same preview plus the exact later command and stops without sending.
- * Only an unambiguous yes executes, and it executes the token minted by this
- * same process; a token from an earlier run is never read back or reused.
+ * `--json` never prompts and never touches a terminal. `--yes` skips the
+ * prompt but not the frozen-intent checks: it executes the token minted by this
+ * same process. Human mode without `--yes` needs a writable controlling
+ * terminal to both show the preview and read the answer; without one it
+ * reports the pending result instead of blocking or sending.
  */
 async function confirmPrepared(
   ctx: CommandContext,
   result: Extract<PublishResult, { status: "confirmation_required" }>,
+  options: PublishOptions,
 ): Promise<number> {
-  if (ctx.json) {
-    ctx.report("publish", result, renderPublish(result, { color: ctx.color }));
-
-    return EXIT_CODE.SUCCESS;
-  }
-
   if (ctx.verbose) {
+    // An execution-process diagnostic, never a result: it goes to stderr so a
+    // machine stdout keeps exactly one envelope and a live redraw is paused
+    // rather than torn. It carries no token and no provider text.
     ctx.diagnostic(`prepared ${result.operationId}; awaiting confirmation`);
   }
 
-  writeLines(ctx, renderPublish(result, { color: ctx.color }));
+  if (ctx.json) {
+    if (options.yes === true) {
+      return await executeApproved(ctx, result);
+    }
 
-  if (!ctx.io.hasTty()) {
-    writeLines(
-      ctx,
-      renderExecuteInstruction(result, "no terminal is available: nothing was sent"),
-    );
+    ctx.report("publish", result, preparedLines(ctx, result));
 
     return EXIT_CODE.SUCCESS;
   }
 
-  ctx.io.stdout.write("Confirm this publication? [y/N] ");
+  if (options.yes === true) {
+    writeLines(ctx, preparedLines(ctx, result));
 
-  const answer = ctx.io.readTtyLine(INTERACTIVE_READ_LIMIT_MS);
-
-  ctx.io.stdout.write("\n");
-
-  if (!isAffirmative(answer)) {
-    writeLines(ctx, renderExecuteInstruction(result, "declined: nothing was sent"));
-
-    return EXIT_CODE.CANCELLED;
+    return await executeApproved(ctx, result);
   }
 
-  const executed = await ctx.runtime().core.publish(
-    { type: "execute", approvalToken: result.approvalToken },
-    callContext(ctx.io),
-  );
-
-  ctx.report("publish", executed, renderExecution(executed, { color: ctx.color }));
-
-  return exitForExecution(executed.status);
+  return await confirmInteractively(ctx, result);
 }
 
-/** Only `y` or `yes`, any case, with surrounding whitespace trimmed, confirms. */
-function isAffirmative(answer: string | undefined): boolean {
-  if (answer === undefined) {
-    return false;
+/**
+ * Show the frozen preview and read one answer from the controlling terminal.
+ *
+ * The preview and prompt go to the controlling terminal, not to stdout, so a
+ * redirected stdout never becomes the place a `y` is typed. The read deadline
+ * is fixed before the first prompt and `v` never resets it. Only an
+ * unambiguous `y`/`yes` executes; `n`/`no`, an empty line and end-of-input
+ * cancel; `v` shows the complete frozen preview and asks again; anything else
+ * is not an authorization and asks again.
+ */
+async function confirmInteractively(
+  ctx: CommandContext,
+  result: Extract<PublishResult, { status: "confirmation_required" }>,
+): Promise<number> {
+  const write = ctx.io.writeTty;
+
+  if (write === undefined || !ctx.io.hasTty()) {
+    return cannotConfirm(ctx, result, "no terminal is available: nothing was sent");
   }
 
-  const normalized = answer.trim().toLowerCase();
+  const view = publicationView(result, "preview");
+  const deadline = Date.now() + INTERACTIVE_READ_LIMIT_MS;
+  let full = false;
 
-  return normalized === "y" || normalized === "yes";
+  for (;;) {
+    const shown =
+      write(`${renderPublication(view, renderOptions(ctx, { full })).join("\n")}\n`) &&
+      write(`${promptLine(view)}\n  y: publish · N: cancel · v: view full preview\n`);
+
+    // A terminal that refuses the preview or the prompt cannot be asked a
+    // question: stop before any read, never consume an answer nobody saw, and
+    // never execute on one.
+    if (!shown) {
+      return cannotConfirm(
+        ctx,
+        result,
+        "the confirmation could not be shown on a terminal: nothing was sent",
+      );
+    }
+
+    const remaining = deadline - Date.now();
+    const answer = remaining > 0 ? ctx.io.readTtyLine(remaining) : undefined;
+
+    if (answer === undefined) {
+      return cancel(ctx, result);
+    }
+
+    const normalized = answer.trim().toLowerCase();
+
+    if (normalized === "y" || normalized === "yes") {
+      write("\n");
+
+      return await executeApproved(ctx, result);
+    }
+
+    if (normalized === "" || normalized === "n" || normalized === "no") {
+      write("\n");
+
+      return cancel(ctx, result);
+    }
+
+    if (normalized === "v" || normalized === "view") {
+      full = true;
+      continue;
+    }
+
+    // Not an authorization and not a cancellation: ask again, but never past
+    // the fixed deadline.
+    write("\n");
+
+    if (Date.now() >= deadline) {
+      return cancel(ctx, result);
+    }
+  }
+}
+
+/**
+ * Report a prepared publication that cannot be confirmed here.
+ *
+ * Nothing was sent and nothing was read; the later execute command is printed
+ * once so the same frozen intent is still reachable from a machine surface.
+ */
+function cannotConfirm(
+  ctx: CommandContext,
+  result: Extract<PublishResult, { status: "confirmation_required" }>,
+  lead: string,
+): number {
+  writeLines(ctx, preparedLines(ctx, result));
+  writeLines(ctx, renderExecuteInstruction(result, lead));
+
+  return EXIT_CODE.SUCCESS;
+}
+
+function promptLine(view: PublicationView): string {
+  const count = view.targets.length;
+
+  return `Publish to ${count} account${count === 1 ? "" : "s"}? [y/N/v]`;
+}
+
+/**
+ * Run one execute request and draw the round through the shared controller.
+ *
+ * `token` is the approval token this process minted, or the one an explicit
+ * execute request carried. Human output is one block: progress arrives as
+ * post-commit projections of the stored operation, so the block can never show
+ * a state that was not durably recorded, and the final round is the last draw.
+ * `--json` never creates a controller: stdout keeps exactly one envelope.
+ */
+async function executeToken(ctx: CommandContext, token: string): Promise<number> {
+  const output = ctx.json ? undefined : ctx.output();
+
+  try {
+    const executed = await ctx.runtime().core.publish(
+      { type: "execute", approvalToken: token },
+      callContext(
+        ctx.io,
+        undefined,
+        output === undefined
+          ? undefined
+          : (event) => {
+              output.update(publicationView(event.execution, "live"));
+            },
+      ),
+    );
+
+    if (output === undefined) {
+      ctx.report("publish", executed, executionLines(ctx, executed));
+
+      return exitForExecution(executed.status);
+    }
+
+    output.finish(publicationView(executed, "live"));
+
+    const business = exitForExecution(executed.status);
+
+    // A broken output channel may make the exit non-zero, but it never rewrites
+    // the publication: the state store keeps the truth, and a business code
+    // (ambiguous, not delivered) is always the more specific answer.
+    return output.failed && business === EXIT_CODE.SUCCESS
+      ? EXIT_CODE.FAILURE
+      : business;
+  } catch (error) {
+    // The window closed between the prompt and the answer: say so plainly and
+    // ask for a fresh prepare, never extend the old approval, never reprint a
+    // token that can no longer be used.
+    if (
+      !ctx.json &&
+      error instanceof ProtocolError &&
+      error.code === "APPROVAL_EXPIRED"
+    ) {
+      writeLines(ctx, [
+        "  the approval window has closed: prepare again and confirm the new preview",
+      ]);
+    }
+
+    throw error;
+  } finally {
+    // Every path restores the cursor and drops the resize and abort listeners,
+    // including a Core rejection: the terminal must stay usable either way.
+    output?.close();
+  }
+}
+
+/** Execute the token this process just prepared. */
+async function executeApproved(
+  ctx: CommandContext,
+  result: Extract<PublishResult, { status: "confirmation_required" }>,
+): Promise<number> {
+  return await executeToken(ctx, result.approvalToken);
+}
+
+/** A decline prints the exact later command on stdout and sends nothing. */
+function cancel(
+  ctx: CommandContext,
+  result: Extract<PublishResult, { status: "confirmation_required" }>,
+): number {
+  writeLines(ctx, renderExecuteInstruction(result, "declined: nothing was sent"));
+
+  return EXIT_CODE.CANCELLED;
 }
 
 /** Write already-rendered human lines; never called in `--json`. */
@@ -337,7 +543,11 @@ async function runDryRun(
     seed,
   });
 
-  ctx.report("publish", result, renderDryRun(result, { color: ctx.color }));
+  ctx.report(
+    "publish",
+    result,
+    renderPublication(publicationView(result, "preview"), renderOptions(ctx)),
+  );
 
   return EXIT_CODE.SUCCESS;
 }

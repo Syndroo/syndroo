@@ -122,7 +122,7 @@ export class MemoryState implements T.StateStore {
             op.phase = 'prepared';
             op.intentDigest = i.intent.intentDigest;
             op.deliveries = i.intent.targets.map(t => ({
-                deliveryId: t.deliveryId, connectionId: t.binding.connectionId, account: clone(t.binding.account), attempts: 0, outcome: null, state: 'ready', history: []
+                deliveryId: t.deliveryId, connectionId: t.binding.connectionId, account: clone(t.binding.account), attempts: 0, outcome: null, state: 'ready', history: [], previewRevision: i.ticket.executionRevision
             }));
         }
         else
@@ -228,6 +228,7 @@ export class MemoryState implements T.StateStore {
             if (ids.has(d.deliveryId)) {
                 d.state = 'ready';
                 d.outcome = null;
+                d.previewRevision = intent.executionRevision;
                 delete d.claim;
             }
         op.status = aggregate(op.deliveries);
@@ -572,7 +573,9 @@ export class MemoryState implements T.StateStore {
     }
     private view(c: T.ConnectionRecord): T.ConnectionView {
         return {
-            connectionId: c.connectionId, account: clone(c.account), ...(c.label ? {
+            connectionId: c.connectionId, account: clone(c.account), ...(c.presentation ? {
+                presentation: clone(c.presentation)
+            } : {}), ...(c.label ? {
                 label: c.label
             } : {}), isDefault: c.isDefault, active: c.active, observations: c.observations.map(o => ({
                 ...clone(o), stale: false

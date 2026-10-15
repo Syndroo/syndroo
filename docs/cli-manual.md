@@ -109,6 +109,7 @@ only accepted from stdin (`--input -`), never from a named file.
 | `--to <connectionId>` | Retry target connection; repeatable. Required with `--retry`. |
 | `--request-id <id>` | Stable request identity for this logical call. |
 | `--dry-run` | Offline preview; no state, credential or network access. |
+| `--yes` | Auto-confirm the frozen intent this process just prepared. |
 
 Exactly one source: `--input <file>`, `--data <json>`, or `--retry <operationId>`
 with one or more `--to <connectionId>`. A conflict, a missing source, `--to`
@@ -122,11 +123,24 @@ node packages/cli/dist/bin.js publish --input - --json < execute.json
 node packages/cli/dist/bin.js publish --retry op_example --to conn_example
 ```
 
-In human mode a `prepare` result prints the full preview and then asks the
-controlling terminal for an explicit `y`/`yes`. A confirmed run executes the same
-in-process token and prints the execution; a declined answer prints the exact
-later command and exits `5`; a run with no terminal prints the preview and the
-later command and exits `0` without sending. `--json` never prompts.
+In human mode a `prepare` result prints a summary of the frozen preview — at most
+three render lines per target, measured against the real terminal width, with an
+80-column fallback for appended logs — and then asks the controlling terminal
+`Publish to N accounts? [y/N/v]`. `v`/`view` expands the complete frozen preview
+and asks again; it does not reset the confirmation window. A `y`/`yes` answer
+executes the same in-process token and prints the execution; `n`/`no`, an empty
+line and end-of-input decline, printing the exact later command and exiting `5`;
+any other answer is not an authorization and asks again within the same window. A
+run where no terminal can show the preview and read the answer prepares, prints
+the later command and exits `0` without sending. `--json` never prompts, and
+`--yes` skips the prompt but not the frozen-intent checks.
+
+`--yes` only auto-confirms the intent this process just prepared: it re-mints no
+credential, bypasses no identity binding, expiry, provider validation, frozen
+payload or idempotency rule, and creates no second `prepare`. `--dry-run --yes`
+stays offline and sends nothing. On an explicit `execute` or a `retry` request it
+adds nothing. A repeated request id replays the stored result instead of
+preparing again.
 
 An execute request carries a live approval token, so it is only ever read from
 stdin. A `retry` request built from `--retry`/`--to` resolves each connection id
@@ -528,6 +542,25 @@ Result shapes are declared by `StatusResult` and by the publish union:
 - execute → `{ "phase": "execution", "operationId", "status", "deliveries": [...], "durabilityWarning"? }`
 - `status` → one of `overview`, `provider`, `connections`, `operation`, `operations`.
 
+`--json --verbose` still prints exactly one stdout envelope; the extra
+identifiers and any reviewed safe diagnostics go to stderr, and no approval token
+or second prepared envelope is added. `--json` output is a protocol extension:
+the optional `presentation` fields on connections and previews and the optional
+`diagnostic` field (type `SafeDiagnostic`) on failures are new, so a strictly
+validating older client may reject them (see
+[remote-compatibility.md](remote-compatibility.md)).
+
+Results and previews can now carry optional display metadata:
+
+- an account presentation `{ "accountName"?, "profileUrl"? }` on a connection
+  view and on each preview target, and a target presentation that also allows a
+  `label`;
+- a frozen provider preview `{ "content", "fields" }` per target, so a reader
+  sees the payload that was actually frozen rather than re-deriving it;
+- an optional `diagnostic` (`SafeDiagnostic`) `{ "providerCode"?, "httpStatus"?,
+  "message"? }` on a failed or unknown delivery, limited to verified codes and
+  reviewed text.
+
 `--dry-run` is a CLI-only preview and is **not** part of the wire schema. It
 returns `{ "status": "preview", "preview": [...], "unverified": [...] }` inside
 the publish envelope. `unverified` lists what the offline preview could not
@@ -561,9 +594,10 @@ supplied at connect time. A cross-origin redirect is refused; only a same-origin
 ## Retired syntax
 
 The v1 CLI has no `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`,
-`retry`, `state` or `local *` commands, and no `--yes`/`--no-input` flags. This
-paragraph is a historical note only; none of those are accepted by the current
-build.
+`retry`, `state` or `local *` commands, and no `--no-input` flag. This paragraph
+is a historical note only; none of those are accepted by the current build.
+`--yes` was retired with that older surface and is back in v1 with the narrow
+auto-confirm meaning documented under `publish` above.
 
 ## Evidence and limits
 

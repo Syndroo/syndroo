@@ -306,6 +306,7 @@ describe("linkedin connect: verify a stored bundle", () => {
 
     expect(identity.account.accountId).toBe(MEMBER_ID);
     expect(identity.account.origin).toBe("https://www.linkedin.com");
+    expect(identity.presentation).toBeUndefined();
     expect(identity.evidence[0]!.source).toContain("deprecated");
     expect(scripted.calls).toHaveLength(1);
     expect(scripted.calls[0]!.headers.authorization).toBe(`Bearer ${TOKEN_CANARY}`);

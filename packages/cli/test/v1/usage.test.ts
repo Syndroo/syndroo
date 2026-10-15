@@ -137,6 +137,32 @@ describe("usage refusals", () => {
     expect(parseEnvelope(result)["error"].code).toBe("USAGE");
   });
 
+  it("refuses --dry-run together with --retry", async () => {
+    const space = await box();
+    const result = await runCli(
+      ["publish", "--dry-run", "--retry", "op_1", "--to", "conn_1", "--json"],
+      { env: space.env, cwd: space.root, overrides },
+    );
+
+    expect(result.exit).toBe(2);
+    expect(parseEnvelope(result)["error"].code).toBe("USAGE");
+    expect(stateRootExists(space)).toBe(false);
+  });
+
+  it("accepts --yes as a publish flag and never as an input source", async () => {
+    const space = await box();
+    const result = await runCli(["publish", "--yes", "--json"], {
+      env: space.env,
+      cwd: space.root,
+      overrides,
+    });
+
+    // `--yes` is not a source: the missing input is still the first refusal.
+    expect(result.exit).toBe(2);
+    expect(parseEnvelope(result)["error"].code).toBe("INPUT_SOURCE_MISSING");
+    expect(stateRootExists(space)).toBe(false);
+  });
+
   it("rejects an invalid provider id", async () => {
     const space = await box();
     const result = await runCli(["connect", "Bad Id", "--json"], {

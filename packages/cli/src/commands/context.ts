@@ -2,12 +2,14 @@ import { promises as fs, constants as FS } from "node:fs";
 import path from "node:path";
 
 import { parseStrictJson, ProtocolError } from "@syndroo/core";
-import type { CallContext } from "@syndroo/core";
+import type { CallContext, ProgressSink } from "@syndroo/core";
 
 import { CliError } from "../cli-error.js";
 import type { ResolvedConfig } from "../config.js";
 import { EXIT_CODE } from "../exit-codes.js";
 import type { CliIo } from "../io.js";
+import { DEFAULT_LAYOUT_COLUMNS, type PublicationRenderOptions } from "../render/publication.js";
+import { createPublicationOutput, type PublicationOutput } from "../render/publication-output.js";
 import {
   createLocalRuntime,
   LOCAL_PRINCIPAL_ID,
@@ -30,11 +32,40 @@ export type CommandContext = {
   readonly config: ResolvedConfig;
   /** Lazily composed Core instance; construction touches no filesystem. */
   runtime(): LocalRuntime;
+  /**
+   * The one publication output block for this process, created on first use.
+   *
+   * `publish` draws its live round through it and every human diagnostic goes
+   * through it too, so a diagnostic pauses a redraw instead of tearing it.
+   * `--json` never creates one: machine stdout carries exactly one document and
+   * a read-only command that never draws never creates anything.
+   */
+  output(): PublicationOutput;
   /** Write one result: a JSON envelope in `--json`, else the human lines. */
   report(operation: Operation, result: unknown, human: readonly string[]): void;
   /** Write a safe diagnostic to stderr. Never carries raw error text. */
   diagnostic(message: string): void;
 };
+
+/**
+ * The shared renderer options for one command invocation.
+ *
+ * `publish` and `status --operation` render through the same options, so one
+ * target reads the same way while it is being published and after it is only
+ * history.
+ */
+export function renderOptions(
+  ctx: CommandContext,
+  overrides: { readonly full?: boolean } = {},
+): PublicationRenderOptions {
+  return {
+    width: ctx.io.columns ?? DEFAULT_LAYOUT_COLUMNS,
+    verbose: ctx.verbose,
+    full: overrides.full ?? ctx.verbose,
+    color: ctx.color,
+    now: new Date().toISOString(),
+  };
+}
 
 export type CreateContextInput = {
   readonly io: CliIo;
@@ -47,6 +78,17 @@ export type CreateContextInput = {
 
 export function createCommandContext(input: CreateContextInput): CommandContext {
   let runtime: LocalRuntime | undefined;
+  let publicationOutput: PublicationOutput | undefined;
+
+  const output = (): PublicationOutput => {
+    publicationOutput ??= createPublicationOutput(input.io, {
+      verbose: input.verbose,
+      full: input.verbose,
+      color: input.color,
+    });
+
+    return publicationOutput;
+  };
 
   return {
     io: input.io,
@@ -59,6 +101,7 @@ export function createCommandContext(input: CreateContextInput): CommandContext 
 
       return runtime;
     },
+    output,
     report(operation, result, human): void {
       if (input.json) {
         input.io.stdout.write(
@@ -73,16 +116,36 @@ export function createCommandContext(input: CreateContextInput): CommandContext 
       }
     },
     diagnostic(message): void {
-      input.io.stderr.write(`syndroo: ${message}\n`);
+      if (input.json) {
+        // stdout already carries exactly one document and there is no live
+        // block to protect, so a machine diagnostic goes straight to stderr and
+        // no output controller is ever created for a machine call.
+        input.io.stderr.write(`syndroo: ${message}\n`);
+
+        return;
+      }
+
+      output().diagnostic(message);
     },
   };
 }
 
-/** The call identity for one Core request. */
-export function callContext(io: CliIo, idempotencyKey?: string): CallContext {
+/**
+ * The call identity for one Core request.
+ *
+ * `onProgress` is a local, in-process observation of the stored operation; it is
+ * never part of the HTTP wire and a consumer that throws can never change the
+ * publish outcome.
+ */
+export function callContext(
+  io: CliIo,
+  idempotencyKey?: string,
+  onProgress?: ProgressSink,
+): CallContext {
   return {
     principalId: LOCAL_PRINCIPAL,
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+    ...(onProgress === undefined ? {} : { onProgress }),
     signal: io.signal,
   };
 }

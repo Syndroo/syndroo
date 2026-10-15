@@ -2,7 +2,9 @@ import type { StatusRequest } from "@syndroo/core";
 
 import { EXIT_CODE } from "../exit-codes.js";
 import { renderStatus } from "../render/human.js";
-import { callContext, usageError, type CommandContext } from "./context.js";
+import { renderPublication } from "../render/publication.js";
+import { publicationView } from "../render/publication-view.js";
+import { callContext, renderOptions, usageError, type CommandContext } from "./context.js";
 
 /** Raw option values as Commander hands them over. */
 export type StatusOptions = {
@@ -30,6 +32,20 @@ export async function runStatus(
   const request = buildStatusRequest(options);
   const runtime = ctx.runtime();
   const result = await runtime.core.status(request, callContext(ctx.io));
+
+  if (options.operation !== undefined && result.type === "operation") {
+    // One operation is one shared display: the same target view a live round
+    // uses, in `recorded` mode so an unfinished history reads as what was
+    // recorded instead of as a live check. It stays read-only: one stored
+    // lookup and one projection, no provider, no input file, no write.
+    ctx.report(
+      "status",
+      result,
+      renderPublication(publicationView(result.operation, "recorded"), renderOptions(ctx)),
+    );
+
+    return EXIT_CODE.SUCCESS;
+  }
 
   ctx.report("status", result, renderStatus(result, { color: ctx.color }));
 
