@@ -247,6 +247,10 @@ unbuilt artifact is an assertion that has not been verified, never a pass.
 - LinkedIn publishing pins an API version constant (`LINKEDIN_VERSION`) and is
   awaiting re-verification against LinkedIn's currently supported versions.
 - Threads publishes in a single call with `auto_publish_text=true`.
+- Threads Worker OAuth and the manual CI publication helper are fixture-tested;
+  they have not been deployed or run against a real Threads account. Automatic
+  token refresh is not implemented. See
+  [docs/threads-ci.md](docs/threads-ci.md) for the scoped Worker and CI setup.
 - A freshly deployed Cloudflare Worker has no tables: `status` fails until the
   first `connect` initializes storage. That is expected first-run behaviour.
 - No npm publish, no deployment and no real credential use has been performed
@@ -263,5 +267,6 @@ Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Grant Dai.
 
 - CLI reference: [docs/cli-manual.md](docs/cli-manual.md)
 - Agent quickstart: [docs/agent-quickstart.md](docs/agent-quickstart.md)
+- Threads Worker and CI: [docs/threads-ci.md](docs/threads-ci.md)
 - Self-hosted server and Worker: [docs/remote-compatibility.md](docs/remote-compatibility.md)
 - Architecture v1 specs: [docs/superpowers/specs/architecture-v1/](docs/superpowers/specs/architecture-v1/)

@@ -1,8 +1,12 @@
 import { canonicalJson, parseStrictResponseJson } from '@syndroo/core';
 import type * as T from '@syndroo/core';
+import type { OAuthAttemptRecord, OAuthAttemptStore, OAuthClaimResult } from '@syndroo/server/http';
 import { primary, type D1Database, type D1Statement, type D1Value } from '../d1.js';
 import { fail, randomHex } from '../crypto.js';
 import { sanitize } from './errors.js';
+
+/** Core connect sessions last 15 minutes; keep tombstones through that bound. */
+const OAUTH_ATTEMPT_RETENTION_MS = 900_000;
 
 export type RequestEntry = { digest: string; operationId?: string; sessionId?: string; result?: T.ConnectResult; error?: T.SafeError };
 export type StepEntry = { digest: string; claim?: T.StepClaim; result?: T.ConnectResult; error?: T.SafeError };
@@ -89,6 +93,91 @@ interface WriteSession {
 /** Private implementation detail, never a Core transaction callback port. */
 export class Database {
   constructor(readonly binding: D1Database, readonly scope: string) {}
+  readonly oauthAttempts: OAuthAttemptStore = {
+    insert: async (record: OAuthAttemptRecord): Promise<void> => {
+      const db = primary(this.binding);
+      const retentionCutoff = new Date(
+        Date.parse(record.createdAt) - OAUTH_ATTEMPT_RETENTION_MS,
+      ).toISOString();
+      let results;
+      try {
+        results = await db.batch([
+          db.prepare(`DELETE FROM oauth_attempts
+            WHERE scope=? AND expires_at<=? AND created_at<=?`)
+            .bind(this.scope, record.createdAt, retentionCutoff),
+          db.prepare(`INSERT OR IGNORE INTO oauth_attempts(scope,state_digest,session_id,provider,
+            step_revision,redirect_uri,issuer,code_challenge,created_at,expires_at,used_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,NULL)`).bind(
+            this.scope, record.stateDigest, record.sessionId, record.provider, record.stepRevision,
+            record.redirectUri, record.issuer, record.codeChallenge, record.createdAt, record.expiresAt,
+          ),
+          db.prepare(`SELECT session_id,provider,step_revision,redirect_uri,issuer,code_challenge
+            FROM oauth_attempts WHERE scope=? AND state_digest=?`)
+            .bind(this.scope, record.stateDigest),
+        ]);
+      } catch { return fail('DURABILITY_ERROR'); }
+      if (results.some(result => !result.success)) fail('DURABILITY_ERROR');
+      const existing = results[2]?.results[0] as Record<string, unknown> | undefined;
+      if (!existing
+        || String(existing.session_id) !== record.sessionId
+        || String(existing.provider) !== record.provider
+        || Number(existing.step_revision) !== record.stepRevision
+        || String(existing.redirect_uri) !== record.redirectUri
+        || String(existing.issuer) !== record.issuer
+        || String(existing.code_challenge) !== record.codeChallenge) {
+        fail('DURABILITY_ERROR');
+      }
+    },
+    read: async (stateDigest: string): Promise<OAuthAttemptRecord | null> => {
+      let row: Record<string, unknown> | null;
+      try {
+        row = await primary(this.binding).prepare(`SELECT state_digest,session_id,provider,step_revision,
+          redirect_uri,issuer,code_challenge,created_at,expires_at,used_at
+          FROM oauth_attempts WHERE scope=? AND state_digest=?`)
+          .bind(this.scope, stateDigest).first<Record<string, unknown>>();
+      } catch { return fail('DURABILITY_ERROR'); }
+      if (!row) return null;
+      return {
+        stateDigest: String(row.state_digest),
+        sessionId: String(row.session_id),
+        provider: String(row.provider),
+        stepRevision: Number(row.step_revision),
+        redirectUri: String(row.redirect_uri),
+        issuer: String(row.issuer),
+        codeChallenge: String(row.code_challenge),
+        createdAt: String(row.created_at),
+        expiresAt: String(row.expires_at),
+        usedAt: row.used_at === null ? null : String(row.used_at),
+      };
+    },
+    claim: async (stateDigest: string, now: string): Promise<OAuthClaimResult> => {
+      const db = primary(this.binding);
+      let results;
+      try {
+        results = await db.batch([
+          db.prepare(`UPDATE oauth_attempts SET used_at=?
+            WHERE scope=? AND state_digest=? AND used_at IS NULL AND expires_at>?`)
+            .bind(now, this.scope, stateDigest, now),
+          db.prepare('SELECT used_at,expires_at FROM oauth_attempts WHERE scope=? AND state_digest=?')
+            .bind(this.scope, stateDigest),
+        ]);
+      } catch { return fail('DURABILITY_ERROR'); }
+      if (results.some(result => !result.success)) fail('DURABILITY_ERROR');
+      if ((results[0]?.meta.changes ?? 0) === 1) return 'claimed';
+      const row = results[1]?.results[0] as { used_at?: unknown; expires_at?: unknown } | undefined;
+      if (!row) return 'missing';
+      if (row.used_at !== null) return 'used';
+      return String(row.expires_at) <= now ? 'expired' : 'missing';
+    },
+    release: async (stateDigest: string, now: string): Promise<void> => {
+      let result;
+      try {
+        result = await primary(this.binding).prepare(`UPDATE oauth_attempts SET used_at=NULL
+          WHERE scope=? AND state_digest=? AND used_at=?`).bind(this.scope, stateDigest, now).run();
+      } catch { return fail('DURABILITY_ERROR'); }
+      if (!result.success) fail('DURABILITY_ERROR');
+    },
+  };
   async #load(db: D1Database) {
     const row = await db.prepare('SELECT epoch,value FROM scope_meta WHERE scope=?').bind(this.scope)
       .first<{ epoch: number; value: string }>();

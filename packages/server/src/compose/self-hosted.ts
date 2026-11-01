@@ -144,7 +144,8 @@ export function createSelfHostedRuntime(options: SelfHostedOptions): {
     token: () => randomBytes(32).toString('base64url'),
   };
   const oauth = oauthConfig === null ? null : new OAuthCallbackAdapter(oauthConfig, {
-    database: storage.state.database, state: storage.state, credentials: storage.credentials,
+    attempts: storage.state.database.oauthAttempts,
+    state: storage.state, credentials: storage.credentials,
     clock, entropy, principalId, key: sensitiveKey,
   });
   const digest = (value: T.Json, keyed: boolean) => {

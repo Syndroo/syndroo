@@ -15,7 +15,10 @@ Two runtimes implement it:
 Status: neither has been deployed from this tree, and the first-run behaviour
 below has not been exercised against a real account. The SDK and Worker package
 READMEs under `packages/` still describe the pre-v1 `posts` surface and are not
-accurate for v1; the authoritative contract is this page.
+accurate for v1; the authoritative contract is this page. Threads Worker OAuth
+and the client helpers are fixture-tested in this tree. The optional scoped CI
+authentication policy is defined below; the integration is not live-validated.
+The full setup and client flow are documented in [threads-ci.md](threads-ci.md).
 
 ## HTTP contract
 
@@ -24,16 +27,48 @@ POST /v1/connect
 POST /v1/publish
 POST /v1/status
 GET  /health                          # no business information
-GET  /oauth/callback/:provider        # only when the OAuth module is configured
+GET  /oauth/callback/:provider        # only for a configured OAuth provider
 ```
 
-Every `/v1/*` request must carry `Authorization: Bearer <deployment secret>`.
-Authentication runs before any business input is read. `/health` is the only
-route that needs no credential; it returns `{"status":"ok"}` and proves
-reachability only. `/oauth/callback/:provider` is owned by the optional OAuth
-module and receives the browser request before authentication, because a browser
-holds no deployment bearer; when no OAuth module is configured the path is a
-plain `404`.
+Every `/v1/*` request must carry an accepted `Authorization: Bearer` credential.
+Authentication runs before any business input is read. `/health` is the public
+liveness route; it returns `{"status":"ok"}` and proves reachability only.
+`/oauth/callback/:provider` is owned by the optional OAuth module and is also
+admitted without a deployment bearer, but it requires verified OAuth state and
+binding rather than relying on reachability.
+
+For the Worker, the optional `PUBLIC_ORIGIN` binding enables OAuth for Threads
+only. Its value must use the exact URL-serialized HTTPS origin form
+(`https://host[:port]`) with no trailing slash, credentials, query, fragment,
+or path. The callback is then exactly
+`${PUBLIC_ORIGIN}/oauth/callback/threads`. The Worker does not infer this origin
+from forwarding headers. With `PUBLIC_ORIGIN` absent, this integration remains
+disabled and the other Worker bindings keep their existing behaviour.
+
+### Authentication roles
+
+`API_BEARER` is the deployment admin credential. It retains the existing
+single-principal behaviour for all three protocol operations.
+
+The Worker may also be configured with the optional `CI_BEARER` and
+`CI_CONNECTION_ID` pair. Configure both together, and make `CI_BEARER` distinct
+from `API_BEARER`. This credential authenticates as
+`threads-ci:<CI_CONNECTION_ID>` and is limited to one explicitly selected
+Threads connection:
+
+- it may prepare or retry exactly one Threads target bound to that connection;
+- it may execute approvals owned by the same CI principal;
+- it may query `status({ "type": "operation" })` for its own operations;
+- it cannot connect or disconnect an account, use overview/provider/connection
+  listing queries, query admin operation lists, use another connection, or use an
+  approval owned by the admin principal or another CI principal.
+
+Changing `CI_CONNECTION_ID` creates a different principal. Operations and
+approvals remain owned by the prior principal, so a connection change does not
+transfer or authorize them; Core's connection binding revision checks also
+reject stale frozen intents. A missing optional pair leaves CI authentication
+disabled. A partial or invalid pair must not widen admin access or become a
+usable CI credential.
 
 `POST /v1/status` has no business write side effect and responds with
 `Cache-Control: no-store`. Responses also set `X-Content-Type-Options: nosniff`
@@ -177,14 +212,19 @@ request time:
 | `DB` | D1 database. |
 | `WORK_QUEUE` | Queue producer used to notify admitted work. |
 | `QUEUE_NAME`, `DLQ_NAME` | Queue names; they must differ. |
-| `API_BEARER` | Deployment bearer, 32 to 1024 characters, no whitespace. |
+| `API_BEARER` | Deployment admin bearer, 32 to 1024 characters, no whitespace. |
 | `SECRET_KEY`, `RUNTIME_KEY` | Key material for the encrypted secret store and digests. |
 | `SCOPE` | Deployment scope, `[A-Za-z0-9._:-]{1,128}`. |
 | `PUBLIC_FETCH_STRICT` | Must be the exact string `enabled`. |
+| `PUBLIC_ORIGIN` *(optional)* | Canonical HTTPS origin; enables only the Threads OAuth callback. |
+| `CI_BEARER`, `CI_CONNECTION_ID` *(optional pair)* | Scoped Threads CI bearer and its one allowed connection; bearer must differ from `API_BEARER`. |
 
-If a binding is missing or malformed, the Worker returns `503` before handling
-the request. `queue` and `scheduled` entry points also assert the environment
-before doing work.
+All required bindings must be present and valid. A configured optional binding
+must also be valid: malformed `PUBLIC_ORIGIN`, a partial
+`CI_BEARER`/`CI_CONNECTION_ID` pair, or `CI_BEARER` equal to `API_BEARER`
+returns `503` before handling the request or storage. An absent optional binding
+remains valid and leaves its optional behavior disabled. `queue` and `scheduled`
+entry points also assert the environment before doing work.
 
 ### First-run behaviour
 
@@ -202,9 +242,30 @@ at the built `packages/cloudflare/dist/worker.js`, sets the compatibility flag,
 and declares the bindings in the table above with no migrations directory,
 because the D1 schema is created on demand. Build the Worker before deploying —
 `npm run build --workspace @syndroo/cloudflare` — and create the D1 database, the
-two queues and the three secrets in the target account first. `npx wrangler
-deploy --dry-run` verifies the config without contacting an account; no
-deployment has been performed from this tree.
+two queues and the three required secrets in the target account first.
+`PUBLIC_ORIGIN` is a public variable rather than a secret. Add the optional CI
+pair only after the Threads connect flow has produced the connection id that
+should be allowed. `npx wrangler deploy --dry-run` verifies the config without
+contacting an account; no deployment has been performed from this tree.
+
+### Threads Worker and CI
+
+Use [threads-ci.md](threads-ci.md) for the complete sequence: deploy with
+`PUBLIC_ORIGIN`, register the exact Threads callback, bootstrap the account with
+the environment-only app credentials, configure the optional CI pair, then
+configure the manual workflow. The supplied
+[workflow template](../examples/threads-ci/workflow.yml) uses only the dedicated
+CI credential in CI. It does not receive `API_BEARER` or the bootstrap admin
+token.
+
+The publish client requires explicit `--yes`, a stable caller-owned request id,
+and one strict text document. It prepares once, executes the frozen approval,
+and waits for final status. Failed, partial, unknown, and timed-out business
+results exit nonzero. A lost execute response preserves the prepared operation
+id; use it to inspect the operation and rerun with the same request id.
+
+Automatic Threads token refresh is not implemented. Expiry and reconnect
+failures must be handled as operator actions.
 
 ## Migration from the pre-v1 path
 
@@ -221,6 +282,10 @@ own records.
   coverage.
 - No HTTP integration has been run against a real deployment; the handler,
   authentication, SQLite, D1 and Worker paths are covered by tests and fixtures.
+- Threads Worker OAuth and CI publication have not been run against a deployed
+  Worker, a registered Meta app, or a real Threads account.
+- Threads token refresh is not automated; an expired credential requires an
+  explicit reconnect.
 - The SDK README and the Worker README in `packages/` describe the pre-v1
   surface and have not been rewritten.
 

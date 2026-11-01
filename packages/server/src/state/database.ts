@@ -5,6 +5,9 @@ import type * as T from "@syndroo/core";
 import { fail } from "./errors.js";
 import { openDatabase, STATE_APPLICATION_ID, transaction } from "./sqlite.js";
 
+/** Core connect sessions last 15 minutes; keep tombstones through that bound. */
+const OAUTH_ATTEMPT_RETENTION_MS = 900_000;
+
 export type RequestEntry = { digest: string; operationId?: string; sessionId?: string; result?: T.ConnectResult; error?: T.SafeError };
 export type StepEntry = { digest: string; claim?: T.StepClaim; result?: T.ConnectResult; error?: T.SafeError };
 /**
@@ -194,11 +197,29 @@ export class Database {
    * adapter that owns the callback route reads or writes them.
    */
   readonly oauthAttempts = {
-    /** Insert one attempt and drop this scope's already-expired rows. */
+    /** Insert one attempt and clean rows beyond the Core session retention bound. */
     insert: (record: OAuthAttemptRecord): void => {
       transaction(this.#db, true, () => {
-        this.#db.prepare("DELETE FROM oauth_attempts WHERE scope = ? AND expires_at <= ?")
-          .run(this.scope, record.createdAt);
+        const existing = this.#db.prepare(`SELECT session_id,provider,step_revision,redirect_uri,issuer,
+          code_challenge FROM oauth_attempts WHERE scope = ? AND state_digest = ?`)
+          .get(this.scope, record.stateDigest);
+        if (existing) {
+          if (String(existing.session_id) !== record.sessionId
+            || String(existing.provider) !== record.provider
+            || Number(existing.step_revision) !== record.stepRevision
+            || String(existing.redirect_uri) !== record.redirectUri
+            || String(existing.issuer) !== record.issuer
+            || String(existing.code_challenge) !== record.codeChallenge) {
+            fail("DURABILITY_ERROR");
+          }
+          return;
+        }
+        const retentionCutoff = new Date(
+          Date.parse(record.createdAt) - OAUTH_ATTEMPT_RETENTION_MS,
+        ).toISOString();
+        this.#db.prepare(`DELETE FROM oauth_attempts
+          WHERE scope = ? AND expires_at <= ? AND created_at <= ?`)
+          .run(this.scope, record.createdAt, retentionCutoff);
         this.#db.prepare(`INSERT INTO oauth_attempts(scope,state_digest,session_id,provider,step_revision,
           redirect_uri,issuer,code_challenge,created_at,expires_at,used_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)`).run(
           this.scope, record.stateDigest, record.sessionId, record.provider, record.stepRevision,

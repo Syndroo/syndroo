@@ -21,6 +21,10 @@ export const SCHEMA = [
     owner TEXT NOT NULL,nonce TEXT NOT NULL,ciphertext TEXT NOT NULL,retired INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(scope,ref),UNIQUE(scope,nonce))`,
   `CREATE TABLE IF NOT EXISTS secret_meta (scope TEXT PRIMARY KEY,nonce TEXT NOT NULL,ciphertext TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS oauth_attempts (scope TEXT NOT NULL,state_digest TEXT NOT NULL,
+    session_id TEXT NOT NULL,provider TEXT NOT NULL,step_revision INTEGER NOT NULL CHECK(step_revision>=0),
+    redirect_uri TEXT NOT NULL,issuer TEXT NOT NULL,code_challenge TEXT NOT NULL,created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,used_at TEXT,PRIMARY KEY(scope,state_digest))`,
 ];
 export async function initializeD1(db: D1Database, scope: string): Promise<void> {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(scope)) fail('STORAGE_CONFIG_INVALID');

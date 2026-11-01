@@ -214,6 +214,112 @@ it('uses 202 only for admitted nonterminal execute, and enforces request deadlin
   expect((await timeout.json() as { error: { code: string } }).error.code).toBe('REQUEST_TIMEOUT');
 });
 
+it('accepts only authentic-looking ProtocolError values from an independent Core copy', async () => {
+  class IndependentProtocolError extends Error {
+    readonly code: string;
+
+    constructor(code: string, message = code) {
+      super(message);
+      this.name = 'ProtocolError';
+      this.code = code;
+    }
+  }
+
+  const cases: {
+    name: string;
+    thrown: unknown;
+    status: number;
+    code: string;
+    hidden?: string;
+  }[] = [
+    {
+      name: 'same-copy ProtocolError',
+      thrown: new ProtocolError('FORBIDDEN'),
+      status: 403,
+      code: 'FORBIDDEN',
+    },
+    {
+      name: 'independently bundled ProtocolError',
+      thrown: new IndependentProtocolError('FORBIDDEN'),
+      status: 403,
+      code: 'FORBIDDEN',
+    },
+    {
+      name: 'independently bundled approval error',
+      thrown: new IndependentProtocolError('APPROVAL_INVALID'),
+      status: 409,
+      code: 'APPROVAL_INVALID',
+    },
+    {
+      name: 'independent error details stay hidden',
+      thrown: Object.assign(new IndependentProtocolError('FORBIDDEN'), {
+        details: { operationId: 'secret-details' },
+      }),
+      status: 403,
+      code: 'FORBIDDEN',
+      hidden: 'secret-details',
+    },
+    {
+      name: 'ordinary error',
+      thrown: new Error('FORBIDDEN'),
+      status: 500,
+      code: 'DURABILITY_ERROR',
+    },
+    {
+      name: 'code-only ordinary error',
+      thrown: Object.assign(new Error('FORBIDDEN'), { code: 'FORBIDDEN' }),
+      status: 500,
+      code: 'DURABILITY_ERROR',
+    },
+    {
+      name: 'plain object',
+      thrown: { name: 'ProtocolError', code: 'FORBIDDEN', message: 'FORBIDDEN' },
+      status: 500,
+      code: 'DURABILITY_ERROR',
+    },
+    {
+      name: 'unknown code',
+      thrown: new IndependentProtocolError('UNKNOWN_SECRET_CODE'),
+      status: 500,
+      code: 'DURABILITY_ERROR',
+      hidden: 'UNKNOWN_SECRET_CODE',
+    },
+    {
+      name: 'secret message',
+      thrown: new IndependentProtocolError('FORBIDDEN', 'secret-canary'),
+      status: 500,
+      code: 'DURABILITY_ERROR',
+      hidden: 'secret-canary',
+    },
+  ];
+
+  for (const test of cases) {
+    const core = {
+      connect: async () => ({ status: 'done' }),
+      publish: async () => ({ status: 'confirmation_required' }),
+      status: async () => { throw test.thrown; },
+    } as unknown as T.Core;
+    const handler = createHttpHandler({
+      core, authenticate: () => true, principalId: 'owner',
+    });
+    const response = await handler(new Request('http://localhost/v1/status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"type":"connections"}',
+    }));
+    const text = await response.text();
+    expect(response.status, test.name).toBe(test.status);
+    expect(JSON.parse(text), test.name).toMatchObject({
+      protocolVersion: 1,
+      operation: 'status',
+      ok: false,
+      result: null,
+      error: { code: test.code, message: test.code },
+    });
+    if (test.hidden) expect(text, test.name).not.toContain(test.hidden);
+  }
+});
+
 it('returns the frozen presentation without credential material and keeps 202 off a terminal round', async () => {
   const r = await handlerWithFakeProvider();
   r.h.plugin.connect.verify = async () => ({

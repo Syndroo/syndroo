@@ -1,2 +1,9 @@
-export { OAuthCallbackAdapter, normalizeOAuthConfig } from './callback.js';
-export type { OAuthCallbackDependencies } from './callback.js';
+export { inspectOAuthCallback, OAuthCallbackAdapter, normalizeOAuthConfig } from './callback.js';
+export type {
+  NormalizedOAuthConfig,
+  OAuthAttemptRecord,
+  OAuthAttemptStore,
+  OAuthCallbackDependencies,
+  OAuthCallbackInput,
+  OAuthClaimResult,
+} from './callback.js';

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -7,6 +7,8 @@ import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import type * as T from '@syndroo/core';
 import { createSelfHostedRuntime, type SelfHostedOptions } from '../../src/compose/index.js';
+import { normalizeOAuthConfig, OAuthCallbackAdapter } from '../../src/oauth/index.js';
+import { Database } from '../../src/state/database.js';
 
 const roots: string[] = [];
 const runtimes: { close(): Promise<void> }[] = [];
@@ -337,4 +339,146 @@ it('without the OAuth module the callback path stays a plain 404', async () => {
   const response = await fetch(`http://127.0.0.1:${address.port}/oauth/callback/fake?code=x&state=y`);
   expect(response.status).toBe(404);
   expect(seen.authorize).toEqual([]);
+});
+
+it('replayed starts preserve the original Node attempt expiry and used marker after time advances', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'syndroo-oauth-replay-')));
+  roots.push(root);
+  const database = new Database(path.join(root, 'state.db'), 'oauth-replay');
+  try {
+    let now = '2026-11-01T00:00:00.000Z';
+    const state = 's'.repeat(43);
+    const redirectUri = 'https://syndroo.example/oauth/callback/threads';
+    const sessionId = 'cs_fixture';
+    const result: T.ConnectResult = {
+      status: 'action_required',
+      connectSessionId: sessionId,
+      stepRevision: 1,
+      expiresAt: '2026-11-01T00:15:00.000Z',
+      action: {
+        type: 'open_url',
+        url: `https://www.threads.net/oauth/authorize?state=${state}`
+          + `&redirect_uri=${encodeURIComponent(redirectUri)}`,
+      },
+    };
+    const session: T.ConnectSession = {
+      sessionId,
+      principalId: 'deployment-owner',
+      implementation: {
+        provider: 'threads',
+        packageName: '@syndroo/provider-threads',
+        version: '0.7.0-rc.1',
+        apiVersion: 1,
+        artifactFingerprint: 'fixture',
+        schemaFingerprint: 'fixture',
+      },
+      provider: 'threads',
+      stepRevision: 1,
+      expiresAt: result.expiresAt,
+      connectionId: 'conn_fixture',
+      baselineRevision: null,
+      privateStateRef: 'secret_fixture',
+      status: 'awaiting',
+    };
+    const otherState = 't'.repeat(43);
+    const otherSessionId = 'cs_other';
+    const otherResult: T.ConnectResult = {
+      status: 'action_required',
+      connectSessionId: otherSessionId,
+      stepRevision: 1,
+      expiresAt: '2026-11-01T00:15:01.000Z',
+      action: {
+        type: 'open_url',
+        url: `https://www.threads.net/oauth/authorize?state=${otherState}`
+          + `&redirect_uri=${encodeURIComponent(redirectUri)}`,
+      },
+    };
+    const otherSession: T.ConnectSession = {
+      ...session,
+      sessionId: otherSessionId,
+      expiresAt: otherResult.expiresAt,
+      privateStateRef: 'secret_other',
+    };
+    const sessions = new Map([[sessionId, session], [otherSessionId, otherSession]]);
+    const stateStore = {
+      async getConnectSession(id: string, principalId: string) {
+        return principalId === 'deployment-owner' ? sessions.get(id) ?? null : null;
+      },
+    } as unknown as T.StateStore;
+    const credentials = {
+      async get(input: { ref: string }) {
+        const oauthState = input.ref === otherSession.privateStateRef ? otherState : state;
+        return {
+          oauth: {
+            state: oauthState,
+            redirectUri,
+            codeChallenge: 'c'.repeat(43),
+            codeVerifier: 'v'.repeat(43),
+          },
+        };
+      },
+    } as unknown as T.CredentialStore;
+    const adapter = new OAuthCallbackAdapter(normalizeOAuthConfig({
+      publicOrigin: 'https://syndroo.example',
+      providers: ['threads'],
+      ttlMs: 60_000,
+    })!, {
+      attempts: database.oauthAttempts,
+      state: stateStore,
+      credentials,
+      clock: { now: () => now },
+      entropy: { id: prefix => `${prefix}_fixture`, token: () => 'fixture' },
+      principalId: 'deployment-owner',
+      key: new Uint8Array(32).fill(7),
+    });
+
+    await adapter.record(result);
+    const digestKey = createHmac('sha256', new Uint8Array(32).fill(7))
+      .update('syndroo-oauth-digest-v1').digest();
+    const stateDigest = createHmac('sha256', digestKey).update(state).digest('hex');
+    const original = database.oauthAttempts.read(stateDigest);
+    expect(original?.expiresAt).toBe('2026-11-01T00:01:00.000Z');
+    expect(database.oauthAttempts.claim(original!.stateDigest, now)).toBe('claimed');
+
+    now = '2026-11-01T00:01:01.000Z';
+    await adapter.record(otherResult);
+    await adapter.record(result);
+    expect(database.oauthAttempts.read(original!.stateDigest)).toEqual({
+      ...original,
+      usedAt: '2026-11-01T00:00:00.000Z',
+    });
+  } finally {
+    database.close();
+  }
+});
+
+it('keeps the first Node attempt binding when duplicate inserts compute different TTL caps', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'syndroo-oauth-race-')));
+  roots.push(root);
+  const database = new Database(path.join(root, 'state.db'), 'oauth-race');
+  try {
+    const first = {
+      stateDigest: 'd'.repeat(64),
+      sessionId: 'cs_race',
+      provider: 'threads',
+      stepRevision: 1,
+      redirectUri: 'https://syndroo.example/oauth/callback/threads',
+      issuer: 'https://www.threads.net',
+      codeChallenge: 'c'.repeat(43),
+      createdAt: '2026-11-01T00:00:00.000Z',
+      expiresAt: '2026-11-01T00:01:00.000Z',
+      usedAt: null,
+    };
+    const second = {
+      ...first,
+      createdAt: '2026-11-01T00:00:01.000Z',
+      expiresAt: '2026-11-01T00:01:01.000Z',
+    };
+
+    database.oauthAttempts.insert(first);
+    database.oauthAttempts.insert(second);
+    expect(database.oauthAttempts.read(first.stateDigest)).toEqual(first);
+  } finally {
+    database.close();
+  }
 });

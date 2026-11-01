@@ -1,0 +1,54 @@
+name: Publish Threads post
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_revision:
+        description: Stable revision for this logical post
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-ci-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: threads-ci
+    env:
+      SYNDROO_URL: ${{ vars.SYNDROO_URL }}
+      SYNDROO_TOKEN: ${{ secrets.SYNDROO_TOKEN }}
+      SYNDROO_CONNECTION_ID: ${{ secrets.SYNDROO_CONNECTION_ID }}
+      CONTENT_REVISION: ${{ inputs.content_revision }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build existing SDK and CI helpers
+        run: |
+          npm run build --workspace @syndroo/sdk
+          npm run build:scripts
+
+      - name: Publish once and wait for final status
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST_ID="$(node --input-type=module -e 'import { createHash } from "node:crypto"; const parts = [process.env.GITHUB_REPOSITORY, process.env.GITHUB_SHA, process.env.CONTENT_REVISION, process.env.SYNDROO_CONNECTION_ID].join("\0"); process.stdout.write(`threads-ci:${createHash("sha256").update(parts).digest("hex")}`);')"
+          node .build/scripts/threads-publish.js \
+            --input examples/threads-ci/post.json \
+            --request-id "$REQUEST_ID" \
+            --yes

@@ -1,8 +1,5 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { canonicalJson, ProtocolError } from '@syndroo/core';
 import type * as T from '@syndroo/core';
-
-import type { Database } from '../state/database.js';
 
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** Printable ASCII only: an authorization code is opaque transport data. */
@@ -14,6 +11,7 @@ const ALLOWED_PARAMS = ['code', 'state', 'error', 'error_description', 'scope'] 
 const DEFAULT_TTL_MS = 900_000;
 const MAX_TTL_MS = 900_000;
 const MAX_PROVIDERS = 16;
+const DIGEST_LABEL = 'syndroo-oauth-digest-v1';
 
 const HEADERS = {
   'Content-Type': 'text/plain; charset=utf-8',
@@ -46,7 +44,13 @@ function originOf(value: unknown): string {
  * complete before any storage is opened. A half-configured module never
  * degrades into "OAuth disabled and the server keeps running".
  */
-export function normalizeOAuthConfig(value: unknown): { publicOrigin: string; providers: readonly string[]; ttlMs: number } | null {
+export type NormalizedOAuthConfig = {
+  publicOrigin: string;
+  providers: readonly string[];
+  ttlMs: number;
+};
+
+export function normalizeOAuthConfig(value: unknown): NormalizedOAuthConfig | null {
   if (value === undefined) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid();
   const record = value as Record<string, unknown>;
@@ -66,7 +70,7 @@ export function normalizeOAuthConfig(value: unknown): { publicOrigin: string; pr
 }
 
 export type OAuthCallbackDependencies = {
-  database: Database;
+  attempts: OAuthAttemptStore;
   state: T.StateStore;
   credentials: T.CredentialStore;
   clock: T.Clock;
@@ -74,6 +78,29 @@ export type OAuthCallbackDependencies = {
   principalId: string;
   /** Deployment-scoped key material; a dedicated subkey is derived from it. */
   key: Uint8Array;
+};
+
+export type OAuthAttemptRecord = {
+  stateDigest: string;
+  sessionId: string;
+  provider: string;
+  stepRevision: number;
+  redirectUri: string;
+  issuer: string;
+  codeChallenge: string;
+  createdAt: string;
+  expiresAt: string;
+  usedAt: string | null;
+};
+
+export type OAuthClaimResult = 'claimed' | 'missing' | 'used' | 'expired';
+
+/** Runtime-neutral durable attempt store. Node may return synchronously; D1 returns promises. */
+export type OAuthAttemptStore = {
+  insert(record: OAuthAttemptRecord): void | Promise<void>;
+  read(stateDigest: string): OAuthAttemptRecord | null | Promise<OAuthAttemptRecord | null>;
+  claim(stateDigest: string, now: string): OAuthClaimResult | Promise<OAuthClaimResult>;
+  release(stateDigest: string, now: string): void | Promise<void>;
 };
 
 type Draft = {
@@ -85,11 +112,49 @@ type Draft = {
 };
 
 function base64url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64url');
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function later(now: string, milliseconds: number): string {
   return new Date(Date.parse(now) + milliseconds).toISOString();
+}
+
+export type OAuthCallbackInput = {
+  url: URL;
+  state: string;
+  code: string;
+};
+
+/** Validate route syntax without opening storage. */
+export function inspectOAuthCallback(
+  request: Request,
+  provider: string,
+  config: NormalizedOAuthConfig,
+): OAuthCallbackInput | Response {
+  if (request.method !== 'GET') return page(405, 'Callback rejected.', 'GET');
+  if (!config.providers.includes(provider)) return page(404, 'Callback rejected.');
+  let url: URL;
+  try { url = new URL(request.url); } catch { return page(400, 'Callback rejected.'); }
+  if (url.pathname !== `${CALLBACK_PATH}${provider}`) return page(404, 'Callback rejected.');
+  for (const key of url.searchParams.keys()) {
+    if (!(ALLOWED_PARAMS as readonly string[]).includes(key)) return page(400, 'Callback rejected.');
+  }
+  for (const key of ALLOWED_PARAMS) {
+    if (url.searchParams.getAll(key).length > 1) return page(400, 'Callback rejected.');
+  }
+  if (url.searchParams.has('error')) return page(400, 'Callback rejected.');
+  const state = url.searchParams.get('state');
+  const code = url.searchParams.get('code');
+  if (state === null || !STATE.test(state) || code === null || !CODE.test(code)) {
+    return page(400, 'Callback rejected.');
+  }
+  return { url, state, code };
 }
 
 /**
@@ -105,33 +170,36 @@ function later(now: string, milliseconds: number): string {
  * stored, and Core's step CAS decides whether it runs at all.
  */
 export class OAuthCallbackAdapter {
-  readonly #database: Database;
+  readonly #attempts: OAuthAttemptStore;
   readonly #state: T.StateStore;
   readonly #credentials: T.CredentialStore;
   readonly #clock: T.Clock;
   readonly #entropy: T.Entropy;
   readonly #principalId: string;
-  readonly #digestKey: Buffer;
+  readonly #digestKey: Promise<CryptoKey>;
   readonly #origin: string;
   readonly #providers: ReadonlySet<string>;
   readonly #ttlMs: number;
   readonly #drafts = new WeakMap<AbortSignal, Draft>();
 
   constructor(
-    config: { publicOrigin: string; providers: readonly string[]; ttlMs: number },
+    config: NormalizedOAuthConfig,
     deps: OAuthCallbackDependencies,
   ) {
     if (!deps || typeof deps.principalId !== 'string' || !deps.principalId
       || !(deps.key instanceof Uint8Array)
-      || !deps.database?.oauthAttempts || !deps.state || !deps.credentials
+      || !deps.attempts || !deps.state || !deps.credentials
       || typeof deps.clock?.now !== 'function' || typeof deps.entropy?.id !== 'function') invalid();
-    this.#database = deps.database;
+    this.#attempts = deps.attempts;
     this.#state = deps.state;
     this.#credentials = deps.credentials;
     this.#clock = deps.clock;
     this.#entropy = deps.entropy;
     this.#principalId = deps.principalId;
-    this.#digestKey = createHmac('sha256', Buffer.from(deps.key)).update('syndroo-oauth-digest-v1').digest();
+    const key = new Uint8Array(deps.key);
+    this.#digestKey = crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+      .then(parent => crypto.subtle.sign('HMAC', parent, new TextEncoder().encode(DIGEST_LABEL)))
+      .then(bytes => crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']));
     this.#origin = config.publicOrigin;
     this.#providers = new Set(config.providers);
     this.#ttlMs = config.ttlMs;
@@ -141,8 +209,9 @@ export class OAuthCallbackAdapter {
     return this.#providers.has(provider);
   }
 
-  #digest(value: string): string {
-    return createHmac('sha256', this.#digestKey).update(value, 'utf8').digest('hex');
+  async #digest(value: string): Promise<string> {
+    const bytes = await crypto.subtle.sign('HMAC', await this.#digestKey, new TextEncoder().encode(value));
+    return hex(new Uint8Array(bytes));
   }
 
   #redirectUri(provider: string): string {
@@ -152,36 +221,44 @@ export class OAuthCallbackAdapter {
   /**
    * Run one connect call with this adapter's transport behavior.
    *
-   * Only `start` calls for a configured provider are armed with fresh state and
-   * S256 PKCE material, and only an `open_url` outcome durably records an
-   * attempt. Every other call is delegated untouched, so a provider that is not
-   * configured for the callback route keeps its own audited behavior instead of
-   * receiving half-supported OAuth.
+   * A supported start is armed with fresh state and S256 PKCE material. After
+   * Core applies an `open_url` result, the attempt is recorded from Core's
+   * persisted OAuth state rather than the temporary draft. That makes a start
+   * replay retain its original authorization URL and lets a credential-input
+   * resume record the state that was persisted during the first step.
    */
   async runStart(
     request: T.ConnectRequest,
     signal: AbortSignal,
     run: () => Promise<T.ConnectResult>,
   ): Promise<T.ConnectResult> {
-    if (request.type !== 'start' || !this.supports(request.provider)
-      || !(signal instanceof AbortSignal)) return run();
-    const draft = this.#arm(request.provider, signal);
+    if (!(signal instanceof AbortSignal)) return run();
+    if (request.type === 'start') {
+      if (!this.supports(request.provider)) return run();
+      if (request.options?.redirectUri !== undefined
+        && request.options.redirectUri !== this.#redirectUri(request.provider)) {
+        throw new ProtocolError('INVALID_INPUT');
+      }
+    }
+    if (request.type === 'start') await this.#arm(request.provider, signal);
     try {
       const result = await run();
-      this.record(draft, result);
+      await this.record(result);
       return result;
     } finally {
       this.#drafts.delete(signal);
     }
   }
 
-  #arm(provider: T.ProviderId, signal: AbortSignal): Draft {
-    const verifier = base64url(randomBytes(32));
+  async #arm(provider: T.ProviderId, signal: AbortSignal): Promise<Draft> {
+    const random = () => crypto.getRandomValues(new Uint8Array(32));
+    const verifier = base64url(random());
+    const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
     const draft: Draft = {
       provider,
-      state: base64url(randomBytes(32)),
+      state: base64url(random()),
       codeVerifier: verifier,
-      codeChallenge: base64url(createHash('sha256').update(verifier, 'utf8').digest()),
+      codeChallenge: base64url(challenge),
       redirectUri: this.#redirectUri(provider),
     };
     this.#drafts.set(signal, draft);
@@ -203,22 +280,52 @@ export class OAuthCallbackAdapter {
     };
   }
 
-  /** Record the attempt after Core reserved the session. */
-  record(draft: Draft, result: T.ConnectResult): void {
+  /** Record an attempt from the OAuth material Core persisted for this result. */
+  async record(result: T.ConnectResult): Promise<void> {
     if (result.status !== 'action_required' || result.action.type !== 'open_url') return;
     let url: URL;
     try { url = new URL(result.action.url); } catch { return; }
     if (url.protocol !== 'https:' || url.username || url.password || url.hash) return;
+    const session = await this.#state.getConnectSession(result.connectSessionId, this.#principalId);
+    if (!session || session.status !== 'awaiting' || session.stepRevision !== result.stepRevision
+      || !session.privateStateRef) return;
+    if (!this.supports(session.provider)) return;
+    const saved = await this.#credentials.get({
+      ref: session.privateStateRef,
+      owner: { kind: 'connect_state', ownerId: session.sessionId, version: result.stepRevision },
+    });
+    const material = saved.oauth as Partial<T.OAuthMaterial> | undefined;
+    if (!material || typeof material.state !== 'string' || typeof material.redirectUri !== 'string'
+      || typeof material.codeChallenge !== 'string'
+      || material.redirectUri !== this.#redirectUri(session.provider)
+      || url.searchParams.get('state') !== material.state
+      || (url.searchParams.has('redirect_uri') && url.searchParams.get('redirect_uri') !== material.redirectUri)) {
+      throw new ProtocolError('PROVIDER_INVALID');
+    }
     const now = this.#clock.now();
+    if (result.expiresAt <= now) return;
+    const stateDigest = await this.#digest(material.state);
+    const existing = await this.#attempts.read(stateDigest);
+    if (existing) {
+      if (existing.sessionId !== result.connectSessionId
+        || existing.provider !== session.provider
+        || existing.stepRevision !== result.stepRevision
+        || existing.redirectUri !== material.redirectUri
+        || existing.issuer !== url.origin
+        || existing.codeChallenge !== material.codeChallenge) {
+        throw new ProtocolError('DURABILITY_ERROR');
+      }
+      return;
+    }
     const cap = later(now, this.#ttlMs);
-    this.#database.oauthAttempts.insert({
-      stateDigest: this.#digest(draft.state),
+    await this.#attempts.insert({
+      stateDigest,
       sessionId: result.connectSessionId,
-      provider: draft.provider,
+      provider: session.provider,
       stepRevision: result.stepRevision,
-      redirectUri: draft.redirectUri,
+      redirectUri: material.redirectUri,
       issuer: url.origin,
-      codeChallenge: draft.codeChallenge,
+      codeChallenge: material.codeChallenge,
       createdAt: now,
       expiresAt: result.expiresAt < cap ? result.expiresAt : cap,
       usedAt: null,
@@ -242,25 +349,16 @@ export class OAuthCallbackAdapter {
   }
 
   async #route(request: Request, provider: string): Promise<Response> {
-    if (request.method !== 'GET') return page(405, 'Callback rejected.', 'GET');
-    if (!this.supports(provider)) return page(404, 'Callback rejected.');
-    let url: URL;
-    try { url = new URL(request.url); } catch { return page(400, 'Callback rejected.'); }
-    for (const key of url.searchParams.keys()) {
-      if (!(ALLOWED_PARAMS as readonly string[]).includes(key)) return page(400, 'Callback rejected.');
-    }
-    for (const key of ALLOWED_PARAMS) {
-      if (url.searchParams.getAll(key).length > 1) return page(400, 'Callback rejected.');
-    }
-    if (url.searchParams.has('error')) return page(400, 'Callback rejected.');
-    const state = url.searchParams.get('state');
-    const code = url.searchParams.get('code');
-    if (state === null || !STATE.test(state) || code === null || !CODE.test(code)) {
-      return page(400, 'Callback rejected.');
-    }
+    const inspected = inspectOAuthCallback(request, provider, {
+      publicOrigin: this.#origin,
+      providers: [...this.#providers],
+      ttlMs: this.#ttlMs,
+    });
+    if (inspected instanceof Response) return inspected;
+    const { state, code } = inspected;
     const now = this.#clock.now();
-    const stateDigest = this.#digest(state);
-    const attempt = this.#database.oauthAttempts.read(stateDigest);
+    const stateDigest = await this.#digest(state);
+    const attempt = await this.#attempts.read(stateDigest);
     if (!attempt) return page(404, 'Callback rejected.');
     if (attempt.provider !== provider) return page(409, 'Callback rejected.');
     if (attempt.expiresAt <= now) return page(400, 'Callback rejected.');
@@ -269,7 +367,7 @@ export class OAuthCallbackAdapter {
       || session.stepRevision !== attempt.stepRevision || session.expiresAt <= now) {
       return page(409, 'Callback rejected.');
     }
-    const claim = this.#database.oauthAttempts.claim(stateDigest, now);
+    const claim = await this.#attempts.claim(stateDigest, now);
     if (claim === 'used') return page(409, 'Callback rejected.');
     if (claim !== 'claimed') return page(400, 'Callback rejected.');
     // The state reached this deployment for this provider; the authorization
@@ -288,14 +386,14 @@ export class OAuthCallbackAdapter {
         value: evidence as unknown as T.JsonObject,
       });
     } catch {
-      this.#database.oauthAttempts.release(stateDigest, now);
+      await this.#attempts.release(stateDigest, now);
       return page(500, 'Callback rejected.');
     }
     try {
       const accepted = await this.#state.acceptCallback({
         sessionId: attempt.sessionId,
         expectedStepRevision: attempt.stepRevision,
-        callbackDigest: this.#digest(canonicalJson(evidence as unknown as T.Json)),
+        callbackDigest: await this.#digest(canonicalJson(evidence as unknown as T.Json)),
         evidence: stage,
         now,
       });
@@ -303,14 +401,15 @@ export class OAuthCallbackAdapter {
         return page(200, 'Syndroo authorization completed. You can return to the client.');
       }
       await this.#discard(stage);
-      this.#database.oauthAttempts.release(stateDigest, now);
+      await this.#attempts.release(stateDigest, now);
       return page(409, 'Callback rejected.');
     } catch (error) {
+      const definitelyUnaccepted = error instanceof ProtocolError
+        && (error.code === 'CONNECT_STEP_CONFLICT' || error.code === 'STALE_BINDING');
+      if (!definitelyUnaccepted) return page(500, 'Callback rejected.');
       await this.#discard(stage);
-      this.#database.oauthAttempts.release(stateDigest, now);
-      if (error instanceof ProtocolError && error.code === 'CONNECT_STEP_CONFLICT') {
-        return page(409, 'Callback rejected.');
-      }
+      await this.#attempts.release(stateDigest, now);
+      if (error.code === 'CONNECT_STEP_CONFLICT') return page(409, 'Callback rejected.');
       return page(500, 'Callback rejected.');
     }
   }

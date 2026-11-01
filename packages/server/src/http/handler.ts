@@ -49,8 +49,15 @@ function statusFor(code: string): number {
 }
 
 function safeCode(error: unknown): string {
-  return error instanceof ProtocolError && ALLOWED_CODES.has(error.code)
-    ? error.code : 'DURABILITY_ERROR';
+  if (error instanceof ProtocolError && ALLOWED_CODES.has(error.code)) return error.code;
+  if (error instanceof Error && error.name === 'ProtocolError'
+    && Object.hasOwn(error, 'code')
+    && typeof (error as Error & { code?: unknown }).code === 'string'
+    && ALLOWED_CODES.has((error as Error & { code: string }).code)
+    && error.message === (error as Error & { code: string }).code) {
+    return (error as Error & { code: string }).code;
+  }
+  return 'DURABILITY_ERROR';
 }
 
 function jsonResponse(value: unknown, status: number): Response {

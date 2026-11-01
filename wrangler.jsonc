@@ -16,10 +16,16 @@
     "SCOPE": "default",
     // `assertEnv` refuses to start unless this is exactly `enabled`.
     "PUBLIC_FETCH_STRICT": "enabled"
+    // Optional Threads OAuth: configure PUBLIC_ORIGIN as a canonical HTTPS
+    // origin outside this file. It is intentionally not enabled here.
   },
-  // These are the only secrets the v1 Worker reads. Provider credentials are
-  // not deployment configuration; they are created by `syndroo connect` and
-  // stored encrypted under SECRET_KEY.
+  // These are required secrets. Provider credentials are not deployment
+  // configuration; they are created by `syndroo connect` and stored encrypted
+  // under SECRET_KEY.
+  // Optional Threads CI auth: configure CI_BEARER and CI_CONNECTION_ID as a
+  // pair outside this file after bootstrap creates the connection. CI_BEARER
+  // is a scoped secret and must differ from API_BEARER. Neither optional value
+  // is enabled or required by this template.
   "secrets": {
     "required": ["API_BEARER", "SECRET_KEY", "RUNTIME_KEY"]
   },
