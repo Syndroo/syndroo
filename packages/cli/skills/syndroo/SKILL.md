@@ -1,18 +1,45 @@
 ---
 name: syndroo
-description: Use when the user asks to publish or preview text or a DEV.to article through the local Syndroo CLI, connect, reconnect or disconnect a provider account, or read publication status. Covers the v1 prepare/confirm/execute flow.
+description: Use when the user asks to publish through Syndroo, manage provider connections, read publication status, initialize a user-owned Syndroo deployment, deploy its Cloudflare Worker, connect Threads, or configure manual GitHub CI.
 ---
 
 # Syndroo
 
 The Syndroo CLI publishes plain text to Bluesky, Threads, LinkedIn and Mastodon,
-and articles to DEV.to, from this machine. It runs in the foreground, talks to
-the platforms directly, and keeps its state in a local directory. There is no
-server in this path.
+and articles to DEV.to. Its default path runs in the foreground, talks to the
+platforms directly, and keeps state in a local directory. That local path uses
+no server, queue, or database.
 
-It speaks protocol v1 with three commands: `connect`, `publish`, `status`.
+A separate `server` command family can initialize a thin user-owned Cloudflare
+deployment project, deploy it, connect Threads, and configure manual GitHub CI.
+The two paths share protocol contracts, not credentials or state.
+
+The local path speaks protocol v1 with three commands: `connect`, `publish`,
+`status`.
 Publishing is two explicit phases. A `prepare` returns a frozen preview and an
 approval token; nothing is sent until a separate `execute` carries that token.
+
+The repository prepares a `0.7.0` npm release; registry availability is not
+implied by this file. If the CLI is missing and the user asks you to install it,
+verify Node.js `>=24.19.0`, then install the CLI, provider contract, and all five
+official providers in one pinned command:
+
+```bash
+npm install --global \
+  @syndroo/cli@0.7.0 \
+  @syndroo/provider-sdk@0.7.0 \
+  @syndroo/provider-bluesky@0.7.0 \
+  @syndroo/provider-threads@0.7.0 \
+  @syndroo/provider-linkedin@0.7.0 \
+  @syndroo/provider-mastodon@0.7.0 \
+  @syndroo/provider-devto@0.7.0
+```
+
+After installation, locate this Skill with
+`npm root --global` and read
+`@syndroo/cli/skills/syndroo/SKILL.md`. Do not claim that a particular Agent
+client automatically discovered it. Stop and report the registry error if the
+packages are unavailable; do not substitute an unpinned source build.
 
 On a terminal the preview is a short summary — at most three lines per target —
 and the prompt is `Publish to N accounts? [y/N/v]`: `y`/`yes` executes; `n`/`no`,
@@ -28,6 +55,11 @@ Read the one that matches the current branch:
 
 - Exact commands, flags, exit codes and JSON fields: [references/cli.md](references/cli.md)
 - A prepare, execute or status result already returned and you must explain it: [references/delivery-semantics.md](references/delivery-semantics.md)
+- A deployment, Threads OAuth bootstrap, manual CI setup, or server credential recovery: [references/server.md](references/server.md)
+
+Choose the branch from the requested surface. Read the server reference only
+when the user wants a self-hosted/Cloudflare deployment or publication through
+one. A local failure does not authorize a switch to that path.
 
 ## Workflow
 

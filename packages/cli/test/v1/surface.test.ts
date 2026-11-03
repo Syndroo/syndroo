@@ -52,7 +52,7 @@ beforeAll(async () => {
   // directory carries the current unpublished development candidate.
   await fs.writeFile(
     path.join(workDir, "package.json"),
-    JSON.stringify({ name: "syndroo-surface-fixture", version: "0.7.0-rc.1" }),
+    JSON.stringify({ name: "syndroo-surface-fixture", version: "0.7.0" }),
   );
 
   await fs.writeFile(
@@ -115,7 +115,7 @@ describe("syndroo machine surface (real process)", () => {
       const run = spawnCli(box, ["--version"]);
 
       expect(run.status).toBe(0);
-      expect(run.stdout).toContain("0.7.0-rc.1");
+      expect(run.stdout).toContain("0.7.0");
       expect(run.stdout).not.toContain("0.0.0-unknown");
       expect(run.stderr).toBe("");
       expect(stateRootExists(box)).toBe(false);

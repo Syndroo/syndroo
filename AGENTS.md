@@ -24,18 +24,19 @@ packages/provider-linkedin Official LinkedIn provider (text)
 packages/provider-mastodon Official Mastodon provider (text, federated)
 packages/provider-devto    Official DEV.to provider (article)
 packages/sdk               Public HTTP client, protocol types and wait
-packages/cli               Public `syndroo`: connect/publish/status, renderers,
-                           local runtime and the bundled Skill
+packages/cli               Public `syndroo`: local connect/publish/status plus
+                           server workflow, renderers, runtime and bundled Skill
 packages/server            Public self-hosted Node HTTP runtime, SQLite, secrets
 packages/cloudflare        Public Worker artifact: D1, Queues, Cron
 scripts/                   Build, protocol and provider-catalog export, checks
 ```
 
-CLI internals: `packages/cli/src/commands/` holds the three commands,
+CLI internals: `packages/cli/src/commands/` holds the three local commands,
 `packages/cli/src/runtime/` holds the filesystem, provider and transport
 adapters, `packages/cli/src/render/` holds the human and JSON renderers,
 `packages/cli/src/request-journal/` holds request identity, and
-`packages/cli/skills/syndroo/` is the single shipped Skill source.
+`packages/cli/src/server/` holds server init/doctor/deploy/Threads/CI
+orchestration. `packages/cli/skills/syndroo/` is the single shipped Skill source.
 
 Dependency direction:
 
@@ -60,7 +61,10 @@ of duplicating egress enforcement. `@syndroo/cloudflare` imports only
 - Providers implement the `@syndroo/provider-sdk` contract only; they must not reach for CLI, state, HTTP or filesystem APIs.
 - Keep the runtime adapters concrete: filesystem and SQLite state in `packages/cli` and `packages/server`, D1 in `packages/cloudflare`. Do not add a generic repository layer, ORM, or adapter factory hierarchy.
 - Do not add a dependency-injection container or speculative runtime abstraction.
-- Keep Cloudflare bindings, routing, D1 state, queues and cron inside `packages/cloudflare`. Deployment configuration is `wrangler.jsonc` pointing at the built `packages/cloudflare/dist/worker.js`; there is no deploy script.
+- Keep Cloudflare bindings, routing, D1 state, queues and cron inside
+  `packages/cloudflare`. `server init` generates a thin user project whose
+  `wrangler.jsonc` points at the installed `@syndroo/cloudflare` artifact; the CLI
+  derives ignored `wrangler.effective.jsonc` for deployment.
 - Keep experiments out of production imports and dependencies.
 
 ## Platform adapters
@@ -97,9 +101,9 @@ architecture v1.
   targets whose failure is provably `not_applied`.
 - State permissions (`0700` directories, `0600` files) limit access; they are not
   encryption. Local intents and receipts contain account data.
-- Configuration is never inferred from the working directory: the documented
-  default or an explicit `--config` is the only source, and a missing explicit
-  config file is an error rather than a silent fallback.
+- Local configuration is never inferred from the working directory: the
+  documented default or an explicit `--config` is the only source. Server
+  commands use only their explicit `--project` path or the current directory.
 
 ## Reliability invariants
 
@@ -177,10 +181,11 @@ npm run check                     # check:v1-tools then scripts/check-v1.ts
 npm test                          # scripts/check-v1.ts --tests
 npm run test:v1                   # the same tests under one vitest run
 npm run check:provider-catalog    # catalog matches the built official providers
+node scripts/server-cli-artifact-smoke.ts # packed external-project proof
 git commit --signoff              # DCO: the CI check needs a SHA range, see below
 ```
 
-All eleven v1 packages share version `0.7.0-rc.1` and Node engine
+All eleven v1 packages share version `0.7.0` and Node engine
 `>=24.19.0`. `@syndroo/core` is private and is inlined into the three built
 artifacts (`@syndroo/cli`, `@syndroo/server`, `@syndroo/cloudflare`); those
 artifacts must not list it in `dependencies`.
@@ -198,8 +203,8 @@ Use focused package tests while iterating. Before handing off code changes:
 
 ## Documentation
 
-- The root `README.md` is the local CLI operating guide. Keep its examples
-  executable and keep the self-hosted and Worker surface in
+- The root `README.md` is the local CLI and `server` operating guide. Keep its
+  examples executable and keep the detailed runtime contract in
   `docs/remote-compatibility.md`.
 - Keep `docs/cli-manual.md` and `docs/agent-quickstart.md` aligned with the built
   CLI, and `docs/testing.md` and `docs/releasing.md` aligned with the real
@@ -219,7 +224,8 @@ Use focused package tests while iterating. Before handing off code changes:
   approval token as a second payload.
 - Keep the bundled Skill (`packages/cli/skills/syndroo/`) as the single shipped
   Skill source; it must teach the v1 prepare → confirm → execute → status flow,
-  and its commands, flags and exit codes must match the built `--help`.
+  advertise the optional server branch, and keep every command, flag and exit
+  code aligned with the built `--help`.
 - State what is verified and what is not. Providers are `fixture-tested`; no live
   account call has been made. Never describe publishing as live-validated, or a
   package as published, or a runtime as deployed, before it is.
@@ -232,8 +238,8 @@ Use focused package tests while iterating. Before handing off code changes:
   public artifacts, which must not reference it at runtime. Public v1 packages
   are `@syndroo/{provider-sdk,provider-*,sdk,server,cli,cloudflare}`.
 - The repository and published packages use Apache-2.0. Preserve `LICENSE`,
-  `NOTICE`, and required notices in distributions. `packages/cli/NOTICE` notes
-  that a generated third-party licence inventory must be added before any
-  release.
+  `NOTICE`, and required notices in distributions. CLI, Server, and Worker
+  bundles ship a generated `dist/THIRD_PARTY_LICENSES.txt`; keep that inventory
+  fail-closed and generated from the actual bundle inputs.
 - Require DCO sign-off for contributions. Do not add a CLA without user
   direction.

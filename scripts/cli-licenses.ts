@@ -7,7 +7,7 @@ import {
   isInside,
   packageNameFromRoot,
   selectLicenseArtifacts,
-} from "./package-support.js";
+} from "./package-support.ts";
 
 /**
  * Third-party notices for the self-contained CLI bundle.
@@ -116,6 +116,15 @@ export async function describeBundledPackages(
       failures.push(`${name}@${version} ships no license file`);
     }
 
+    if (
+      supplement !== undefined &&
+      supplement.declaredLicense !== manifest.license
+    ) {
+      failures.push(
+        `${name}@${version} supplement declares ${supplement.declaredLicense}, but the package declares ${String(manifest.license)}`,
+      );
+    }
+
     const files: { fileName: string; text: string }[] = [];
 
     for (const fileName of [
@@ -162,7 +171,10 @@ export async function describeBundledPackages(
       [
         "Refusing to write third-party notices from a partially licensed bundle:",
         ...failures.map((failure) => `  - ${failure}`),
-        "Add a reviewed supplement in packages/cli/licenses/third-party-license-supplements.json for the exact version.",
+        `Add a reviewed supplement in ${displayPath(
+          options.repositoryRoot,
+          resolve(options.supplementDirectory, "third-party-license-supplements.json"),
+        )} for the exact version.`,
       ].join("\n"),
     );
   }
@@ -180,7 +192,7 @@ export function renderCliThirdPartyNotices(
     "",
     `Bundled into ${generatedFor}.`,
     "",
-    "Generated from the esbuild metafile of the published CLI bundle. Every",
+    "Generated from the esbuild metafile of the published bundle. Every",
     "package listed here contributes a module to that bundle. Each text is",
     "copied verbatim from the installed package, except where a `text source:`",
     "line records a reviewed supplement for a package that ships no license",

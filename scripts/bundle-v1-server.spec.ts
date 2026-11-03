@@ -54,6 +54,10 @@ describe("@syndroo/server bundle", () => {
       "the emitted bundle must not import the private Core package",
     );
     assert.match(entry, /createCore/u, "the inlined Core code must be present in the bundle");
+    assert.match(
+      readFileSync(join(SERVER_DIST_DIR, "THIRD_PARTY_LICENSES.txt"), "utf8"),
+      /Generated from the esbuild metafile of the published bundle/u,
+    );
   });
 
   it("fails verification when the entry imports Core instead of inlining it", () => {

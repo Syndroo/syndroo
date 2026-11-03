@@ -1,7 +1,9 @@
-# Syndroo CLI reference (protocol v1)
+# Local Syndroo CLI reference (protocol v1)
 
-Three commands: `connect`, `publish`, `status`. This file is the exact surface;
-the audit for each command and flag is the built `--help`.
+The local path has three commands: `connect`, `publish`, `status`. The separate
+user-owned deployment path is documented in [server.md](server.md). This file is
+the exact local surface; the audit for each command and flag is the built
+`--help`.
 
 ## Global flags
 
@@ -247,6 +249,7 @@ Read `result.status` as well as the code: `0` never means a platform published.
 
 ## Retired syntax
 
-There is no `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`, `retry`,
-`state` or `local *` command, and no `--no-input`. Historical note only.
+There is no top-level `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`,
+`retry`, `state` or `local *` command, and no `--no-input`. Commands under
+`syndroo server` are a separate workflow. Historical note only.
 `--yes` is back in v1 with the narrow auto-confirm meaning documented above.

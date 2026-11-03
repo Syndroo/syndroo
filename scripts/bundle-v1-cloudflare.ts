@@ -80,7 +80,7 @@ export const CLOUDFLARE_BUNDLE_SPEC: BundleSpec = {
   target: "es2024",
   aliasNodeBuiltins: false,
   declarationsTsconfig: "tsconfig.build.json",
-  allowedExtensions: [".js", ".json", ".d.ts"],
+  allowedExtensions: [".js", ".json", ".d.ts", ".txt"],
   rejectNodeImports: true,
   rejectExternalImports: true,
   coreLabel: "Core",

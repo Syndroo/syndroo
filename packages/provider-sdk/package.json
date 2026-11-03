@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/provider-sdk",
-  "version": "0.7.0-rc.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Public Provider contract and defineProvider validation for Syndroo architecture v1.",
   "license": "Apache-2.0",

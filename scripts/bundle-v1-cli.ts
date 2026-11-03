@@ -90,7 +90,7 @@ export const CLI_BUNDLE_SPEC: BundleSpec = {
   declarationsTsconfig: "tsconfig.build.json",
   chmod: ["bin.js"],
   shebang: "bin.js",
-  allowedExtensions: [".js", ".json", ".d.ts"],
+  allowedExtensions: [".js", ".json", ".d.ts", ".txt"],
   coreLabel: "Core",
 };
 

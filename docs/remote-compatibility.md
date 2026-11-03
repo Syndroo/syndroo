@@ -16,9 +16,73 @@ Status: neither has been deployed from this tree, and the first-run behaviour
 below has not been exercised against a real account. The SDK and Worker package
 READMEs under `packages/` still describe the pre-v1 `posts` surface and are not
 accurate for v1; the authoritative contract is this page. Threads Worker OAuth
-and the client helpers are fixture-tested in this tree. The optional scoped CI
-authentication policy is defined below; the integration is not live-validated.
-The full setup and client flow are documented in [threads-ci.md](threads-ci.md).
+and the `server` command family are fixture-tested in this tree. The optional
+scoped CI authentication policy is defined below; the integration is not
+live-validated. The user-owned setup and publication flow is documented in
+[threads-ci.md](threads-ci.md).
+
+## User-owned deployment project
+
+`@syndroo/cli` can create a thin deployment repository instead of asking an
+operator to copy this product tree:
+
+```bash
+syndroo server init ./syndroo-site
+cd syndroo-site
+syndroo server doctor --json
+syndroo server deploy --yes
+```
+
+`server init` has no remote side effect. Only explicit
+`--github OWNER/REPO --private|--public` creates and pushes a GitHub repository;
+private is the default. The generated project pins exact versions of
+`@syndroo/cli`, `@syndroo/cloudflare`, and Wrangler and commits their lockfile.
+
+Configuration ownership is deliberate:
+
+| File | State | Owner |
+| --- | --- | --- |
+| `syndroo.config.jsonc` | tracked | Application version, project ID, scope, confirmed origin, Threads reference |
+| `wrangler.jsonc` | tracked | Worker, D1, queues, cron, platform flags and owned vars |
+| `wrangler.effective.jsonc` | ignored/generated | Verified deployment bindings and resource IDs |
+| `.syndroo/` | ignored/private | Initialization recovery metadata |
+| `serverctl-v1` under XDG state | private | Deployment identity, credentials, receipts and CI state |
+
+The application config and tracked Wrangler config remain the source inputs.
+The CLI derives the effective Worker file and rejects conflicting owned values.
+Account IDs, resource IDs, receipts, and secret values never enter tracked
+configuration.
+
+`server doctor` is read-only. It checks local schema and pinned tooling,
+distinguishes absent or unavailable authenticated checks, and keeps OAuth and
+publication readiness `unverified`. Its `/health` check proves only that a
+response came from the configured origin.
+
+`server deploy --yes` preflights the Cloudflare account, Worker and D1/queue
+identity, then creates only missing resources through verified APIs. It uses the
+project-local Wrangler binary, an ignored generated effective config, and a
+private temporary secret file/stdin path. Repeated deploys preserve resource
+IDs, application data, and existing keys. A same-name foreign resource stops
+for verified recovery rather than being adopted.
+
+Generated values live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/syndroo/serverctl-v1`. File permissions
+and ownership checks protect the store; it is not encrypted at rest. A clone
+cannot restore values. Preserve the private directory in a protected backup, or
+import all three deployment credentials together with
+`server deploy --yes --credentials-stdin`. Missing existing credentials never
+cause key regeneration. This version has no key rotation.
+
+After an interrupted deploy, retain the reported operation ID, confirmed
+resources, and private machine receipt, then retry the same project. A valid
+matching receipt can reconcile only its pending operation after the CLI verifies
+the Worker tag, active version, and target. `--recover` accepts user-verified
+nonsecret ownership evidence; it does not bypass identity checks or mark an
+unobserved deploy successful.
+
+The `server` commands use `operation: "server"` envelopes with a subcommand
+discriminator. Safe failure details preserve the next action and confirmed
+resources needed by the caller to reconcile a partial operation.
 
 ## HTTP contract
 

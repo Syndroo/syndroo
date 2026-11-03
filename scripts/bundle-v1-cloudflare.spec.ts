@@ -58,6 +58,10 @@ describe("@syndroo/cloudflare bundle", () => {
 
     assert.doesNotMatch(worker, /from\s*["']@syndroo\/core["']/u, "the Worker must not import Core");
     assert.doesNotMatch(worker, /from\s*["']node:/u, "the Worker must not import a Node built-in");
+    assert.match(
+      readFileSync(join(CLOUDFLARE_DIST_DIR, "THIRD_PARTY_LICENSES.txt"), "utf8"),
+      /Generated from the esbuild metafile of the published bundle/u,
+    );
   });
 
   it("fails verification when the Worker imports Core instead of inlining it", () => {

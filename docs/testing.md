@@ -2,8 +2,8 @@
 
 Architecture v1 replaces the earlier CLI-first release train. The product under
 test is eleven packages: `provider-sdk`, `core`, five official providers, `sdk`,
-`server`, `cli` and `cloudflare`. The `0.7.0-rc.1` tree is unreleased and has no
-live-account acceptance.
+`server`, `cli` and `cloudflare`. The `0.7.0` train is release-prepared but not
+published and has no live-account acceptance.
 
 A pass at one layer never stands in for another. Unit tests do not prove
 packaging, packaging does not prove platform behaviour, and no layer here proves
@@ -20,6 +20,7 @@ live-account acceptance on any provider.
 | `npm run build` | `scripts/build-v1.ts` | All eleven packages build in dependency order |
 | `npm run check:provider-catalog` | `generate-provider-catalog.ts --check` | The checked-in CLI provider catalog matches the built official providers |
 | `npm run check:pack` | `check-v1.ts --pack` | Each stage's `npm pack --dry-run` succeeds |
+| `node scripts/server-cli-artifact-smoke.ts` | Pack existing CLI/Worker bundles and install them in a disposable external project through a bounded loopback registry | The generated project resolves exact package versions, contains no source path dependency, passes help/doctor/module import, and completes a Wrangler deploy dry run |
 
 `npm run check` is deliberately honest about unbuilt bundles: a package with no
 `dist/` is reported `PENDING`, never `ok`, and a `PENDING` row does not fail the
@@ -48,12 +49,13 @@ path before reading anything into it.
   payloads and write-outcome classification, each against controlled endpoint
   fixtures.
 - **CLI** (`packages/cli`): argument parsing, human and JSON rendering, the local
-  runtime adapters, the provider trust loader, transport policy, and the request
-  journal. Provider-loader and egress tests cover trust, fingerprinting and
-  fail-closed origins. The publish output layer — the shared publication view and
-  renderer, the confirmation loop (`y`/`N`/`v`, `--yes`, no-terminal fallback)
-  and the redraw-versus-appended output controller — is fixture-tested through
-  scripted terminal seams (`columns`, `rows`, `onResize`, `signal`).
+  runtime adapters, the provider trust loader, transport policy, request journal,
+  and the `server` init/doctor/deploy/Threads/CI command boundary. Server tests
+  use injected process runners, fetch implementations, fake SDK clients, private
+  temporary state roots, and failure injection. The publish output layer — the
+  shared publication view and renderer, confirmation loop, and
+  redraw-versus-appended output controller — is fixture-tested through scripted
+  terminal seams.
 - **SDK** (`packages/sdk`): the HTTP client, transport, error contract, and
   `wait` polling, with a fake HTTP implementation and wire fixtures. The wire
   fixtures cover a response with and without the optional `presentation`,
@@ -72,7 +74,9 @@ path before reading anything into it.
   frozen preview, the account presentation and the round marker are proven to come
   out of the database rather than process memory.
 - **Build graph** (`scripts/`): stage order, Node engine floor, the private Core
-  boundary, and the three bundle checks.
+  boundary, and the three bundle checks. The artifact smoke packs existing
+  builds with lifecycle scripts disabled so a stale or incomplete artifact
+  cannot pass by rebuilding itself during the test.
 
 ## Bundles
 
@@ -85,9 +89,10 @@ Three artifacts inline private `@syndroo/core` and are checked by
 | `@syndroo/server` | `dist/index.js` |
 | `@syndroo/cloudflare` | `dist/worker.js` |
 
-Each check asserts the entry exists, inlines Core, and that Core stays out of the
-package's `dependencies`. `dist/bundle.json` records the generator, entrypoints,
-external packages and inlined workspace packages.
+Each check asserts the entry exists, inlines Core, keeps Core out of the
+package's `dependencies`, and ships the generated
+`dist/THIRD_PARTY_LICENSES.txt`. `dist/bundle.json` records the generator,
+entrypoints, external packages and inlined workspace packages.
 
 ## Fixture versus live
 
@@ -101,6 +106,10 @@ external packages and inlined workspace packages.
   a test result.
 - **Live-account acceptance**: **not run**. No real credential has been used and
   no post has been published to a real platform from this repository.
+- **Deployment acceptance**: **not run**. The Worker deployment APIs, GitHub
+  environment calls, Meta callback, Wrangler upload, and Threads publication are
+  covered by fake runners/fetch fixtures only. A Wrangler local `deploy --dry-run`
+  checks the generated bundle and binding shape; it proves no remote deployment.
 
 Any command that would reach a real platform runs only under the operator's own
 authorization. No test in this repository contacts a real social account.
@@ -124,6 +133,27 @@ test suites (`128` tests at the time of writing). It covers packaging, licences,
 the release train and artifact handling. It is a tooling suite, not product
 acceptance, and it is not part of the v1 protocol gates above.
 
+## External artifact smoke
+
+Run the focused build and smoke in this order after source changes are stable:
+
+```bash
+npm run build --workspace @syndroo/cli
+npm run build --workspace @syndroo/cloudflare
+node scripts/server-cli-artifact-smoke.ts
+```
+
+The script packs only the already-built CLI and Worker with `--ignore-scripts`.
+A temporary HTTP server on `127.0.0.1` serves their exact-version metadata and
+tarballs; the npm scoped-registry setting points only `@syndroo` there. Public
+dependencies resolve through the operator's npm cache or normal registry. The
+generated project stays outside the checkout and is removed on exit unless
+`--keep` is passed.
+
+The loopback server has a request cap and wall-clock limit and exists only for
+the smoke process. It contacts no Cloudflare, GitHub, Meta, or Threads service,
+uses no real credential, and publishes nothing.
+
 ## What is not verified
 
 - Live-account publishing for any provider.
@@ -135,10 +165,11 @@ acceptance, and it is not part of the v1 protocol gates above.
 - Cross-version client/server combinations: the optional-field extension is
   argued from the strict validator, so only same-version pairings have fixture
   coverage; see [remote-compatibility.md](remote-compatibility.md).
-- A deployed Cloudflare Worker against a real Cloudflare account. The Worker's
-  deployment configuration is not part of this tree; see
+- A deployed Cloudflare Worker against a real Cloudflare account. The generated
+  project and deployment path are fixture-tested; see
   [remote-compatibility.md](remote-compatibility.md).
 - The macOS/Linux and Node.js matrix: this checkout has run on Node.js 24.19.0
   only.
-- Registry installation: no package in this tree has been published, so install
-  from a registry is untested.
+- Public-registry installation: the `0.7.0` train is unverified and not
+  advertised as available. The loopback artifact smoke exercises the packed
+  install path without claiming publication.

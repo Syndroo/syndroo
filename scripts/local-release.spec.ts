@@ -22,7 +22,7 @@ import {
  * run that shipped a `syndroo-core-*.tgz` that must never exist.
  */
 
-const VERSION = "0.7.0-rc.1";
+const VERSION = "0.7.0";
 
 /** The ten public workspaces, sorted. `@syndroo/core` is deliberately absent. */
 const PUBLIC_PACKAGES = [
@@ -72,7 +72,7 @@ describe("global install set", () => {
 
 describe("install arguments", () => {
   it("prefixes every argument with ./ so npm never reads a bare owner/repo shorthand", () => {
-    // npm parses a bare `artifacts/syndroo-cli-0.7.0-rc.1.tgz` (no `./`) as the
+    // npm parses a bare `artifacts/syndroo-cli-0.7.0.tgz` (no `./`) as the
     // GitHub shorthand `owner/repo`, and runs `git ls-remote
     // ssh://git@github.com/artifacts/...` instead of installing the local file.
     // Dropping the `./` is a failure, not a formatting nit.
@@ -87,13 +87,13 @@ describe("install arguments", () => {
     }
 
     assert.deepEqual(args, [
-      "./artifacts/syndroo-cli-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-bluesky-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-devto-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-linkedin-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-mastodon-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-sdk-0.7.0-rc.1.tgz",
-      "./artifacts/syndroo-provider-threads-0.7.0-rc.1.tgz",
+      "./artifacts/syndroo-cli-0.7.0.tgz",
+      "./artifacts/syndroo-provider-bluesky-0.7.0.tgz",
+      "./artifacts/syndroo-provider-devto-0.7.0.tgz",
+      "./artifacts/syndroo-provider-linkedin-0.7.0.tgz",
+      "./artifacts/syndroo-provider-mastodon-0.7.0.tgz",
+      "./artifacts/syndroo-provider-sdk-0.7.0.tgz",
+      "./artifacts/syndroo-provider-threads-0.7.0.tgz",
     ]);
   });
 });
@@ -102,7 +102,7 @@ describe("tarball names", () => {
   it("strips the scope for a scoped package", () => {
     assert.equal(
       tarballName("@syndroo/provider-sdk", VERSION),
-      "syndroo-provider-sdk-0.7.0-rc.1.tgz",
+      "syndroo-provider-sdk-0.7.0.tgz",
     );
   });
 
@@ -157,9 +157,9 @@ describe("single-version rule", () => {
       () =>
         sharedVersion([
           { name: "@syndroo/cli", version: VERSION },
-          { name: "@syndroo/sdk", version: "0.7.0" },
+          { name: "@syndroo/sdk", version: "0.8.0" },
         ]),
-      /must share one version.*@syndroo\/sdk@0\.7\.0/u,
+      /must share one version.*@syndroo\/sdk@0\.8\.0/u,
     );
   });
 });

@@ -67,6 +67,10 @@ describe("@syndroo/cli bundle", () => {
 
     assert.doesNotMatch(entry, /from\s*["']@syndroo\/core["']/u, "bin.js must not import private Core");
     assert.match(entry, /createCore/u, "the inlined Core code must be present in the bundle");
+    assert.match(
+      readFileSync(join(CLI_DIST_DIR, "THIRD_PARTY_LICENSES.txt"), "utf8"),
+      /Generated from the esbuild metafile of the published bundle/u,
+    );
   });
 
   it("ships declarations that resolve Core relative to the artifact", () => {

@@ -120,7 +120,13 @@ export const RELEASE_TRAIN: readonly TrainPackage[] = [
     name: "@syndroo/cli",
     directory: "packages/cli",
     slug: "cli",
-    requiredFiles: ["dist", "skills", "LICENSE", "NOTICE", "README.md"],
+    requiredFiles: [
+      "dist",
+      "skills",
+      "LICENSE",
+      "NOTICE",
+      "README.md",
+    ],
     requiredBins: { syndroo: "./dist/bin.js" },
     dependsOn: "@syndroo/provider-sdk",
   },
@@ -138,6 +144,7 @@ export const RELEASE_TRAIN: readonly TrainPackage[] = [
     slug: "cloudflare",
     requiredFiles: [
       "dist/worker.js",
+      "dist/THIRD_PARTY_LICENSES.txt",
       "dist/index.d.ts",
       "dist/worker.d.ts",
       "dist/d1.d.ts",

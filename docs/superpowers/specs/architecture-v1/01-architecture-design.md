@@ -180,7 +180,7 @@ Cloudflare 的验证器必须可在部署时预编译。Ajv 提供 standalone va
 }
 ```
 
-这是**新协议的目标示例**，不能拿来声称现有 `0.7.0-rc.1` 已接受此格式。
+这是**新协议的目标示例**，不能拿来声称现有 `0.7.0` 已接受此格式。
 
 共同字段保持小型：`content` 和 `targets[]`。每个 target 有 `provider`、可选 `connection`、可选 provider-specific `options`。平台特殊正文和元数据由 Provider schema 描述；Core 不添加 `devtoTitle`、`mastodonVisibility` 等平台特例。
 

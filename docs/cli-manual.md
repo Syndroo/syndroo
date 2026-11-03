@@ -1,42 +1,108 @@
 # Syndroo CLI manual
 
-This manual covers the architecture-v1 `syndroo` command: `connect`, `publish`
-and `status`. The CLI is the local runtime of protocol v1 and shares its contract
-with the self-hosted server ([remote-compatibility.md](remote-compatibility.md)).
+This manual covers the architecture-v1 `syndroo` command. Its default path has
+three local operations: `connect`, `publish`, and `status`. An optional `server`
+command family initializes, deploys, and operates a user-owned Cloudflare
+deployment with separate state and credentials
+([remote-compatibility.md](remote-compatibility.md)).
 
-Status: the CLI is **unreleased** (`0.7.0-rc.1`) and has **no live-account
-acceptance**. Provider paths are covered by tests against recorded API evidence
-and controlled fixtures. Every command and flag on this page was checked against
-the built `dist/bin.js`: each per-command `--help` and each documented invocation
-was run and its exit code recorded.
+Status: `0.7.0` is prepared, but npm availability must be verified before it is
+announced. The CLI has **no live-account acceptance**. Provider and server paths
+are covered by tests against controlled fixtures. Every command and flag on this
+page is checked against the built `dist/bin.js`.
 
 ## Install and run
 
-`@syndroo/cli` is not published. Build the workspace and run the bundle:
+After publication, install the complete seven-package local CLI set:
 
 ```bash
-npm ci
-npm run build
-node packages/cli/dist/bin.js --help
+npm install --global \
+  @syndroo/cli@0.7.0 \
+  @syndroo/provider-sdk@0.7.0 \
+  @syndroo/provider-bluesky@0.7.0 \
+  @syndroo/provider-threads@0.7.0 \
+  @syndroo/provider-linkedin@0.7.0 \
+  @syndroo/provider-mastodon@0.7.0 \
+  @syndroo/provider-devto@0.7.0
+syndroo --version
 ```
 
 `@syndroo/cli` requires Node.js `>=24.19.0`. The bundle inlines private
 `@syndroo/core` and `@syndroo/provider-sdk`, so it needs no unpublished package
-at runtime.
+at runtime. POSIX hosts are supported for local state writes.
+
+Contributors can instead run `npm ci`, `npm run build`, and
+`node packages/cli/dist/bin.js`.
 
 ## Command surface
 
-Three business commands, plus help and version:
+Three local business commands, plus the optional server workflow, help and
+version:
 
 ```text
 connect [options] [provider]  Connect, update or disconnect a provider account.
 publish [options]             Prepare, execute or retry a publication.
 status [options]              Query providers, connections and operations.
+server [options] <command>    Initialize or operate a Cloudflare deployment.
 ```
 
 A bare `syndroo`, `syndroo --help`, `syndroo -h`, `syndroo --version` and
 `syndroo <command> --help` need no configuration, credentials, state writes or
 network calls.
+
+### Server commands
+
+Run server commands from the project or select it explicitly with
+`server --project <directory>`. The project path defaults to the current
+directory and is never inferred from a parent.
+
+| Command | Effect |
+| --- | --- |
+| `server init [directory]` | Create the tracked configs, pinned package manifest and lockfile, sample post, and local Git initial commit. `--github OWNER/REPO` adds explicit remote creation and push; `--private` is the default and `--public` must be selected. |
+| `server doctor` | Read-only local and authenticated checks. It does not repair, install, generate keys, create resources, or prove publication readiness. |
+| `server deploy --yes` | Provision missing owned resources and deploy the packed Worker. `--account ID` selects or reconciles an account; `--recover PATH|-` imports nonsecret ownership evidence; `--credentials-stdin` imports missing generated credentials. |
+| `server connect threads` | Run Threads OAuth against the confirmed deployment. Uses `--app-id ID`; App Secret comes from hidden input, `THREADS_APP_SECRET`, or `--app-secret-stdin`. |
+| `server ci setup github --repo OWNER/REPO --yes` | Install the manual workflow locally and configure the scoped `threads-ci` GitHub environment. It never uploads the Cloudflare admin or encryption keys. |
+| `server publish threads` | Publish one `{ "text": string }` document with a scoped `SYNDROO_TOKEN`, explicit `--yes`, and a stable `--request-id`. |
+
+`server init` is local unless `--github` is supplied. `server ci setup github`
+does not commit, push, dispatch, or publish its generated workflow. Deployment
+and publication are separate authorized actions. Browser Wrangler login
+remains a human action; no token belongs in chat or argv.
+
+With `--github`, the initial push occurs before deployment and Threads OAuth.
+Deploy/connect later update the tracked `syndroo.config.jsonc`. Before manual CI
+dispatch, review and explicitly commit/push that config, the generated workflow,
+and intended tracked posts. Use existing authorization for that exact push when
+it is already present. Keep `.syndroo/`, `node_modules/`,
+`wrangler.effective.jsonc`, environment files, and private state out of Git.
+
+The generated tracked files have separate owners:
+
+- `syndroo.config.jsonc` owns application settings.
+- `wrangler.jsonc` owns Cloudflare platform configuration.
+- `wrangler.effective.jsonc` and `.syndroo/` are generated or private and
+  ignored.
+- Resource IDs, account IDs, deployment receipts, and secret values stay in the
+  private server state, not in tracked configuration.
+
+Deployment credentials and state live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/syndroo/serverctl-v1`. Directories and
+files are permission restricted and bound to the project, account, and Worker;
+they are not encrypted. Back up the directory through a protected channel. A
+fresh clone cannot recreate `API_BEARER`, `SECRET_KEY`, or `RUNTIME_KEY`.
+
+For supported credential import, pipe one strict JSON object containing all
+three named values to `server deploy --yes --credentials-stdin`. The caller must
+obtain that object securely and must not print it. Existing deployment keys are
+never regenerated or rotated merely because the local store is missing. This
+release has no automatic token refresh or key rotation.
+
+After an interrupted deploy, preserve the reported operation ID, confirmed
+resources, and private machine receipt, then rerun the same project. `--recover`
+accepts user-verified nonsecret resource IDs and Worker evidence; the CLI still
+checks account, names, tags, active version, and deploy target. Do not hand-edit
+state or adopt same-name resources without verified ownership.
 
 ### Global flags
 
@@ -71,16 +137,16 @@ A repeated global flag is a usage error, not last-one-wins.
 | `--no-default` | Clear the default flag. Only valid with `--update`. |
 
 ```bash
-node packages/cli/dist/bin.js connect bluesky
-node packages/cli/dist/bin.js connect bluesky --from-env
-node packages/cli/dist/bin.js connect bluesky --credential-file ./bluesky.json
-node packages/cli/dist/bin.js connect bluesky --label work
-node packages/cli/dist/bin.js connect bluesky --connection conn_example
-node packages/cli/dist/bin.js connect --input ./connect.json
-node packages/cli/dist/bin.js connect --update conn_example --label personal
-node packages/cli/dist/bin.js connect --update conn_example --default
-node packages/cli/dist/bin.js connect --update conn_example --no-default
-node packages/cli/dist/bin.js connect --disconnect conn_example
+syndroo connect bluesky
+syndroo connect bluesky --from-env
+syndroo connect bluesky --credential-file ./bluesky.json
+syndroo connect bluesky --label work
+syndroo connect bluesky --connection conn_example
+syndroo connect --input ./connect.json
+syndroo connect --update conn_example --label personal
+syndroo connect --update conn_example --default
+syndroo connect --update conn_example --no-default
+syndroo connect --disconnect conn_example
 ```
 
 A provider positional starts a connection. On a terminal, a `credential_input`
@@ -116,11 +182,11 @@ with one or more `--to <connectionId>`. A conflict, a missing source, `--to`
 without `--retry`, or `--dry-run` with `--retry` is a usage error.
 
 ```bash
-node packages/cli/dist/bin.js publish --input post.json
-node packages/cli/dist/bin.js publish --input post.json --dry-run
-node packages/cli/dist/bin.js publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
-node packages/cli/dist/bin.js publish --input - --json < execute.json
-node packages/cli/dist/bin.js publish --retry op_example --to conn_example
+syndroo publish --input post.json
+syndroo publish --input post.json --dry-run
+syndroo publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
+syndroo publish --input - --json < execute.json
+syndroo publish --retry op_example --to conn_example
 ```
 
 In human mode a `prepare` result prints a summary of the frozen preview — at most
@@ -159,13 +225,13 @@ through `status --connections`; an unknown id is `NOT_FOUND` and a repeated id i
 | `--cursor <cursor>` | Opaque cursor for `--operations`. |
 
 ```bash
-node packages/cli/dist/bin.js status
-node packages/cli/dist/bin.js status --provider bluesky
-node packages/cli/dist/bin.js status --connections
-node packages/cli/dist/bin.js status --provider bluesky --connections
-node packages/cli/dist/bin.js status --operation op_example
-node packages/cli/dist/bin.js status --operations --limit 20
-node packages/cli/dist/bin.js status --operations --limit 20 --cursor <cursor>
+syndroo status
+syndroo status --provider bluesky
+syndroo status --connections
+syndroo status --provider bluesky --connections
+syndroo status --operation op_example
+syndroo status --operations --limit 20
+syndroo status --operations --limit 20 --cursor <cursor>
 ```
 
 At most one of `--connections`, `--operation` and `--operations` may be used.
@@ -264,7 +330,7 @@ Registering nothing is needed: Bluesky posting uses an **app password**.
 
    ```bash
    SYNDROO_CREDENTIALS='{"identifier":"you.bsky.social","password":"APP_PASSWORD"}' \
-     node packages/cli/dist/bin.js connect bluesky --from-env
+     syndroo connect bluesky --from-env
    ```
 
 The CLI exchanges those two fields for a session at
@@ -281,7 +347,7 @@ in the same settings area.
 
 ```bash
 SYNDROO_CREDENTIALS='{"apiKey":"DEVTO_API_KEY"}' \
-  node packages/cli/dist/bin.js connect devto --from-env
+  syndroo connect devto --from-env
 ```
 
 The evidence did not confirm a primary key-regeneration or revoke procedure.
@@ -303,7 +369,7 @@ register yourself, and it needs a redirect URI before it can start.
 
    ```bash
    echo '{"type":"start","provider":"linkedin","options":{"redirectUri":"https://127.0.0.1:8080/callback"}}' \
-     | node packages/cli/dist/bin.js connect --input - --json
+     | syndroo connect --input - --json
    ```
 
    The result is `action_required` with a `credential_input` action asking for
@@ -314,7 +380,7 @@ register yourself, and it needs a redirect URI before it can start.
    ```bash
    echo '{"type":"resume","connectSessionId":"cs_example","stepRevision":1,
           "input":{"type":"credentials","credentials":{"client_id":"CLIENT_ID","client_secret":"CLIENT_SECRET"}}}' \
-     | node packages/cli/dist/bin.js connect --input - --json
+     | syndroo connect --input - --json
    ```
 
    The URL is built on `https://www.linkedin.com/oauth/v2/authorization` with
@@ -340,7 +406,7 @@ Threads is a Meta authorization-code flow and also needs an app you register.
 
    ```bash
    echo '{"type":"start","provider":"threads","options":{"redirectUri":"https://127.0.0.1:8080/callback"}}' \
-     | node packages/cli/dist/bin.js connect --input - --json
+     | syndroo connect --input - --json
    ```
 
    The result is `action_required` with a `credential_input` action for
@@ -365,7 +431,7 @@ constant, and it must be an `https://` URL.
 
    ```bash
    echo '{"type":"start","provider":"mastodon","options":{"instance":"https://mastodon.social","scopes":["read:accounts","write:statuses"],"redirectUri":"http://127.0.0.1:8080/callback"}}' \
-     | node packages/cli/dist/bin.js connect --input - --json
+     | syndroo connect --input - --json
    ```
 
    Without `clientId`/`clientSecret` in the options the provider first registers
@@ -591,18 +657,19 @@ provider and fails closed for an origin that was not declared. Mastodon is
 supplied at connect time. A cross-origin redirect is refused; only a same-origin
 `https` redirect is followed.
 
-## Retired syntax
+## Retired local syntax
 
-The v1 CLI has no `doctor`, `posts`, `skill`, `auth`, `init`, `receipts`,
-`retry`, `state` or `local *` commands, and no `--no-input` flag. This paragraph
-is a historical note only; none of those are accepted by the current build.
+The local path has no top-level `doctor`, `posts`, `skill`, `auth`, `init`,
+`receipts`, `retry`, `state` or `local *` commands, and no `--no-input` flag.
+Commands under `server` are a separate workflow. This paragraph is a historical
+note only.
 `--yes` was retired with that older surface and is back in v1 with the narrow
 auto-confirm meaning documented under `publish` above.
 
 ## Evidence and limits
 
 - Commands and flags in this manual were verified against the built
-  `node packages/cli/dist/bin.js`, including each per-command `--help`.
+  `syndroo`, including each per-command `--help`.
 - JSON examples on this page were validated against the Core-generated
   validators for `ConnectRequest`, `PublishRequest` and `StatusRequest`.
 - No live end-to-end call to any platform has been made. `dry-run` output,

@@ -367,7 +367,7 @@ it('replayed starts preserve the original Node attempt expiry and used marker af
       implementation: {
         provider: 'threads',
         packageName: '@syndroo/provider-threads',
-        version: '0.7.0-rc.1',
+        version: '0.7.0',
         apiVersion: 1,
         artifactFingerprint: 'fixture',
         schemaFingerprint: 'fixture',

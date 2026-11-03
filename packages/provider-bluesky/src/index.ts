@@ -50,7 +50,7 @@ import type {
  * suite reads the manifest file and fails the build on drift, which is what the
  * architecture requires of every Provider.
  */
-export const BLUESKY_PROVIDER_VERSION = "0.7.0-rc.1";
+export const BLUESKY_PROVIDER_VERSION = "0.7.0";
 
 /** Provider id. Also the package-name suffix and the registry key. */
 export const BLUESKY_PROVIDER_ID = "bluesky";

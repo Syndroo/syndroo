@@ -1,152 +1,201 @@
-# Threads from Cloudflare Worker and CI
+# Threads from a Cloudflare Worker and manual CI
 
-This helper path connects one Threads account through a stable HTTPS Worker
-callback, then prepares, explicitly executes, and waits for one plain-text
-publication from CI. It uses the existing SDK and Core publication protocol.
+The `server` commands connect one Threads account through a stable Worker
+callback, then publish one plain-text post from manual CI or from the same
+project locally. The flow uses the existing SDK and Core publication protocol.
 
-The client behavior is fixture-tested against fake HTTP and SDK responses. This
-guide does not claim live validation; a deployed Worker, registered Meta app,
-authorized Threads account, and intentional post are required for that separate
-acceptance.
+Status: fixture-tested. This guide does not claim live Cloudflare, GitHub, Meta,
+or Threads acceptance. Those steps need a user-owned deployment, a registered
+Meta app, an authorized Threads account, and separate permission to publish.
 
-## Setup order
+## Order
 
-1. Deploy the Worker with `PUBLIC_ORIGIN` set to its canonical HTTPS origin and
-   the existing admin/internal secrets (`API_BEARER`, `SECRET_KEY`, and
-   `RUNTIME_KEY`).
-2. Register the exact callback below in the Meta app.
-3. Bootstrap the Threads account and save the resulting `connectionId`.
-4. Configure the Worker's optional `CI_BEARER` and `CI_CONNECTION_ID` pair.
-5. Configure the manual workflow environment and secrets.
+1. Initialize and deploy the generated project.
+2. Register the deployed callback in the Meta app.
+3. Connect Threads and save the verified connection reference.
+4. Configure manual GitHub CI if wanted.
+5. Publish one post through an explicit, stable request ID.
 
-Use Node.js 24.19.0 or newer. The final callback URL is
-`${SYNDROO_URL}/oauth/callback/threads`, with no path suffix or query.
-`SYNDROO_URL` must be a canonical HTTPS origin.
+The generated project uses the installed `@syndroo/cli` and
+`@syndroo/cloudflare` artifacts plus project-local Wrangler. Do not copy product
+source or repository helper scripts into the deployment project.
 
-## Deploy and register the callback
+## Initialize and deploy
 
-Deploy through the repository's normal Worker procedure. Set `PUBLIC_ORIGIN` to
-the stable public HTTPS origin; do not infer it from request forwarding headers.
-Keep `API_BEARER` and the internal secrets on the Worker.
+From the installed CLI:
 
-Register this exact callback in the Meta app:
+```bash
+syndroo server init ./syndroo-site
+cd syndroo-site
+syndroo server doctor --json
+syndroo server deploy --yes
+```
+
+Omit `--github` for a local-only repository. If the user wants GitHub, use
+`syndroo server init ./syndroo-site --github OWNER/REPO --private`; public
+visibility requires an explicit `--public` choice. Wrangler browser login is a
+human action. Deployment is also a separate authorized action.
+
+The deploy command resolves and records one canonical HTTPS origin. It creates
+only missing resources through verified APIs, never adopts same-name resources,
+and preserves existing D1, queue, and Worker state. A repeat deployment uses the
+verified stored account unless an explicit account setting is supplied and
+conflicts with it.
+
+`syndroo.config.jsonc` owns application settings, including the confirmed origin
+and Threads connection reference. `wrangler.jsonc` owns Worker, D1, queue, cron,
+and public-egress configuration. The CLI generates ignored effective deployment
+configuration; do not maintain a duplicate application environment block or
+commit account resource IDs.
+
+An initial `--github` push happens before deployment and Threads connection, so
+it does not contain the confirmed origin or connection. Deploy and connect then
+update the tracked `syndroo.config.jsonc`. Those updates must reach the GitHub
+repository before manual CI can use the same target. Review and explicitly
+commit/push the config; setup never does that automatically.
+
+## Register the callback
+
+In the Meta app, register exactly:
 
 ```text
 https://syndroo.example/oauth/callback/threads
 ```
 
-## Build
+Replace the example with the confirmed project origin. The origin must be a
+canonical HTTPS origin with no credentials, path, query, fragment, or trailing
+slash beyond the callback path. The Worker does not derive it from forwarding
+headers.
 
-From the repository root:
+## Connect Threads
 
-```bash
-npm ci
-npm run build --workspace @syndroo/sdk
-npm run build:scripts
-```
-
-The workflow template builds `@syndroo/sdk` from this repository. It does not
-depend on an unpublished action or an imaginary SDK release.
-
-## Bootstrap the account
-
-Supply secrets through environment variables. Do not put them on the command
-line.
+Start with the Meta app ID:
 
 ```bash
-export SYNDROO_URL='https://syndroo.example'
-export SYNDROO_ADMIN_TOKEN
-export THREADS_APP_ID
-export THREADS_APP_SECRET
-node .build/scripts/threads-connect.js
+syndroo server connect threads --app-id THREADS_APP_ID
 ```
 
-The helper:
+The command prints the authorization URL and waits with a bounded poll. The user
+must complete Meta's OAuth prompt in a browser. On success, the CLI verifies the
+callback and automatically saves the connection reference to
+`syndroo.config.jsonc`.
 
-1. Calls `connect start` for provider `threads` with the exact callback URI.
-2. Resumes the `credential_input` step with the app id and secret from the
-   environment.
-3. Prints the Threads authorization URL and waits, with a bounded poll, for the
-   Worker callback and `callback_complete` to produce a bound connection.
-4. Prints only the connection id and safe account presentation, never app
-   credentials.
+On a terminal, App Secret is read with echo disabled. A noninteractive caller can
+use `THREADS_APP_SECRET` or `--app-secret-stdin`. Never put the App Secret in
+argv, logs, JSON input, chat, or a screenshot. The CLI does not retain another
+copy; the Worker stores provider credentials encrypted under `SECRET_KEY`.
 
-If the authorization expires or polling times out, the command exits nonzero.
-A repeated `action_required` response is not treated as success.
+For an uncertain connect result, reuse the same `--request-id`. A pending draft
+resumes by default. Abandoning it requires both `--restart` and a different
+explicit `--request-id`; `--restart` alone does not discard the saved identity.
+Do not edit private state to force completion. This version has no automatic
+Threads token refresh or key rotation. Reconnect explicitly when authorization
+expires.
 
-Save the printed `connectionId`. After bootstrap succeeds, configure the
-optional Worker pair:
+## Configure manual CI
 
-- `CI_CONNECTION_ID` must be that exact Threads connection id.
-- `CI_BEARER` must be a distinct scoped bearer and must differ from
-  `API_BEARER`.
+After deployment and connection, ask for the target `owner/repository` and
+authorization for the GitHub environment changes. Then run:
 
-Then open the GitHub environment named `threads-ci` and configure:
+```bash
+syndroo server ci setup github --repo OWNER/REPO --yes
+```
+
+The command installs this local file:
+
+```text
+.github/workflows/threads-publish.yml
+```
+
+The workflow is `workflow_dispatch` only, has `contents: read`, uses pinned
+action commits, installs exact package versions with `npm ci`, and invokes:
+
+```bash
+npx --no-install syndroo server publish threads \
+  --input "$INPUT_PATH" \
+  --request-id "$REQUEST_ID" \
+  --yes --json
+```
+
+CI setup creates or updates the `threads-ci` GitHub environment and configures:
 
 | Kind | Name | Purpose |
 | --- | --- | --- |
-| Variable | `SYNDROO_URL` | Canonical Worker origin |
-| Secret | `SYNDROO_TOKEN` | Worker `CI_BEARER` value |
-| Secret | `SYNDROO_CONNECTION_ID` | The one allowed Threads connection |
+| Variable | `SYNDROO_URL` | Confirmed Worker origin |
+| Secret | `SYNDROO_TOKEN` | Scoped `CI_BEARER`, distinct from `API_BEARER` |
+| Secret | `SYNDROO_CONNECTION_ID` | One allowed Threads connection |
 
-Do not add `SYNDROO_ADMIN_TOKEN` or the Worker admin bearer to the CI
-environment.
+It preserves existing environment protections and unrelated workflows. It
+uploads no Cloudflare admin bearer, `SECRET_KEY`, or `RUNTIME_KEY`. If an
+existing scoped bearer cannot be recovered from private CLI state, supply it as
+one bounded stdin value with `--ci-token-stdin`; never rotate an unknown bearer
+silently.
+
+Workflow installation is local. The command does not commit, push, dispatch, or
+publish. Before dispatch, review the tracked diff and explicitly commit/push:
+
+- `syndroo.config.jsonc`, including the confirmed origin and connection written
+  by deploy/connect;
+- `.github/workflows/threads-publish.yml`;
+- intended tracked post documents under `posts/`.
+
+Use existing authorization when it already covers this specific review and
+push; otherwise ask for it. Stage those paths explicitly. Never commit
+`.syndroo/`, `node_modules/`, `wrangler.effective.jsonc`, environment files, or
+the private `serverctl-v1` state. The CLI does not push the merged changes.
 
 ## Publish
 
-The post file is strict and contains exactly one string property:
+The post document is strict JSON with exactly one string property:
 
 ```json
 { "text": "Hello from Syndroo CI" }
 ```
 
-Run:
+Provide only the scoped token:
 
 ```bash
-export SYNDROO_URL='https://syndroo.example'
 export SYNDROO_TOKEN
-export SYNDROO_CONNECTION_ID
-node .build/scripts/threads-publish.js \
-  --input examples/threads-ci/post.json \
+syndroo server publish threads \
+  --input posts/hello.json \
   --request-id threads-ci:stable-content-revision \
-  --yes
+  --yes --json
 ```
 
-`--yes` is required before the helper makes a prepare call. The request id is a
-non-secret stable identity for one logical publication and must match
-`[A-Za-z0-9._:-]{1,128}`. Use the same id when recovering a lost response for
-the same content and connection; never reuse it for different content.
+The request ID must match `[A-Za-z0-9._:-]{1,128}`. It identifies one logical
+publication. Reuse it to recover a lost prepare or execute response for the same
+content and connection; never reuse it for different content.
 
-The helper prepares once, executes the returned approval, and waits on the
-operation status. A prepare replay is sent directly to status waiting. It never
-creates a fresh publication identity after a timeout, failure, partial result,
-or unknown result.
+Optionally, CI can supply `SYNDROO_URL` and `SYNDROO_CONNECTION_ID`. When present,
+they must match the project configuration. The workflow never receives an admin
+token.
 
-If the execute response is lost after a successful prepare, the command exits
-nonzero but preserves the prepared operation id. Treat admission as unknown,
-inspect that operation, and rerun with the same `--request-id` to recover the
-durable result. Do not use a new publication identity.
+For CI, copy the generated workflow to the repository with the normal reviewed
+change process and dispatch it manually with a checked-in post path and stable
+request ID. The command prepares, explicitly executes, and waits for the
+operation. It never creates a fresh publication identity after a timeout,
+failed response, partial result, or unknown result.
 
-Exit code `0` requires an aggregate `succeeded` result with at least one target
-whose delivery also succeeded. `failed`, `partial`, `unknown`, timeout, and
-unavailable final status all exit nonzero. The output preserves the operation
-id and safe per-target status so an operator can inspect the operation without
-republishing.
+Treat `unknown` as possibly published. Preserve its operation ID and report it as
+unknown. Inspect the same operation or retry the same logical request ID; do not
+send the same content under a new ID or assume a timeout means no post exists.
+Exit `0` requires a settled `succeeded` result with at least one successful
+delivery. `failed`, `partial`, `unknown`, timeout, and unavailable final status
+stay distinct and fail clearly.
 
-## Manual workflow
+## Secret recovery and doctor
 
-[`examples/threads-ci/workflow.yml`](../examples/threads-ci/workflow.yml) is a
-manual `workflow_dispatch` template. Copy it to `.github/workflows/` after
-reviewing the callback, environment, and content selection.
+Server state and generated deployment values live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/syndroo/serverctl-v1`, protected by file
+permissions and bound to project/account/Worker identity. This is not encryption
+at rest. A clone cannot restore them. Back up the private directory securely, or
+import all three deployment values together with
+`server deploy --yes --credentials-stdin`. Missing values for an existing
+deployment are never replaced by newly generated keys.
 
-The template derives its request id from the repository, checked-out commit,
-operator-supplied content revision, and connection id. It uses the repository's
-existing pinned checkout and setup-node commits. It has only read permission
-for repository contents and receives no admin credential. The publish input is
-the literal checked-in path; no workflow input is interpolated into shell code.
-
-The initial integration does not refresh expired Threads tokens automatically.
-An auth or permission failure must be surfaced, and the operator must reconnect
-the account. The live acceptance step remains separate: deploy the Worker,
-register the callback, authorize the account, deliberately dispatch once, and
-rerun the same logical publication to confirm no duplicate.
+After an interrupted deploy, preserve the reported operation ID, confirmed
+resources, and machine receipt and rerun the same project. Use `--recover` only
+with user-verified nonsecret identifiers or Worker evidence. Doctor remains
+read-only; `/health` proves reachability only, while OAuth and publication
+readiness remain explicitly unverified until the corresponding human actions
+and checks succeed.

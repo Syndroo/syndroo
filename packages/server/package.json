@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/server",
-  "version": "0.7.0-rc.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Self-hosted Syndroo server: authenticated HTTP API, SQLite state and encrypted secrets.",
   "license": "Apache-2.0",
@@ -24,8 +24,8 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": { "@syndroo/cli": "0.7.0-rc.1" },
-  "devDependencies": { "@syndroo/core": "0.7.0-rc.1", "@syndroo/provider-sdk": "0.7.0-rc.1", "@types/node": "^26.4.0", "esbuild": "0.28.1" },
+  "dependencies": { "@syndroo/cli": "0.7.0" },
+  "devDependencies": { "@syndroo/core": "0.7.0", "@syndroo/provider-sdk": "0.7.0", "@types/node": "^26.4.0", "esbuild": "0.28.1" },
   "scripts": {
     "build": "node ../../scripts/bundle-v1-server.ts",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",

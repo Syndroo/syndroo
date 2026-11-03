@@ -163,6 +163,43 @@ describe("notice generation", () => {
     }
   });
 
+  it("rejects a supplement whose declared license does not match", async () => {
+    const root = await mkdtemp(join(tmpdir(), "syndroo-cli-licenses-"));
+
+    try {
+      await writePackage(root, "bare", "0.6.6", "MIT", {});
+      await mkdir(join(root, "licenses"), { recursive: true });
+      await writeFile(join(root, "licenses", "mit.txt"), "SUPPLEMENT TEXT\n", "utf8");
+
+      await assert.rejects(
+        describeBundledPackages(
+          { inputs: { "node_modules/bare/index.js": {} } },
+          {
+            workingDirectory: root,
+            repositoryRoot: root,
+            supplementDirectory: join(root, "licenses"),
+            supplements: new Map([
+              [
+                "bare@0.6.6",
+                {
+                  package: "bare",
+                  version: "0.6.6",
+                  declaredLicense: "Apache-2.0",
+                  licenseFile: "mit.txt",
+                  sourceUrl: "https://example.invalid/MIT.txt",
+                  note: "fixture supplement",
+                },
+              ],
+            ]),
+          },
+        ),
+        /supplement declares Apache-2\.0, but the package declares MIT/u,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes the notices inside the published dist directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "syndroo-cli-licenses-"));
 

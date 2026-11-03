@@ -139,7 +139,7 @@ beforeAll(async () => {
   cliBin = path.join(consumerDir, "node_modules", "@syndroo", "cli", "dist", "bin.js");
   expect(existsSync(cliBin)).toBe(true);
 
-  const listing = spawnSync("tar", ["-tzf", path.join(packDir, "syndroo-cli-0.7.0-rc.1.tgz")], {
+  const listing = spawnSync("tar", ["-tzf", path.join(packDir, "syndroo-cli-0.7.0.tgz")], {
     encoding: "utf8",
   });
 
@@ -162,6 +162,7 @@ describe("@syndroo/cli packed tarball", () => {
 
     expect(tarEntries.length).toBeGreaterThan(0);
     expect(tarEntries.filter((entry) => !allowed(entry))).toEqual([]);
+    expect(tarEntries).toContain("package/dist/THIRD_PARTY_LICENSES.txt");
     // Explicit absences, stated rather than implied by the allowlist.
     expect(tarEntries.some((entry) => entry.includes("node_modules"))).toBe(false);
     expect(tarEntries.some((entry) => /(^|\/)src\//.test(entry))).toBe(false);
@@ -223,7 +224,7 @@ describe("packaged consumer", () => {
     const version = spawnSync(process.execPath, [cliBin, "--version"], { cwd: consumerDir, encoding: "utf8", env });
 
     expect(version.status).toBe(0);
-    expect(version.stdout).toContain("0.7.0-rc.1");
+    expect(version.stdout).toContain("0.7.0");
     expect(version.stderr).toBe("");
 
     const help = spawnSync(process.execPath, [cliBin, "--help"], { cwd: consumerDir, encoding: "utf8", env });

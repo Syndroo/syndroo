@@ -1,9 +1,9 @@
 {
   "name": "syndroo",
-  "version": "0.7.0-rc.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "description": "Syndroo: local-first publishing CLI, standalone HTTP SDK, Node server, Cloudflare Worker and official Provider plugins. Architecture v1 is under construction and not released.",
+  "description": "Syndroo: local-first publishing CLI, standalone HTTP SDK, Node server, Cloudflare Worker and official Provider plugins.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

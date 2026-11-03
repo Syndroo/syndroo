@@ -3,6 +3,59 @@
 All notable Syndroo changes are recorded here. Releases use Semantic
 Versioning and matching `v<version>` Git tags.
 
+## 0.7.0 (release prepared, not published)
+
+The architecture-v1 release train is prepared at `0.7.0`. It contains ten public
+npm packages published in dependency order under `latest`, plus the private,
+bundled `@syndroo/core` package. At preparation time this version is not
+available from npm; registry installation and publication remain separate,
+explicitly authorized steps.
+
+### Added
+
+- A local-first CLI with `connect`, `publish`, and `status`, explicit provider
+  discovery, frozen confirmation, JSON envelopes, and a bundled Agent Skill.
+- An optional `server` workflow that generates a user-owned Cloudflare project,
+  verifies local and remote state, deploys an exact Worker artifact, configures
+  Threads OAuth, and prepares manual GitHub CI without publishing content.
+- Five official providers: Bluesky, Threads, LinkedIn, Mastodon, and DEV.to.
+- A standalone HTTP SDK and self-hosted Node server.
+- A Cloudflare Worker artifact with D1 state, Queues, Cron recovery, encrypted
+  secrets, and fail-closed egress handling.
+- Generated `THIRD_PARTY_LICENSES.txt` inventories inside the CLI, Server, and
+  Worker bundles, derived from the packages actually compiled into each bundle.
+- Reproducible local pack and seven-package global installation tooling for the
+  full local CLI plus official provider set.
+
+### Release manifest
+
+The ten public packages are:
+
+```text
+@syndroo/provider-sdk@0.7.0
+@syndroo/provider-bluesky@0.7.0
+@syndroo/provider-threads@0.7.0
+@syndroo/provider-linkedin@0.7.0
+@syndroo/provider-mastodon@0.7.0
+@syndroo/provider-devto@0.7.0
+@syndroo/sdk@0.7.0
+@syndroo/cli@0.7.0
+@syndroo/server@0.7.0
+@syndroo/cloudflare@0.7.0
+```
+
+`@syndroo/core@0.7.0` remains private and is compiled into the CLI, Server, and
+Worker artifacts; it is not a runtime dependency of any published package.
+
+### Verification boundaries
+
+- Provider and server paths are fixture-tested. No live social account has been
+  connected and no real post has been made.
+- No Worker, Node server, GitHub environment, or Meta callback has been deployed
+  from this release-preparation checkout.
+- Local packed installation is not public-registry validation. Only a successful
+  registry install verifies npm availability.
+
 ## 0.2.0-rc.1 (release candidate, not published)
 
 Prepared candidate. The version lives in

@@ -27,6 +27,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import path from "node:path";
 
+import { writeCliThirdPartyNotices } from "../cli-licenses.ts";
 import { ROOT } from "./v1-stages.ts";
 
 /** Bare built-in names mapped to their explicit `node:` form. */
@@ -523,6 +524,12 @@ export function verifyBundleArtifact(spec: BundleSpec, distDirectory = spec.dist
     return [`${packageRelative(info)} is missing`];
   }
 
+  const licenseInventory = path.join(distDirectory, "THIRD_PARTY_LICENSES.txt");
+
+  if (!existsSync(licenseInventory)) {
+    problems.push(`${packageRelative(licenseInventory)} is missing`);
+  }
+
   let record: BundleRecord;
 
   try {
@@ -782,6 +789,17 @@ async function writeBundle(spec: BundleSpec): Promise<BundleRecord> {
   for (const relative of spec.chmod ?? []) {
     chmodSync(path.join(spec.distDir, relative), 0o755);
   }
+
+  const licensesDirectory = path.join(spec.packageDir, "licenses");
+  await writeCliThirdPartyNotices({
+    metafile,
+    workingDirectory: spec.packageDir,
+    repositoryRoot: ROOT,
+    distDirectory: spec.distDir,
+    packageName: spec.name,
+    supplementPath: path.join(licensesDirectory, "third-party-license-supplements.json"),
+    supplementDirectory: licensesDirectory,
+  });
 
   const problems = verifyBundleArtifact(spec);
 

@@ -68,7 +68,7 @@ export const SERVER_BUNDLE_SPEC: BundleSpec = {
   target: "node24",
   aliasNodeBuiltins: true,
   declarationsTsconfig: "tsconfig.build.json",
-  allowedExtensions: [".js", ".json", ".d.ts"],
+  allowedExtensions: [".js", ".json", ".d.ts", ".txt"],
   coreLabel: "Core",
 };
 

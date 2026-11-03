@@ -114,6 +114,6 @@ placed in a URL, a log line or a thrown message.
 
 ## Status
 
-Architecture v1 is unreleased. The SDK is fixture-tested against the wire
-protocol; no live platform call has been made from this repository, and no
-Syndroo package has been published.
+The `0.7.0` release train is prepared but not claimed available until its public
+registry installation succeeds. The SDK is fixture-tested against the wire
+protocol; no live platform call has been made from this repository.

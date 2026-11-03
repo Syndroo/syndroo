@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cloudflare",
-  "version": "0.7.0-rc.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Syndroo Worker: D1 state, encrypted secrets, queues, cron recovery and worker egress.",
   "license": "Apache-2.0",
@@ -17,7 +17,7 @@
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/worker.js" } },
   "sideEffects": false,
-  "files": ["dist/worker.js", "dist/index.d.ts", "dist/worker.d.ts", "dist/d1.d.ts", "dist/_vendor", "LICENSE", "NOTICE"],
+  "files": ["dist/worker.js", "dist/THIRD_PARTY_LICENSES.txt", "dist/index.d.ts", "dist/worker.d.ts", "dist/d1.d.ts", "dist/_vendor", "LICENSE", "NOTICE"],
   "engines": {
     "node": ">=24.19.0"
   },
@@ -27,14 +27,14 @@
   "dependencies": {},
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260915.1",
-    "@syndroo/core": "0.7.0-rc.1",
-    "@syndroo/server": "0.7.0-rc.1",
-    "@syndroo/provider-sdk": "0.7.0-rc.1",
-    "@syndroo/provider-bluesky": "0.7.0-rc.1",
-    "@syndroo/provider-threads": "0.7.0-rc.1",
-    "@syndroo/provider-linkedin": "0.7.0-rc.1",
-    "@syndroo/provider-mastodon": "0.7.0-rc.1",
-    "@syndroo/provider-devto": "0.7.0-rc.1",
+    "@syndroo/core": "0.7.0",
+    "@syndroo/server": "0.7.0",
+    "@syndroo/provider-sdk": "0.7.0",
+    "@syndroo/provider-bluesky": "0.7.0",
+    "@syndroo/provider-threads": "0.7.0",
+    "@syndroo/provider-linkedin": "0.7.0",
+    "@syndroo/provider-mastodon": "0.7.0",
+    "@syndroo/provider-devto": "0.7.0",
     "ajv": "^8.20.0",
     "esbuild": "0.28.1"
   },

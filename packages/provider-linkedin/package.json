@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/provider-linkedin",
-  "version": "0.7.0-rc.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "LinkedIn Provider plugin for Syndroo architecture v1: text posts through the LinkedIn Posts API.",
   "license": "Apache-2.0",
@@ -24,7 +24,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": { "@syndroo/provider-sdk": "0.7.0-rc.1" },
+  "dependencies": { "@syndroo/provider-sdk": "0.7.0" },
   "devDependencies": {},
   "scripts": {
     "build": "tsc -p tsconfig.json",

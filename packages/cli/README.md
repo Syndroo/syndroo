@@ -2,35 +2,49 @@
 
 The `syndroo` command: a local-first client for protocol **v1**. It publishes
 plain text to Bluesky, Threads, LinkedIn and Mastodon, and articles to DEV.to,
-from the machine it runs on. There is no server, queue or database in this path.
+from the machine it runs on. That local path has no server, queue or database.
+The same package also ships an optional `server` workflow for a user-owned
+Cloudflare deployment with its own state and credentials.
 
-`0.7.0-rc.1` is **unreleased** and has **no live-account acceptance**. Provider
-paths are covered by tests against recorded API evidence and controlled
+The repository prepares a `0.7.0` release; registry availability must be checked
+before installation is announced. The CLI has **no live-account acceptance**.
+Provider paths are covered by tests against recorded API evidence and controlled
 fixtures.
 
 ## Install and run
 
-The package is not published, so build the workspace and run the bundle:
+Once published, install the CLI with its provider contract and all five official
+providers so explicit provider discovery is complete:
 
 ```bash
-npm ci
-npm run build
-node packages/cli/dist/bin.js --help
+node --version                         # requires >=24.19.0
+npm install --global \
+  @syndroo/cli@0.7.0 \
+  @syndroo/provider-sdk@0.7.0 \
+  @syndroo/provider-bluesky@0.7.0 \
+  @syndroo/provider-threads@0.7.0 \
+  @syndroo/provider-linkedin@0.7.0 \
+  @syndroo/provider-mastodon@0.7.0 \
+  @syndroo/provider-devto@0.7.0
+syndroo --help
+syndroo --version
 ```
 
 Requires Node.js `>=24.19.0`. The bundle inlines private `@syndroo/core` and
 `@syndroo/provider-sdk`, so it needs no unpublished package at runtime. The
-package ships `dist/`, `skills/`, `LICENSE`, `NOTICE` and this README.
+package ships `dist/`, `skills/`, `LICENSE`, `NOTICE`, the generated bundled-code
+license inventory, and this README.
 
 ## Commands
 
-Three business commands plus help and version. `syndroo` alone, `syndroo --help`
-and `syndroo --version` need no configuration, credentials, state or network.
+Three local business commands plus the optional `server` command family, help
+and version. `syndroo` alone, `syndroo --help` and `syndroo --version` need no
+configuration, credentials, state or network.
 
 ```bash
-node packages/cli/dist/bin.js connect bluesky
-node packages/cli/dist/bin.js publish --input post.json
-node packages/cli/dist/bin.js status
+syndroo connect bluesky
+syndroo publish --input post.json
+syndroo status
 ```
 
 Global flags: `--config <absolute path>`, `--json`, `--verbose`, `--no-color`,
@@ -39,14 +53,14 @@ Global flags: `--config <absolute path>`, `--json`, `--verbose`, `--no-color`,
 ### connect
 
 ```bash
-node packages/cli/dist/bin.js connect bluesky
-node packages/cli/dist/bin.js connect bluesky --from-env
-node packages/cli/dist/bin.js connect bluesky --credential-file ./bluesky.json
-node packages/cli/dist/bin.js connect bluesky --label work
-node packages/cli/dist/bin.js connect --update conn_example --default
-node packages/cli/dist/bin.js connect --update conn_example --label personal
-node packages/cli/dist/bin.js connect --disconnect conn_example
-node packages/cli/dist/bin.js connect --input -     # machine ConnectRequest on stdin
+syndroo connect bluesky
+syndroo connect bluesky --from-env
+syndroo connect bluesky --credential-file ./bluesky.json
+syndroo connect bluesky --label work
+syndroo connect --update conn_example --default
+syndroo connect --update conn_example --label personal
+syndroo connect --disconnect conn_example
+syndroo connect --input -     # machine ConnectRequest on stdin
 ```
 
 On a terminal, a credential step is prompted field by field; secret fields are
@@ -62,11 +76,11 @@ The entry points are mutually exclusive: a provider positional, `--input`,
 ### publish
 
 ```bash
-node packages/cli/dist/bin.js publish --input post.json
-node packages/cli/dist/bin.js publish --input post.json --dry-run
-node packages/cli/dist/bin.js publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
-node packages/cli/dist/bin.js publish --retry op_example --to conn_example
-node packages/cli/dist/bin.js publish --input - --json < execute.json
+syndroo publish --input post.json
+syndroo publish --input post.json --dry-run
+syndroo publish --data '{"type":"prepare","content":{"text":"Hello"},"targets":[{"provider":"bluesky"}]}'
+syndroo publish --retry op_example --to conn_example
+syndroo publish --input - --json < execute.json
 ```
 
 Exactly one source: `--input <file|->`, `--data <json>`, or `--retry
@@ -83,14 +97,63 @@ credential resolution, no network call.
 ### status
 
 ```bash
-node packages/cli/dist/bin.js status
-node packages/cli/dist/bin.js status --provider bluesky
-node packages/cli/dist/bin.js status --connections
-node packages/cli/dist/bin.js status --operation op_example
-node packages/cli/dist/bin.js status --operations --limit 20
+syndroo status
+syndroo status --provider bluesky
+syndroo status --connections
+syndroo status --operation op_example
+syndroo status --operations --limit 20
 ```
 
 Read-only. It never calls a provider, reads a secret, or writes state.
+
+### server
+
+The server path initializes a thin repository whose Worker artifact comes from
+the packed `@syndroo/cloudflare` package. The generated project has one tracked
+application config (`syndroo.config.jsonc`) and one tracked platform config
+(`wrangler.jsonc`). A private, ignored effective Wrangler file is generated for
+deployment.
+
+```bash
+syndroo server init ./syndroo-site
+syndroo server init ./syndroo-site --github OWNER/REPO --private
+syndroo server --project ./syndroo-site doctor --json
+syndroo server --project ./syndroo-site deploy --yes
+syndroo server --project ./syndroo-site connect threads --app-id THREADS_APP_ID
+syndroo server --project ./syndroo-site ci setup github --repo OWNER/REPO --yes
+syndroo server --project ./syndroo-site publish threads \
+  --input posts/hello.json --request-id RELEASE_001 --yes --json
+```
+
+`server init` is local by default. Only `--github` creates and pushes the named
+GitHub repository; private is the default and public requires `--public`.
+Deployment requires `--yes`. Browser login uses the installed Wrangler. Threads
+App Secret arrives through hidden input, `THREADS_APP_SECRET`, or
+`--app-secret-stdin`, never argv. CI setup creates a manual workflow locally and
+configures a scoped GitHub environment; it does not commit, push, dispatch, or
+publish. The initial `--github` push predates deploy/connect changes to
+`syndroo.config.jsonc`; review and explicitly commit/push that config, the
+workflow, and intended posts before manual dispatch. Keep `.syndroo/`,
+`node_modules/`, `wrangler.effective.jsonc`, environment files, and private state
+out of Git. A real Threads post needs a separate explicit
+`publish threads --yes` invocation with a stable request ID.
+
+Server state and generated deployment credentials live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/syndroo/serverctl-v1` with restrictive
+permissions. They are bound to the project, Cloudflare account, and Worker and
+are not tracked by Git. This is filesystem protection, not encryption at rest.
+A clone cannot restore missing secret values. Back up the private store through
+a protected channel, or import all three deployment credentials together on
+stdin with `server deploy --yes --credentials-stdin`. Missing values are never
+replaced by generating new keys for an existing deployment.
+
+`server doctor` is read-only and distinguishes missing configuration,
+unavailable checks, and `unverified` OAuth or publication readiness. A healthy
+`/health` response proves liveness only.
+
+The server path is fixture-tested and has not been deployed. No command in this
+release-prepared tree claims live Cloudflare, GitHub, Meta, or Threads
+acceptance.
 
 ## Configuration and state
 
@@ -148,9 +211,10 @@ delivered, `130` interrupted.
 ## The bundled Skill
 
 The package ships `skills/syndroo/` (`SKILL.md` and its references). It teaches
-the v1 flow: status discovery, an explicit connection, prepare, show the preview,
-obtain confirmation, execute, then status. It grants no permission and proves
-nothing about any particular agent client.
+the local v1 flow (status discovery, explicit connection, prepare, preview,
+confirmation, execute, then status) and routes deployment work to its separate
+server reference. It grants no permission and proves nothing about any agent
+client.
 
 ## Honest limits
 
