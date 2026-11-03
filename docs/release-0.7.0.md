@@ -1,8 +1,7 @@
 # Syndroo 0.7.0 release manifest
 
-Status: release prepared, not published. This document records the intended npm
-release train and its verification boundaries. Registry availability is a
-separate result.
+Status: published. This document records the npm release train and its
+verification boundaries.
 
 ## Packages
 
@@ -24,7 +23,7 @@ The public packages use dist-tag `latest` and Node.js engine `>=24.19.0`.
 The Worker package is an artifact for user-owned deployment; this release does
 not deploy it.
 
-## Local CLI install target
+## Local CLI installation
 
 ```bash
 npm install --global \
@@ -57,15 +56,13 @@ $(npm root --global)/@syndroo/cli/skills/syndroo/SKILL.md
 - The seven-package local installation includes the CLI, provider contract, and
   all five official providers.
 
-## Initial publish for absent package names
+## Initial publication for absent package names
 
-npm Trusted Publishing cannot create a package name's first version. An
-authenticated maintainer must perform an explicitly authorized initial publish
-for each absent name, using the already gated tarballs in `artifacts/`. For each
-package in dependency order, run the matching `npm view` immediately before
-deciding whether its publish line may run. A returned `0.7.0` means that version
-exists and **must not** be republished. An `E404` means the version is absent and
-the matching publish is eligible.
+npm Trusted Publishing cannot create a package name's first version. The
+`0.7.0` train was bootstrapped from the gated tarballs in `artifacts/`. All ten
+public package publish commands were accepted under `latest`. The audit
+sequence below is retained for the release record; do not run it again for
+`0.7.0`.
 
 ```bash
 # Run one preflight at a time; run its publish line only after confirming E404.
@@ -103,42 +100,30 @@ npm view @syndroo/cloudflare@0.7.0 version
 npm publish ./artifacts/syndroo-cloudflare-0.7.0.tgz --tag latest
 ```
 
-Each publish is conditional on its preflight. Stop on any unexpected result,
-version conflict, or authentication error. After a package exists, configure npm
-Trusted Publisher for that package with GitHub repository `Syndroo/syndroo` and
-workflow `release.yml`; repeat this per package. Local `npm login` and
-`npm whoami` authenticate the maintainer CLI only. They do not configure GitHub
-OIDC, create package names, or establish package-level trust.
+Each publish was conditional on its preflight. Do not republish an existing
+`0.7.0` version. Trusted Publisher configuration is separate from the initial
+bootstrap and must be checked before a future OIDC release.
 
-## Release prerequisites
+## Publication record
 
-- Check local maintainer authentication separately with `npm whoami`. The
-  preparation session received HTTP 401; no credential was entered and no
-  authentication retry was attempted. Local npm credentials do not authorize
-  the GitHub OIDC workflow.
-- For every absent package name, follow the authorized, preflighted maintainer
-  path in [Initial publish for absent package names](#initial-publish-for-absent-package-names).
-  Never republish a version that already exists.
-- After each package exists, configure its npm Trusted Publisher for the
-  `Syndroo/syndroo` `release.yml` workflow. No long-lived npm publish token
-  belongs in repository secrets for the OIDC workflow.
-- Merge a reviewed release-preparation commit and create `v0.7.0` from it.
-- Set repository variable `SYNDROO_PUBLISH_ON_RELEASE=true`, or dispatch the
-  existing release workflow with `mode: publish`.
-- Verify all ten public versions and a clean seven-package installation from the
-  public registry before updating installation claims or the website product pin.
+- All ten public package publish commands were accepted by npm under `latest`.
+- All ten public versions, `latest` tags, and artifact integrity values were verified.
+- A clean seven-package public installation passed with all five providers available.
+- Public CLI installation, Server initialization, and read-only doctor passed outside the source checkout.
+- Trusted Publisher settings and future release automation are separate from
+  the accepted initial publication.
+- No Worker or server has been deployed, and no live account has been used.
 
 ## Registry state at preparation
 
-Read-only evidence on 2026-11-03 found only `@syndroo/cli@0.4.0-rc.1` available
-from the public npm CLI and no `@syndroo/cloudflare` package. That evidence does
-not establish the rest of the requested `0.7.0` train. Historical public
-packages may exist; this document only classifies the `0.7.0` release.
+Read-only evidence before publication on 2026-11-03 found only
+`@syndroo/cli@0.4.0-rc.1` available from the public npm CLI and no
+`@syndroo/cloudflare` package. The ten `0.7.0` publish commands were then
+accepted under `latest`; independent public installation subsequently passed.
 
 ## Verification boundaries
 
-The product commit before release preparation,
-`c606a64f0b0113612be6f2dc3fac037a7394c74a`, has successful remote CI evidence.
-The release-preparation changes require their own build, tests, CI, and clean
-installation. Fixture-tested provider and server behavior does not establish
-live social-account acceptance, deployment, or npm publication.
+Release-preparation commit
+`c656b5ec999bb8363e0f63451df492b825d4ba2f` has successful Linux and macOS
+remote CI evidence. Documentation checks and clean public-registry installation passed. Fixture-tested provider and
+server behavior does not establish live social-account acceptance or deployment.

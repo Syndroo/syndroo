@@ -5,11 +5,9 @@ machine, or run the same product as an authenticated HTTP service. Every
 surface speaks one protocol generation, **v1**, with three operations:
 `connect`, `publish` and `status`.
 
-The `0.7.0` npm release train is prepared in this tree. As of 2026-11-03 it has
-not been published, so the install command below is the release target rather
-than evidence of registry availability. No deployment or live social-account
-acceptance has been performed. Provider behaviour is covered by tests against
-recorded API evidence and controlled fixtures; see
+The `0.7.0` npm release train is available on npm under `latest`. No deployment
+or live social-account acceptance has been performed. Provider behaviour is
+covered by tests against recorded API evidence and controlled fixtures; see
 [Honest boundaries](#honest-boundaries).
 
 ## Surfaces
@@ -35,8 +33,7 @@ failure on one surface is not a reason to switch to the other.
 
 ## Install
 
-After the ten public `0.7.0` packages are available from npm, install the CLI,
-its provider contract, and all five official providers together:
+Install the CLI, its provider contract, and all five official providers together:
 
 ```bash
 npm install --global \

@@ -3,13 +3,11 @@
 All notable Syndroo changes are recorded here. Releases use Semantic
 Versioning and matching `v<version>` Git tags.
 
-## 0.7.0 (release prepared, not published)
+## 0.7.0
 
-The architecture-v1 release train is prepared at `0.7.0`. It contains ten public
-npm packages published in dependency order under `latest`, plus the private,
-bundled `@syndroo/core` package. At preparation time this version is not
-available from npm; registry installation and publication remain separate,
-explicitly authorized steps.
+The architecture-v1 release train is published at `0.7.0`. It contains ten
+public npm packages under `latest`, plus the private, bundled
+`@syndroo/core` package.
 
 ### Added
 

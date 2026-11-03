@@ -1,10 +1,9 @@
 # Releasing Syndroo
 
 Architecture v1 is one coherent tree of eleven packages, all at `0.7.0`. The
-ten public packages are prepared for npm under the `latest` tag and
-`@syndroo/core` remains private. The `0.7.0` train has not been published, no
-Worker or server has been deployed, and the remaining registry and authentication
-prerequisites are listed below.
+ten public packages are published to npm under the `latest` tag and
+`@syndroo/core` remains private. No Worker or server has been deployed. All ten public versions and their artifact integrity values were verified.
+A clean seven-package public installation passed.
 
 ## Versions
 
@@ -83,10 +82,9 @@ Use `--keep` only when the disposable fixture needs review. The default run
 removes its temporary registry files and project. This proves artifact shape and
 local installation, not public-registry availability.
 
-## Public installation target
+## Public installation
 
-Once all ten package versions are present on npm, the complete default local CLI
-installation is:
+The complete default local CLI installation is:
 
 ```bash
 npm install --global \
@@ -101,23 +99,18 @@ syndroo --version
 ```
 
 A prepared tarball or successful dry run does not establish registry
-availability. Verify the public install from a clean prefix before publishing
-installation claims or changing the website's product pin.
+availability. Verify this public install from a clean prefix before rollout.
 
 ## Initial publication for absent package names
 
 npm Trusted Publishing cannot create a package name's first version. For a new
-`0.7.0` train, an authenticated maintainer must perform an explicitly authorized
-initial publish for each absent package before configuring that package's Trusted
-Publisher for later OIDC releases. This is a manual bootstrap, not a new workflow
-or token path.
+`0.7.0` train, an authenticated maintainer bootstrapped each absent package
+before configuring that package's Trusted Publisher for later OIDC releases.
+All ten public publish commands were accepted under `latest`.
 
 Use only tarballs that already passed the release gates above. The artifacts in
-`artifacts/` are exact publish candidates; do not rebuild them during this step.
-For every package in dependency order, run its `npm view` preflight immediately
-before deciding whether to publish. A returned `0.7.0` means the version already
-exists and **must not** be republished. An `E404` means the version is absent and
-the corresponding publish command may run.
+`artifacts/` are the immutable `0.7.0` publish candidates; do not rebuild or
+republish them. The audit sequence below is retained for the release record.
 
 ```bash
 # Run one preflight at a time; run its publish line only after confirming E404.
@@ -155,35 +148,20 @@ npm view @syndroo/cloudflare@0.7.0 version
 npm publish ./artifacts/syndroo-cloudflare-0.7.0.tgz --tag latest
 ```
 
-The publish line is conditional on the matching preflight being absent. Stop on
-any unexpected result, version conflict, or authentication error. After a new
-package exists, configure npm Trusted Publisher for that package with GitHub
-repository `Syndroo/syndroo` and workflow `release.yml`; repeat the setting for
-each newly created package. Local `npm login` or `npm whoami` authenticates the
-maintainer CLI only. It does not configure GitHub OIDC, create packages, or set
-package-level trusted publishers.
+Each publish was conditional on its matching preflight. Do not republish an
+existing `0.7.0` version. Trusted Publisher configuration remains a separate
+setting for future OIDC releases and cannot be inferred from the bootstrap.
 
-## Publication prerequisites
+## Publication record
 
-A real release or deployment is a separate, explicitly authorized step:
+All ten public `0.7.0` package publish commands were accepted by npm under
+`latest`.
 
-1. Confirm the local maintainer authentication separately by running
-   `npm whoami`; the preparation session got HTTP 401 and did not retry or
-   perform login. Local credentials do not authorize the GitHub OIDC workflow.
-2. Bootstrap each absent package name with the authorized, preflighted
-   maintainer path in [Initial publication for absent package
-   names](#initial-publication-for-absent-package-names). Never republish a
-   version that already exists.
-3. Configure a per-package npm Trusted Publisher for the `Syndroo/syndroo`
-   `release.yml` workflow after each package exists. Do not infer OIDC or
-   package-level trust from a local login.
-4. Merge a reviewed commit and create the matching `v0.7.0` release. Then set
-   the repository variable `SYNDROO_PUBLISH_ON_RELEASE=true`, or dispatch the
-   existing release workflow with `mode: publish`. The workflow uses OIDC; no
-   long-lived npm token belongs in repository secrets for this path.
-5. Verify every public package and the seven-package installation from the
-   public registry. Do not report a partial or prepared train as released.
-6. A user-owned deployment project from `syndroo server init`. The Worker reads its
+- All ten public versions, `latest` tags, and artifact integrity values were verified.
+- A clean seven-package public installation passed; public Server init and doctor also passed.
+- Trusted Publisher settings and OIDC automation are separate from the accepted
+  initial publication and must be checked before a future release.
+- A user-owned deployment project comes from `syndroo server init`. The Worker reads its
    bindings (`DB`, `WORK_QUEUE`, `QUEUE_NAME`, `DLQ_NAME`, `API_BEARER`,
    `SECRET_KEY`, `RUNTIME_KEY`, `SCOPE`, `PUBLIC_FETCH_STRICT`) at request time;
    the deployment must also set Wrangler's `global_fetch_strictly_public` flag.
@@ -191,7 +169,7 @@ A real release or deployment is a separate, explicitly authorized step:
    CLI validates these values, derives an ignored effective config, creates
    missing D1/queues, and deploys with project-local Wrangler. No generated or
    root deployment has been made, and no real secret has been uploaded.
-7. For the self-hosted server, the runtime options in
+- For the self-hosted server, the runtime options in
    [remote-compatibility.md](remote-compatibility.md): a Bearer secret, a state
    path, a secrets path, a secret-store key, and a provider composition.
 
@@ -215,9 +193,9 @@ The OIDC workflow cannot perform a package name's first publish; absent names
 must use the preflighted maintainer bootstrap above and receive package-level
 Trusted Publisher settings before automation is used.
 
-The product commit before these release-preparation changes has successful
-GitHub Actions evidence. The dirty release preparation still requires its own CI
-run; local command results do not stand in for that run.
+Release-preparation commit
+`c656b5ec999bb8363e0f63451df492b825d4ba2f` has successful Linux and macOS
+GitHub Actions evidence. This documentation update requires its own checks.
 
 ## What is not verified
 
@@ -225,11 +203,7 @@ run; local command results do not stand in for that run.
   account. The five providers are fixture-tested against recorded API evidence.
 - **Deployment**: no Worker or server has been deployed from this tree, and no
   real GitHub environment, Meta callback, or Threads account has been configured.
-- **Public-registry installation**: the `0.7.0` train is not published. Read-only
-  checks at preparation time found the public CLI only at `0.4.0-rc.1` and no
-  `@syndroo/cloudflare` package. Local packed artifact proofs do not establish
-  public availability.
-- **Platform matrix**: this checkout has run on Node.js 24.19.0 only.
+- **Platform matrix**: Linux/macOS CI passed on Node.js 24; public installation also passed locally on Node.js 26.7.0. Other platforms remain unverified.
 - **LinkedIn version**: `LINKEDIN_VERSION` (`202601`) is a pinned package
   constant awaiting re-verification against LinkedIn's supported versions.
 - **Threads**: publishing uses a single `auto_publish_text=true` call; the
