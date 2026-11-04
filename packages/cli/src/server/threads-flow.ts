@@ -620,7 +620,10 @@ export async function runThreadsPublish(options: PublishOptions): Promise<Publis
   const prepare: PrepareRequest = {
     type: "prepare",
     content: { text: options.text },
-    targets: [{ provider: "threads", connection: connectionId }],
+    // Threads freezes provider options rather than shared content.
+    targets: [
+      { provider: "threads", connection: connectionId, options: { text: options.text } },
+    ],
   };
   const preparedOrReplayed = await options.client.publish(prepare, {
     idempotencyKey: requestId,
