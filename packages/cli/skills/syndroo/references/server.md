@@ -95,6 +95,20 @@ deployments to use the verified stored account. If the user supplies `--account`
 set `CLOUDFLARE_ACCOUNT_ID`, or configure Wrangler `account_id`, it must resolve
 to the same recorded account.
 
+If the account cannot be used, `SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED` reports
+it as a selection problem, not an authentication failure. Run the project-local
+Wrangler and choose an account from its output:
+
+```bash
+./node_modules/.bin/wrangler whoami
+syndroo server deploy --yes --account <ACCOUNT_ID>
+```
+
+An account ID is not a member or user ID, and `--account` accepts the value
+verbatim. Retry the login only when `whoami` itself reports that the session is
+not signed in. A genuine authorization refusal keeps its own
+`SERVER_DEPLOY_CLOUDFLARE_AUTH_*` or `SERVER_DEPLOY_AUTH_OR_PERMISSION` code.
+
 The first deployment uses Wrangler's existing login flow. Let the user complete
 browser authentication; do not ask for a token in chat. Deployment preflights
 the project and pinned package versions, verifies Cloudflare identity and remote
@@ -126,12 +140,128 @@ never generate replacement keys. This version has no key rotation or automatic
 token refresh.
 
 If a deploy was interrupted, preserve the reported operation ID, resources, and
-machine receipt. Rerun the same project. A retained receipt may complete only
-the matching pending operation after its Worker tag, active version, and target
-are verified. Supply `--recover` only with user-verified nonsecret identifiers to
-reconcile ownership; explicit Worker evidence establishes a baseline for a new
-deploy and does not fabricate completion. Report safe failure details unchanged
-to the caller.
+machine receipt. The JSON `details.evidence` is diagnostic only:
+
+- `stage` is `deploy` (the Wrangler subprocess) or `verification` (retained
+  evidence).
+- `processStatus` / `processExitCode` separate a normal exit, a timeout, an
+  output-limit stop, and a spawn failure. A timeout is not a rejection.
+- `receipt` is `complete`, `missing` (absent or empty), `unreadable`, `invalid`
+  (bad JSON or invalid UTF-8), `incomplete`, `mismatched_worker`, or
+  `target_mismatch`. `receiptRetained` says a receipt file was retained; it
+  never means the file is complete, usable, or proof of publication.
+- A malformed or oversized receipt stays unusable evidence: it is never
+  replacement-decoded or treated as a record, an ordinary rerun still fails
+  closed, and only independently verified recovery can continue.
+- No raw stdout, stderr, path, or secret is included.
+
+Follow the reported `nextAction`, not a generic remedy:
+
+| `nextAction` | What to do |
+| --- | --- |
+| `RETRY_DEPLOY` | Retry the deployment after checking the reported failure. When `evidence.stage` is `deploy` and `processStatus` is `spawn_error`, the subprocess never started: fix the local install first. |
+| `RERUN_DEPLOY_TO_RECONCILE` | Rerun the same project. A `complete` receipt may let that rerun reconcile without a new deploy; a `missing`, `unreadable`, `invalid`, or `mismatched_worker` receipt usually makes the rerun ask for explicit evidence. |
+| `PROVIDE_DEPLOY_RECOVERY` | Obtain verified evidence as below, then rerun with `--recover`. |
+
+### Obtain recovery evidence (read-only)
+
+Do this only when `nextAction` is `PROVIDE_DEPLOY_RECOVERY`. Use the deployment's
+verified account ID and Worker name, the project-local Wrangler, and the runtime
+you selected for the project; a bare `wrangler` may be a different installation.
+Set `CLOUDFLARE_ACCOUNT_ID` to that verified account for each inspection command,
+and make sure the project's configured `account_id` agrees. Nothing here deploys,
+mutates, or writes state, and none of it is proof of publication.
+
+1. The Worker tag is **not** returned by `deployments list` or `versions view`.
+   Read it from the account-scoped Workers service metadata. Run from the server
+   project and replace `<ACCOUNT_ID>` and `<WORKER_NAME>`:
+
+```bash
+node --input-type=module -e '
+import { execFileSync } from "node:child_process";
+try {
+  const accountId = "<ACCOUNT_ID>";
+  const workerName = "<WORKER_NAME>";
+  const auth = JSON.parse(
+    execFileSync("./node_modules/.bin/wrangler", ["auth", "token", "--json"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      maxBuffer: 65_536,
+    }),
+  );
+  const token = auth?.token;
+  if (typeof token !== "string" || token.length === 0) {
+    throw new Error("unusable auth");
+  }
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+      `/workers/services/${encodeURIComponent(workerName)}`,
+    { headers: { Authorization: `Bearer ${token}` }, redirect: "error" },
+  );
+  const body = await response.json().catch(() => null);
+  const tag = body?.success === true
+    ? body?.result?.default_environment?.script?.tag
+    : undefined;
+  if (
+    !response.ok ||
+    typeof tag !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(tag)
+  ) {
+    throw new Error("unusable tag");
+  }
+  process.stdout.write(`${tag}\n`);
+} catch {
+  console.error(
+    "Recovery evidence failed. Verify the account, Worker, and Wrangler login, then retry.",
+  );
+  process.exitCode = 1;
+}
+'
+```
+
+   `execFileSync` captures the child's output with `stdio: ["ignore","pipe","pipe"]`,
+   so a failed login cannot leak its stderr. The token stays in memory and is used
+   only in the request header. Never put it in argv, an environment variable, a
+   log, or chat, and do not paste the response body. Every failure path prints the
+   one fixed message and exits nonzero; only a validated tag reaches stdout.
+
+2. Read the active version from the latest deployment, then inspect it, pinned to
+   the same verified account:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID=<VERIFIED_ACCOUNT_ID> \
+  ./node_modules/.bin/wrangler deployments list --name <WORKER_NAME> --json
+CLOUDFLARE_ACCOUNT_ID=<VERIFIED_ACCOUNT_ID> \
+  ./node_modules/.bin/wrangler versions view <ACTIVE_VERSION_ID> --name <WORKER_NAME> --json
+```
+
+   Take the `version_id` whose `percentage` is greater than zero in the most
+   recent deployment. Confirm the reported version belongs to this Worker, then
+   compare the bindings Wrangler reports for it with the project's D1 database,
+   queues, and recorded origin context. Check the public target separately from
+   the Worker's Domains & Routes settings in the Cloudflare dashboard for
+   the same account and Worker; `versions view` does not report the target or the
+   Worker tag. None of these reads establishes ownership on their own: the CLI
+   still enforces account, project, Worker, active-version, and target checks.
+
+3. Supply independently verified identifiers. For this Worker-evidence scenario
+   the minimal shape is exactly these two fields:
+
+```bash
+printf '%s\n' '{"workerTag":"<VERIFIED_WORKER_TAG>","versionId":"<VERIFIED_VERSION_ID>"}' \
+  | syndroo server deploy --yes --recover -
+```
+
+   `--recover` also accepts `d1Id` and `queues` for resource recovery, each still
+   verified remotely against the recorded project. `--recover` reads a file or
+   stdin, never JSON on argv.
+
+Explicit recovery establishes a baseline only. Ownership checks are unchanged,
+and the command then deploys a new version, which needs the same explicit
+deployment authorization as any other deploy. Never infer evidence from the
+Worker name or a `/health` response, and report safe failure details unchanged to
+the caller.
 
 ## Threads OAuth
 

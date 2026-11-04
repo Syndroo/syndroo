@@ -78,6 +78,49 @@ path before reading anything into it.
   builds with lifecycle scripts disabled so a stale or incomplete artifact
   cannot pass by rebuilding itself during the test.
 
+## Server command boundary regressions
+
+Three server-boundary behaviours are pinned by fixture tests, not live calls:
+
+- **Documented project default.** `packages/cli/test/server-cli.test.ts` runs
+  `server connect threads --app-id ... --json` from inside an initialized project
+  with no `--project` and requires the command to reach its own secret
+  requirement instead of a project-selection error. A second case keeps explicit
+  `--project` resolution working.
+- **Account guidance.** `server-cli.test.ts` asserts that
+  `SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED` renders the fixed guidance (run the
+  project-local `./node_modules/.bin/wrangler whoami`, choose an ACCOUNT ID, an
+  account ID is not a member ID, retry login only if the session failed) and that
+  hostile "available account" values never reach stdout or stderr. Account
+  selection itself keeps its existing `cloudflare.ts` behaviour and tests.
+- **Deploy evidence classification.** `server-deploy.test.ts` separates a normal
+  exit, a timeout, a spawn failure, a nonzero exit, an absent receipt, an empty
+  receipt, invalid UTF-8, unreadable private state, invalid or incomplete JSON, a
+  wrong Worker, and a wrong target. It also asserts an absent receipt is never
+  reported as retained and that a receipt alone never promotes a deployment.
+  A malformed (invalid UTF-8) receipt is exercised end to end: the first attempt
+  reports `invalid` evidence after the simulated remote upload, an ordinary rerun
+  fails closed without deploying, and verified recovery deploys a fresh version.
+  A receipt that cannot be read keeps `SERVER_DEPLOY_RECEIPT_UNAVAILABLE` instead
+  of being downgraded to unusable evidence. `server-cli.test.ts` checks that human
+  guidance follows `nextAction` even when no evidence is present: generic retry
+  without spawn evidence, reconciliation for `RERUN_DEPLOY_TO_RECONCILE` (and no
+  `--recover` suggestion for a complete receipt), and the exact
+  `{"workerTag":...,"versionId":...}` placeholder document only for
+  `PROVIDE_DEPLOY_RECOVERY`. Hostile receipt, status and exit-code values are
+  dropped by the renderer allowlist.
+
+The read-only recovery snippet in `references/server.md` was checked during this
+change with an isolated offline harness. It exercised six cases — success, auth subprocess failure, invalid auth JSON, HTTP error,
+invalid tag, and a thrown fetch — against fake `execFileSync`, `fetch` and
+`process`, without authentication or network access. It requires the explicit
+`stdio: ["ignore","pipe","pipe"]` capture and that every failure prints only the
+fixed message with a nonzero exit. This was a manual verification, not a
+repository test command.
+
+These are controlled runners, fetch fixtures and temporary private state roots.
+No Cloudflare account, Worker, Wrangler login or real deployment was used.
+
 ## Bundles
 
 Three artifacts inline private `@syndroo/core` and are checked by

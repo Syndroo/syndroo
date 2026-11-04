@@ -21,8 +21,53 @@ approval token; nothing is sent until a separate `execute` carries that token.
 
 The repository prepares a `0.7.0` npm release; registry availability is not
 implied by this file. If the CLI is missing and the user asks you to install it,
-verify Node.js `>=24.19.0`, then install the CLI, provider contract, and all five
-official providers in one pinned command:
+establish the context before installing:
+
+1. Change to the project that will run Syndroo. Never install from a chat or
+home directory just because that is the current one.
+2. Identify the project's runtime manager (mise, asdf, Volta, nvm, Homebrew,
+system Node). Use the one the project declares; do not assume Homebrew and do not
+require mise.
+3. Read the runtime in effect and the global prefix, and report the paths if
+anything looks wrong:
+
+```bash
+command -v node npm
+node --version                 # must be >=24.19.0
+npm root --global
+npm prefix --global
+```
+
+4. Install with that same runtime, and use it for the version check, the Skill
+lookup, and all later commands. With mise:
+
+```bash
+# Run the complete npm install command below prefixed with mise exec --.
+mise exec -- syndroo --version
+mise exec -- npm root --global
+mise which node
+mise which npm            # real paths behind the shims
+```
+
+5. Verify this shell resolves an executable for the install you just made. A
+manager shim is expected, so check the resolved target rather than comparing
+pathnames:
+
+```bash
+command -v syndroo
+syndroo --version
+mise which syndroo             # when the manager reports command paths
+```
+
+If `syndroo` is not found, activate the project runtime (`mise exec --`,
+`mise activate`, or the manager's equivalent) or run the install once with the
+manager you intend to keep using. Several Node installations may coexist, for
+example Homebrew plus a project-local mise version; `command -v node` shows which
+one wins. Do not add a second global install under a different Node, and do not
+prepend a package-manager bin directory to `PATH` to work around a shim.
+
+Install the CLI, provider contract, and all five official providers in one pinned
+command:
 
 ```bash
 npm install --global \
@@ -33,13 +78,20 @@ npm install --global \
   @syndroo/provider-linkedin@0.7.0 \
   @syndroo/provider-mastodon@0.7.0 \
   @syndroo/provider-devto@0.7.0
+syndroo --version
 ```
 
-After installation, locate this Skill with
-`npm root --global` and read
-`@syndroo/cli/skills/syndroo/SKILL.md`. Do not claim that a particular Agent
-client automatically discovered it. Stop and report the registry error if the
-packages are unavailable; do not substitute an unpinned source build.
+After installation, locate this Skill with the same `npm` and read
+`@syndroo/cli/skills/syndroo/SKILL.md`:
+
+```bash
+skill_root="$(npm root --global)/@syndroo/cli/skills/syndroo"
+test -f "$skill_root/SKILL.md"
+```
+
+Do not claim that a particular Agent client automatically discovered it. Stop and
+report the registry error if the packages are unavailable; do not substitute an
+unpinned source build.
 
 On a terminal the preview is a short summary — at most three lines per target —
 and the prompt is `Publish to N accounts? [y/N/v]`: `y`/`yes` executes; `n`/`no`,

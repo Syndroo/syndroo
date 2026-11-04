@@ -7,7 +7,13 @@ import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { CliIo } from "../src/io.js";
+import { CliError } from "../src/cli-error.js";
+import { EXIT_CODE } from "../src/exit-codes.js";
 import { run } from "../src/main.js";
+import {
+  ensureDeploymentCredentials,
+  saveDeploymentState,
+} from "../src/server/deployment-state.js";
 import { matchingGithubRemote } from "../src/server/init.js";
 import type {
   ProcessRequest,
@@ -203,11 +209,13 @@ async function invoke(
   cwd: string,
   argv: readonly string[],
   runner: ProcessRunner,
+  stateRoot?: string,
 ): Promise<{ exit: number; stdout: string; stderr: string }> {
   const streams = capture(cwd);
   const exit = await run(argv, streams.io, {}, {
     processRunner: runner,
     randomUUID: () => "f0c4f706-25a4-4df7-a84c-3b247c64abfe",
+    ...(stateRoot === undefined ? {} : { stateRoot }),
   });
   return { exit, stdout: streams.stdout(), stderr: streams.stderr() };
 }
@@ -258,6 +266,118 @@ function envelope(stdout: string): Record<string, any> {
   const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
   expect(lines).toHaveLength(1);
   return JSON.parse(lines[0] as string) as Record<string, any>;
+}
+
+const THREADS_PROJECT_ID = "f0c4f706-25a4-4df7-a84c-3b247c64abfe";
+
+/**
+ * Write a project whose recorded deployment is verified for the configured
+ * origin, so `connect threads` reaches its own contract checks instead of
+ * failing on the project selection.
+ */
+async function writeThreadsProject(root: string): Promise<{
+  readonly project: string;
+  readonly stateRoot: string;
+}> {
+  const project = path.join(root, "deployment");
+  await fs.mkdir(project, { recursive: true });
+  await fs.writeFile(
+    path.join(project, "syndroo.config.jsonc"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        projectId: THREADS_PROJECT_ID,
+        scope: "fixture",
+        publicOrigin: "https://threads.example",
+        threads: { appId: "123456789", connectionId: "conn_fixture" },
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  await fs.writeFile(
+    path.join(project, "package.json"),
+    `${JSON.stringify({
+      private: true,
+      dependencies: {
+        "@syndroo/cli": "0.7.0",
+        "@syndroo/cloudflare": "0.7.0",
+      },
+      devDependencies: { wrangler: "4.132.0" },
+      syndroo: { generated: true, server: 1 },
+    }, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(project, "wrangler.jsonc"),
+    `{
+  "name": "fixture-worker",
+  "main": "./node_modules/@syndroo/cloudflare/dist/worker.js",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "d1_databases": [{"binding":"DB","database_name":"fixture-db"}],
+  "queues": {
+    "producers": [{"binding":"WORK_QUEUE","queue":"fixture-work"}],
+    "consumers": [{"queue":"fixture-work"},{"queue":"fixture-dead"}]
+  },
+  "vars": {"PUBLIC_FETCH_STRICT":"enabled"},
+  "secrets": {"required":["API_BEARER","SECRET_KEY","RUNTIME_KEY"]}
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(project, ".gitignore"),
+    "node_modules/\nwrangler.effective.jsonc\n.syndroo/\n",
+  );
+  await fs.mkdir(path.join(project, "node_modules", ".bin"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await fs.mkdir(path.join(project, "node_modules", "wrangler"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await fs.writeFile(
+    path.join(project, "node_modules", "wrangler", "package.json"),
+    '{"name":"wrangler","version":"4.132.0"}\n',
+  );
+  await fs.writeFile(
+    path.join(project, "node_modules", ".bin", "wrangler"),
+    "#!/usr/bin/env node\n",
+    { mode: 0o700 },
+  );
+  const stateRoot = path.join(root, "threads-state");
+  await saveDeploymentState(stateRoot, {
+    version: 1,
+    projectId: THREADS_PROJECT_ID,
+    accountId: "account_fixture",
+    workerName: "fixture-worker",
+    step: "deployed",
+    operationId: "deploy_fixture",
+    resources: {
+      d1: { name: "fixture-db", id: "d1_fixture" },
+      queues: [
+        { name: "fixture-work", id: "queue_work" },
+        { name: "fixture-dead", id: "queue_dead" },
+      ],
+    },
+    worker: { name: "fixture-worker", tag: "worker_tag_fixture" },
+    origin: "https://threads.example",
+    versionId: "version_fixture",
+    updatedAt: "2026-11-02T00:00:00.000Z",
+  });
+  await ensureDeploymentCredentials({
+    stateRoot,
+    projectId: THREADS_PROJECT_ID,
+    accountId: "account_fixture",
+    workerName: "fixture-worker",
+    newDeployment: false,
+    supplied: {
+      API_BEARER: "admin.fixture-token-that-is-at-least-thirty-two",
+      SECRET_KEY: "a".repeat(64),
+      RUNTIME_KEY: "b".repeat(64),
+    },
+  });
+  return { project, stateRoot };
 }
 
 afterEach(async () => {
@@ -1145,7 +1265,268 @@ describe("server init", () => {
   });
 });
 
+async function deployFailure(failure: {
+  readonly code: string;
+  readonly details: Record<string, unknown>;
+}): Promise<{ exit: number; stdout: string; stderr: string }> {
+  const cwd = await root();
+  const { project, stateRoot } = await writeThreadsProject(cwd);
+  const streams = capture(project);
+  const exit = await run(
+    ["server", "--project", project, "deploy", "--yes", "--json"],
+    streams.io,
+    {},
+    {
+      stateRoot,
+      runDeploy: async () => {
+        throw new CliError("deploy", {
+          code: failure.code,
+          exitCode: EXIT_CODE.USAGE,
+          details: failure.details,
+        });
+      },
+    },
+  );
+  return { exit, stdout: streams.stdout(), stderr: streams.stderr() };
+}
+
+describe("server account guidance", () => {
+  it("names the project-local whoami check and account-versus-member distinction", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED",
+      details: { nextAction: "SELECT_CLOUDFLARE_ACCOUNT" },
+    });
+
+    expect(run.exit).toBe(2);
+    expect(envelope(run.stdout)).toMatchObject({
+      operation: "server",
+      ok: false,
+      error: {
+        code: "SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED",
+        details: { subcommand: "deploy", nextAction: "SELECT_CLOUDFLARE_ACCOUNT" },
+      },
+    });
+    expect(envelope(run.stdout)["error"]["details"]).not.toHaveProperty("account");
+    expect(run.stderr).toContain("./node_modules/.bin/wrangler whoami");
+    expect(run.stderr).toContain("--account <ACCOUNT_ID>");
+    expect(run.stderr).toContain("not a member ID");
+    expect(run.stderr).toContain(
+      "retry the login only if that check reports the session itself failed",
+    );
+  });
+
+  it("keeps raw account output out of the diagnostic", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED",
+      details: {
+        nextAction: "SELECT_CLOUDFLARE_ACCOUNT",
+        account: {
+          access: "account_inaccessible",
+          idFormMismatch: false,
+          available: [{ id: "RAW-ACCOUNT-ID-CANARY", name: "RAW-LABEL-CANARY" }],
+          availableCount: 1,
+        },
+      },
+    });
+
+    expect(run.stdout).not.toContain("RAW-ACCOUNT-ID-CANARY");
+    expect(run.stderr).not.toContain("RAW-ACCOUNT-ID-CANARY");
+    expect(run.stdout).not.toContain("RAW-LABEL-CANARY");
+    expect(run.stderr).not.toContain("RAW-LABEL-CANARY");
+  });
+});
+
+describe("server deploy evidence diagnostics", () => {
+  it("uses placeholders and the canonical procedure when recovery evidence is required", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_RECOVERY_REQUIRED",
+      details: {
+        nextAction: "PROVIDE_DEPLOY_RECOVERY",
+        failedStep: "deploy-pending",
+        evidence: {
+          stage: "verification",
+          receipt: "missing",
+          receiptRetained: false,
+          expectedWorkerTag: "unverified-input-canary",
+          expectedVersionId: "unverified-input-canary",
+        },
+      },
+    });
+
+    expect(run.exit).toBe(2);
+    expect(envelope(run.stdout)).toMatchObject({
+      operation: "server",
+      ok: false,
+      error: {
+        code: "SERVER_DEPLOY_RECOVERY_REQUIRED",
+        details: {
+          subcommand: "deploy",
+          evidence: { stage: "verification", receipt: "missing" },
+        },
+      },
+    });
+    expect(run.stderr).toContain(
+      '{"workerTag":"<VERIFIED_WORKER_TAG>","versionId":"<VERIFIED_VERSION_ID>"}',
+    );
+    expect(run.stderr).toContain("references/server.md");
+    expect(run.stderr).toContain("never adopt evidence from the Worker name");
+    // Unverified --recover input is not echoed back as if it were evidence.
+    expect(run.stderr).not.toContain("unverified-input-canary");
+    expect(run.stdout).not.toContain("unverified-input-canary");
+  });
+
+  it("prescribes reconciliation, not recovery, for a complete receipt", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        nextAction: "RERUN_DEPLOY_TO_RECONCILE",
+        failedStep: "deploy-pending",
+        receiptRetained: true,
+        evidence: {
+          stage: "deploy",
+          processStatus: "timed_out",
+          receipt: "complete",
+          receiptRetained: true,
+        },
+      },
+    });
+
+    expect(run.stderr).toContain("outcome is unknown");
+    expect(run.stderr).toContain("timed out");
+    expect(run.stderr).toContain("rerun the same project to reconcile");
+    expect(run.stderr).not.toContain("--recover");
+    expect(run.stderr).not.toContain("deploys a new version");
+  });
+
+  it("explains that a receipt-less rerun may then require explicit evidence", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        nextAction: "RERUN_DEPLOY_TO_RECONCILE",
+        evidence: {
+          stage: "deploy",
+          processStatus: "timed_out",
+          receipt: "missing",
+          receiptRetained: false,
+        },
+      },
+    });
+
+    expect(run.stderr).toContain("holds no usable record");
+    expect(run.stderr).toContain("that rerun asks for explicit recovery evidence");
+    expect(run.stderr).not.toContain("--recover <path|->");
+  });
+
+  it("tells the caller to retry the start when the deploy never spawned", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_FAILED",
+      details: {
+        nextAction: "RETRY_DEPLOY",
+        evidence: { stage: "deploy", processStatus: "spawn_error" },
+      },
+    });
+
+    expect(run.stderr).toContain("could not be started");
+    expect(run.stderr).toContain("fix the local install and retry");
+    expect(run.stderr).not.toContain("--recover");
+  });
+
+  it("still explains recovery when the failure carries no evidence", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_RECEIPT_INVALID",
+      details: { nextAction: "PROVIDE_DEPLOY_RECOVERY", failedStep: "deploy-pending" },
+    });
+
+    expect(run.stderr).toContain("is not valid machine output");
+    expect(run.stderr).toContain(
+      '{"workerTag":"<VERIFIED_WORKER_TAG>","versionId":"<VERIFIED_VERSION_ID>"}',
+    );
+    expect(run.stderr).toContain("references/server.md");
+    expect(envelope(run.stdout)["error"]["details"]).not.toHaveProperty("evidence");
+  });
+
+  it("keeps retry guidance generic without spawn-failure evidence", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_FAILED",
+      details: { nextAction: "RETRY_DEPLOY" },
+    });
+
+    expect(run.stderr).toContain("retry the deployment after checking the reported failure");
+    expect(run.stderr).not.toContain("did not start");
+  });
+
+  it("allowlists evidence and never prints hostile raw values", async () => {
+    const run = await deployFailure({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        nextAction: "RERUN_DEPLOY_TO_RECONCILE",
+        evidence: {
+          stage: "deploy",
+          receipt: "RAW-EVIDENCE-CANARY; rm -rf /",
+          processStatus: "RAW-STATUS-CANARY",
+          processExitCode: "RAW-EXIT-CANARY",
+        },
+      },
+    });
+
+    expect(run.stderr).not.toContain("RAW-EVIDENCE-CANARY");
+    expect(run.stderr).not.toContain("RAW-STATUS-CANARY");
+    expect(run.stderr).not.toContain("RAW-EXIT-CANARY");
+    expect(run.stderr).not.toContain("rm -rf");
+    expect(envelope(run.stdout)["error"]["details"].evidence).toEqual({
+      stage: "deploy",
+    });
+  });
+});
+
 describe("server command boundary", () => {
+  it("uses the current directory for nested commands when --project is omitted", async () => {
+    const cwd = await root();
+    const { project, stateRoot } = await writeThreadsProject(cwd);
+
+    // The documented form: run inside an initialized project without --project.
+    const run = await invoke(
+      project,
+      ["server", "connect", "threads", "--app-id", "123456789", "--json"],
+      defaultRunner(),
+      stateRoot,
+    );
+
+    expect(run.exit).toBe(2);
+    expect(envelope(run.stdout)).toMatchObject({
+      protocolVersion: 1,
+      operation: "server",
+      ok: false,
+      error: {
+        code: "SERVER_THREADS_SECRET_REQUIRED",
+        details: {
+          subcommand: "connect",
+          nextAction: "PROVIDE_THREADS_APP_SECRET",
+        },
+      },
+    });
+  });
+
+  it("still resolves an explicit project directory", async () => {
+    const cwd = await root();
+    const { project, stateRoot } = await writeThreadsProject(cwd);
+
+    const run = await invoke(
+      cwd,
+      [
+        "server", "--project", project, "connect", "threads",
+        "--app-id", "123456789", "--json",
+      ],
+      defaultRunner(),
+      stateRoot,
+    );
+
+    expect(run.exit).toBe(2);
+    expect(envelope(run.stdout)).toMatchObject({
+      error: { code: "SERVER_THREADS_SECRET_REQUIRED" },
+    });
+  });
+
   it("emits exactly one server envelope for an invalid server option", async () => {
     const cwd = await root();
     const run = await invoke(cwd, ["server", "frobnicate", "--json"], defaultRunner());

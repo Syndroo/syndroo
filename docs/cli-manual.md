@@ -13,9 +13,15 @@ page is checked against the built `dist/bin.js`.
 
 ## Install and run
 
-After publication, install the complete seven-package local CLI set:
+After publication, install the complete seven-package local CLI set with the
+runtime and project context you intend to keep using:
 
 ```bash
+cd /path/to/project
+command -v node npm
+node --version                 # must be >=24.19.0
+npm root --global
+npm prefix --global
 npm install --global \
   @syndroo/cli@0.7.0 \
   @syndroo/provider-sdk@0.7.0 \
@@ -24,8 +30,20 @@ npm install --global \
   @syndroo/provider-linkedin@0.7.0 \
   @syndroo/provider-mastodon@0.7.0 \
   @syndroo/provider-devto@0.7.0
+command -v syndroo
 syndroo --version
 ```
+
+Use the same runtime for the install, `npm root --global`, `syndroo --version`,
+the Skill lookup, and later commands. With mise that means wrapping each step,
+for example `mise exec -- npm install --global ...` and
+`mise exec -- syndroo --version`; `mise which node` and `mise which npm` show the real paths
+behind its shims. Other managers work the same way with their own activation.
+Manager shims are expected, so verify that `command -v syndroo` resolves to the
+installation you just made rather than comparing pathnames. If it does not
+resolve, activate the project runtime or run the install once with the manager you
+intend to keep using; do not add a second global install under a different Node
+and do not prepend a package-manager bin directory to `PATH`.
 
 `@syndroo/cli` requires Node.js `>=24.19.0`. The bundle inlines private
 `@syndroo/core` and `@syndroo/provider-sdk`, so it needs no unpublished package
@@ -99,10 +117,62 @@ never regenerated or rotated merely because the local store is missing. This
 release has no automatic token refresh or key rotation.
 
 After an interrupted deploy, preserve the reported operation ID, confirmed
-resources, and private machine receipt, then rerun the same project. `--recover`
-accepts user-verified nonsecret resource IDs and Worker evidence; the CLI still
-checks account, names, tags, active version, and deploy target. Do not hand-edit
-state or adopt same-name resources without verified ownership.
+resources, and private machine receipt. Do not hand-edit state or adopt same-name
+resources without verified ownership. The failure envelope's `details.evidence`
+is diagnostic:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `stage` | `deploy`, `verification` | Which phase could not be confirmed |
+| `processStatus` | `exited`, `timed_out`, `output_limit`, `spawn_error` | How the Wrangler subprocess ended |
+| `processExitCode` | integer or `null` | Exit code when one exists |
+| `receipt` | `complete`, `missing`, `unreadable`, `invalid`, `incomplete`, `mismatched_worker`, `target_mismatch` | What the machine receipt proves |
+| `receiptRetained` | boolean | A receipt file was retained; never completeness or usability |
+
+An unknown outcome is not a failed deployment, and a timeout is not a rejection.
+Details are allowlisted: no raw stdout, stderr, path, or secret is rendered, in
+JSON or in the human diagnostic. Follow `details.nextAction`:
+
+| `nextAction` | Effect |
+| --- | --- |
+| `RETRY_DEPLOY` | Retry after checking the reported failure. With `stage: deploy` and `processStatus: spawn_error` the subprocess never started, so fix the local install first. |
+| `RERUN_DEPLOY_TO_RECONCILE` | Rerun the same project. A complete receipt may reconcile without a new deploy; a missing or invalid one usually makes the rerun ask for explicit evidence. |
+| `PROVIDE_DEPLOY_RECOVERY` | Supply verified evidence with `--recover`, as below. |
+
+`--recover` accepts a nonsecret JSON file or `-` for stdin; the value is never
+JSON on argv:
+
+```bash
+printf '%s\n' '{"workerTag":"VERIFIED_WORKER_TAG","versionId":"VERIFIED_VERSION_ID"}' \
+  | syndroo server deploy --yes --recover -
+```
+
+Both identifiers must be obtained read-only from the verified account with the
+project-local Wrangler, pinning `CLOUDFLARE_ACCOUNT_ID` for each command. The
+Worker tag comes from the Cloudflare Workers service metadata
+(`result.default_environment.script.tag`), not from `deployments list` or
+`versions view`; the active version comes from the latest deployment. Verify its
+bindings against the project's D1 database, queues, and recorded origin, and
+check the public target through that Worker's own read-only Domains & Routes
+metadata; `versions view` returns neither the target nor the Worker tag. The
+minimal Worker-recovery shape is the two fields above, while `--recover` also
+accepts `d1Id` and `queues` for resource recovery. The exact procedure, including
+a token-safe Node snippet, is the canonical one in
+[`packages/cli/skills/syndroo/references/server.md`](../packages/cli/skills/syndroo/references/server.md).
+The Worker name or a `/health` response is never sufficient evidence.
+
+Explicit recovery establishes the baseline only; the recorded account, project,
+and Worker ownership are still verified, and the command then deploys a new
+version under a fresh operation ID, which needs the same deployment
+authorization as any other deploy.
+
+Account selection is a separate failure from authentication. When `--account`,
+`CLOUDFLARE_ACCOUNT_ID`, or a Wrangler `account_id` cannot be used,
+`SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED` asks for an accessible account:
+run the project-local `./node_modules/.bin/wrangler whoami`, choose an ACCOUNT ID
+(not a member or user ID), and pass it with `server deploy --account <ACCOUNT_ID>`.
+Retry the login only if that check reports the session itself failed; a genuine
+authorization refusal keeps its own authentication or permission code.
 
 ### Global flags
 

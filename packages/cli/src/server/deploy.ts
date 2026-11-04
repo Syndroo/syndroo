@@ -79,6 +79,28 @@ export type ServerDeployRecovery = {
   readonly versionId?: string;
 };
 
+/**
+ * Bounded, allowlisted evidence about why a deploy attempt could not be
+ * confirmed. Every value is a fixed classification or an identifier already
+ * parsed from tool output; no raw stdout/stderr, path, or secret is carried.
+ */
+export type DeployReceiptClassification =
+  | "complete"
+  | "missing"
+  | "unreadable"
+  | "invalid"
+  | "incomplete"
+  | "mismatched_worker"
+  | "target_mismatch";
+
+export type DeployEvidence = {
+  readonly stage: "deploy" | "verification";
+  readonly processStatus?: "exited" | "timed_out" | "output_limit" | "spawn_error";
+  readonly processExitCode?: number | null;
+  readonly receiptRetained?: boolean;
+  readonly receipt?: DeployReceiptClassification;
+};
+
 export type ServerDeployResult = {
   readonly subcommand: "deploy";
   readonly status: "deployed";
@@ -789,6 +811,13 @@ async function resolveWorkerState(options: {
   readonly state: DeploymentState;
   readonly remoteTag: string | null;
   readonly receiptText: string | null;
+  /**
+   * The receipt exists but cannot be decoded or is oversized. It stays
+   * unusable evidence: it is never replacement-decoded and never promotes a
+   * deployment, but it must still be reported and must not block a caller that
+   * supplies independently verified recovery evidence.
+   */
+  readonly receiptUnusable?: boolean;
   readonly recovery: ServerDeployRecovery | undefined;
   readonly runner: ProcessRunner;
   readonly projectDirectory: string;
@@ -837,6 +866,18 @@ async function resolveWorkerState(options: {
   const receipt = options.receiptText === null
     ? null
     : tryParseDeployRecord(options.receiptText, options.workerName);
+  const evidence: DeployEvidence = {
+    stage: "verification",
+    receipt: options.receiptUnusable === true
+      ? "invalid"
+      : classifyReceipt(
+          options.receiptText,
+          options.workerName,
+          options.expectedOrigin,
+        ),
+    receiptRetained: options.receiptUnusable === true ||
+      options.receiptText !== null,
+  };
   if (receipt !== null) {
     const stale = (
       options.state.worker !== undefined &&
@@ -851,6 +892,7 @@ async function resolveWorkerState(options: {
         "SERVER_DEPLOY_RECEIPT_STALE",
         "PROVIDE_DEPLOY_RECOVERY",
         EXIT_CODE.USAGE,
+        { evidence },
       );
     }
     if (!stale) {
@@ -862,6 +904,8 @@ async function resolveWorkerState(options: {
         throw deployError(
           "SERVER_DEPLOY_TARGET_UNVERIFIED",
           "PROVIDE_DEPLOY_RECOVERY",
+          EXIT_CODE.FAILURE,
+          { evidence },
         );
       }
       await verifyWorkerEvidence({
@@ -897,6 +941,7 @@ async function resolveWorkerState(options: {
     "SERVER_DEPLOY_RECOVERY_REQUIRED",
     "PROVIDE_DEPLOY_RECOVERY",
     EXIT_CODE.USAGE,
+    { evidence },
   );
 }
 
@@ -1297,6 +1342,57 @@ function tryParseDeployRecord(
   }
 }
 
+function recordShape(
+  text: string,
+  workerName: string,
+): "invalid" | "incomplete" | "mismatched_worker" {
+  let found = false;
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(value) || value["type"] !== "deploy" || value["version"] !== 1) {
+      continue;
+    }
+    found = true;
+    if (
+      typeof value["worker_name"] === "string" &&
+      value["worker_name"] !== workerName
+    ) {
+      return "mismatched_worker";
+    }
+  }
+  return found ? "incomplete" : "invalid";
+}
+
+/**
+ * Classify a stored machine receipt for diagnostics only. A successful result
+ * is still decided by `parseDeployRecord` plus remote verification elsewhere;
+ * this never promotes evidence on its own.
+ */
+function classifyReceipt(
+  text: string | null,
+  workerName: string,
+  expectedOrigin: string,
+): DeployReceiptClassification {
+  if (text === null || text.trim().length === 0) {
+    return "missing";
+  }
+  const record = tryParseDeployRecord(text, workerName);
+  if (record === null) {
+    return recordShape(text, workerName);
+  }
+  return record.targets.some((target) => targetMatches(target, expectedOrigin))
+    ? "complete"
+    : "target_mismatch";
+}
+
 function targetMatches(target: string, origin: string): boolean {
   if (target === origin) {
     return true;
@@ -1390,21 +1486,53 @@ async function deployWithWrangler(options: {
       timeoutMs: 300_000,
       maxOutputBytes: 65_536,
     });
-    let bytes: Buffer;
+    let receiptText: string | null = null;
+    let receiptRead: "ok" | "missing" | "unreadable" | "invalid_utf8" = "ok";
     try {
-      bytes = await readPrivateReceipt(options.receiptFile);
-    } catch {
-      throw deployError(
-        "SERVER_DEPLOY_AMBIGUOUS",
-        "ENABLE_WRANGLER_MACHINE_OUTPUT",
-      );
+      const bytes = await readPrivateReceipt(options.receiptFile);
+      try {
+        receiptText = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        receiptRead = "invalid_utf8";
+      }
+    } catch (error) {
+      receiptRead = (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+        ? "missing"
+        : "unreadable";
     }
-    const record = tryParseDeployRecord(
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-      options.workerName,
-    );
+    const receipt: DeployReceiptClassification =
+      receiptRead === "invalid_utf8"
+        ? "invalid"
+        : receiptRead === "ok"
+          ? classifyReceipt(
+              receiptText,
+              options.workerName,
+              options.expectedOrigin,
+            )
+          : receiptRead;
+    const receiptRetained = receiptRead !== "missing";
+    const record = receiptText === null
+      ? null
+      : tryParseDeployRecord(receiptText, options.workerName);
+    const evidence = (
+      stage: DeployEvidence["stage"],
+    ): DeployEvidence => ({
+      stage,
+      processStatus: result.status,
+      processExitCode: result.exitCode,
+      receiptRetained,
+      receipt,
+    });
     if (result.status === "spawn_error") {
-      throw processFailure(result, "SERVER_DEPLOY_FAILED", "RETRY_DEPLOY");
+      const failure = processFailure(result, "SERVER_DEPLOY_FAILED", "RETRY_DEPLOY");
+      throw new CliError(failure.message, {
+        code: failure.code,
+        exitCode: failure.exitCode,
+        details: {
+          ...(failure.details ?? {}),
+          evidence: evidence("deploy"),
+        },
+      });
     }
     if (result.status !== "exited" || result.exitCode !== 0) {
       throw deployError(
@@ -1412,7 +1540,8 @@ async function deployWithWrangler(options: {
         "RERUN_DEPLOY_TO_RECONCILE",
         EXIT_CODE.FAILURE,
         {
-          receiptRetained: true,
+          receiptRetained,
+          evidence: evidence("deploy"),
           machineRecord: record === null
             ? null
             : {
@@ -1427,13 +1556,15 @@ async function deployWithWrangler(options: {
         "SERVER_DEPLOY_AMBIGUOUS",
         "RERUN_DEPLOY_TO_RECONCILE",
         EXIT_CODE.FAILURE,
-        { receiptRetained: true },
+        { receiptRetained, evidence: evidence("deploy") },
       );
     }
     if (!record.targets.some((target) => targetMatches(target, options.expectedOrigin))) {
       throw deployError(
         "SERVER_DEPLOY_TARGET_UNVERIFIED",
         "VERIFY_PUBLIC_ORIGIN",
+        EXIT_CODE.FAILURE,
+        { evidence: evidence("deploy") },
       );
     }
     return record;
@@ -1572,13 +1703,30 @@ async function executeDeploy(
         now(),
       );
     }
-    const receiptText = state.step === "deploy-pending"
-      ? await loadDeploymentReceipt(stateRoot, state.operationId)
-      : null;
+    let receiptText: string | null = null;
+    let receiptUnusable = false;
+    if (state.step === "deploy-pending") {
+      try {
+        receiptText = await loadDeploymentReceipt(stateRoot, state.operationId);
+      } catch (error) {
+        // Only malformed or oversized machine output becomes unusable evidence.
+        // A read failure, permission problem, symlink refusal or unavailable
+        // private root keeps its own fail-closed error.
+        if (
+          error instanceof CliError &&
+          error.code === "SERVER_DEPLOY_RECEIPT_INVALID"
+        ) {
+          receiptUnusable = true;
+        } else {
+          throw error;
+        }
+      }
+    }
     const workerResolution = await resolveWorkerState({
       state,
       remoteTag: remoteWorker?.tag ?? null,
       receiptText,
+      ...(receiptUnusable ? { receiptUnusable: true } : {}),
       recovery,
       runner: dependencies.runner,
       projectDirectory,

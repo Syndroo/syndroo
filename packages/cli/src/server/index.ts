@@ -123,10 +123,7 @@ function context(
 }
 
 function projectDirectory(ctx: ServerContext): string {
-  if (ctx.projectDirectory === undefined) {
-    throw serverUsage("SERVER_PROJECT_REQUIRED", "SELECT_SERVER_PROJECT");
-  }
-  return path.resolve(ctx.io.cwd, ctx.projectDirectory);
+  return path.resolve(ctx.io.cwd, ctx.projectDirectory ?? ".");
 }
 
 function integerOption(
