@@ -14,10 +14,61 @@ The install target is the CLI, provider contract, and all five official
 providers pinned to `0.7.0` in one npm command. Check that the version is
 available before advertising it; a prepared tarball is not registry evidence.
 
+## Establish the runtime before installing
+
+Onboarding fails when the install lands in one Node installation and later
+commands resolve another, or when a chat or home directory is used instead of the
+project. Fix the context first, then install.
+
+1. `cd` to the project that will run Syndroo, and note the runtime manager it
+declares (mise, asdf, Volta, nvm, Homebrew, system Node). The examples use mise;
+use the equivalent for the manager you actually have. Do not assume Homebrew.
+2. Record the runtime that is actually in effect and the global prefix it
+installs into:
+
+```bash
+command -v node npm
+node --version                 # must be >=24.19.0
+npm --version
+npm root --global
+npm prefix --global
+```
+
+3. Use that same runtime for the install, the version check, the Skill lookup,
+and every later command. With mise:
+
+```bash
+# Run the complete npm install command below prefixed with mise exec --.
+mise exec -- syndroo --version
+mise exec -- npm root --global
+mise which node
+mise which npm            # real paths behind the shims
+```
+
+4. Verify the shell resolves an executable for the install you just made. A
+manager shim is expected, so check the resolved target instead of comparing
+pathnames:
+
+```bash
+command -v syndroo
+syndroo --version
+mise which syndroo             # when the manager reports command paths
+```
+
+If `syndroo` is not found, activate the project runtime (`mise exec --`,
+`mise activate`, or the manager's equivalent) or run the install once with the
+manager you intend to keep using. Several Node installations may coexist, for
+example Homebrew plus a project-local mise version; `command -v node` shows which
+one wins, so invoke the manager explicitly when it is not the one the project
+declares. Do not add a second global install under a different Node, and do not
+prepend a package-manager bin directory to `PATH` to work around a shim. Report
+the resolved `node`, `npm`, global root, and executable target when asking for
+help; the paths are the evidence, not the version alone.
+
 ## Install after publication
 
-Verify `node --version` reports `>=24.19.0`, then install the complete default CLI
-set:
+Verify `node --version` reports `>=24.19.0` from the project directory, then
+install the complete default CLI set:
 
 ```bash
 npm install --global \
@@ -33,9 +84,10 @@ skill_root="$(npm root --global)/@syndroo/cli/skills/syndroo"
 test -f "$skill_root/SKILL.md"
 ```
 
-Read `$skill_root/SKILL.md` and its selected reference after installation. A
-Skill file proves that guidance shipped; it does not prove that a particular
-Agent client automatically discovered or activated it.
+Read `$skill_root/SKILL.md` and its selected reference after installation, using
+the same `npm` for the lookup. A Skill file proves that guidance shipped; it does
+not prove that a particular Agent client automatically discovered or activated
+it.
 
 ## The sequence
 
@@ -143,14 +195,38 @@ separate state and credentials.
 3. Obtain authorization for this exact deployment, then run
    `syndroo server deploy --yes`. Let the user complete Wrangler's browser login.
    Omit `--account` on a rerun to use the verified stored account; explicit
-   account settings must agree with it.
-4. For Threads, register
+   account settings must agree with it. If `SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED`
+   reports that the account cannot be used, run the project-local
+   `./node_modules/.bin/wrangler whoami` and ask the user to choose an ACCOUNT ID;
+   a member or user ID is not an account ID. Retry the login only if that check
+   reports the session itself failed.
+4. If the deploy is left pending, read `details.evidence` and follow
+   `nextAction` rather than guessing: exit, timeout, output limit, and receipt
+   state (missing, unreadable, invalid, incomplete, another Worker, another
+   target) are reported separately. `RETRY_DEPLOY` means the subprocess never
+   started; `RERUN_DEPLOY_TO_RECONCILE` means rerun the same project and let a
+   complete receipt reconcile; only `PROVIDE_DEPLOY_RECOVERY` needs explicit
+   evidence. A missing or invalid receipt can make that rerun ask for it.
+
+   The canonical read-only procedure for the Worker tag and active version is in
+   the packaged Skill reference `references/server.md`; it uses the project-local
+   Wrangler pinned to the verified account, checks the public target through that
+   Worker's Domains & Routes metadata, and never the Worker name or `/health` as
+   proof. Then supply exactly the verified pair, and treat recovery as a baseline
+   that still needs deployment authorization for the new version:
+
+   ```bash
+   printf '%s\n' '{"workerTag":"VERIFIED_WORKER_TAG","versionId":"VERIFIED_VERSION_ID"}' \
+     | syndroo server deploy --yes --recover -
+   ```
+
+5. For Threads, register
    `https://<deployed-origin>/oauth/callback/threads`, then run
    `syndroo server connect threads --app-id <id>`. App Secret comes from hidden
    input, `THREADS_APP_SECRET`, or `--app-secret-stdin`; never argv or chat.
    Reuse the pending `--request-id` after uncertainty. Abandon it only with both
    `--restart` and a different explicit request ID.
-5. Continue to manual CI only when the user asks:
+6. Continue to manual CI only when the user asks:
    `syndroo server ci setup github --repo OWNER/REPO --yes`. The command creates
    a local manual workflow and scoped GitHub environment without uploading admin
    or encryption keys. It does not commit, push, dispatch, or publish. The
@@ -159,7 +235,7 @@ separate state and credentials.
    intended posts before dispatch. Use existing authorization when it already
    covers that exact push. Never add `.syndroo/`, `node_modules/`,
    `wrangler.effective.jsonc`, environment files, or private server state.
-6. A real post is a separate authorized action:
+7. A real post is a separate authorized action:
 
 ```bash
 syndroo server publish threads \

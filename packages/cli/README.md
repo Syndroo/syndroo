@@ -13,6 +13,42 @@ fixtures.
 
 ## Install and run
 
+Resolve the project directory and runtime first, then install with that runtime.
+An install into one Node installation while the project shell resolves another
+is the usual cause of a missing `syndroo`:
+
+```bash
+cd /path/to/project
+command -v node npm
+node --version                         # requires >=24.19.0
+npm root --global
+npm prefix --global
+```
+
+Any of mise, asdf, Volta, nvm, Homebrew, or a system Node can provide the
+runtime; none is assumed. Use the same one for the install, the version check,
+the Skill lookup, and later commands. With mise, for example:
+
+```bash
+# Run the complete npm install command below prefixed with mise exec --.
+mise exec -- syndroo --version
+mise which node
+mise which npm                    # real paths behind the shims
+```
+
+Manager shims are expected, so confirm the shell resolves an executable for the
+install you just made instead of comparing pathnames:
+
+```bash
+command -v syndroo
+syndroo --version
+```
+
+If it does not resolve, activate the project runtime or run the install once with
+the manager you intend to keep using. Do not add a second global install under a
+different Node, and do not prepend a package-manager bin directory to `PATH` to
+work around a shim.
+
 Once published, install the CLI with its provider contract and all five official
 providers so explicit provider discovery is complete:
 

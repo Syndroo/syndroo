@@ -33,6 +33,57 @@ failure on one surface is not a reason to switch to the other.
 
 ## Install
 
+Establish the project directory and the runtime before installing. An install
+that runs from a chat or home directory into whichever Node happens to be first
+on `PATH` can leave the intended project with no working `syndroo`.
+
+1. `cd` to the project that will use Syndroo and note the runtime manager it
+declares: mise, asdf, Volta, nvm, Homebrew, or a system Node. The examples below
+use mise; substitute the equivalent for the manager you use. Their layouts
+differ, so trust the resolved paths rather than a fixed location.
+2. Resolve the runtime that is actually in effect and the global prefix it will
+install into:
+
+```bash
+command -v node npm
+node --version                 # must be >=24.19.0
+npm --version
+npm root --global
+npm prefix --global
+```
+
+3. Install, then check and look up the Skill through that same runtime. The full
+install command is below; with mise, wrap each step so the manager chooses the
+runtime:
+
+```bash
+# Run the complete npm install command below prefixed with mise exec --.
+mise exec -- syndroo --version
+mise exec -- npm root --global
+mise which node
+mise which npm            # real paths behind the shims
+```
+
+4. Verify the shell resolves the executable you just installed. A manager shim
+is expected, so check the resolved target rather than an exact pathname:
+
+```bash
+command -v syndroo
+syndroo --version
+mise which syndroo             # when your manager reports command paths
+```
+
+If `syndroo` is not found, activate the project runtime (`mise exec --`,
+`mise activate`, or the manager's equivalent) or run the install once with the
+manager you intend to keep using. Do not add a second global install under a
+different Node, and do not prepend a package-manager bin directory to `PATH` to
+work around a shim.
+
+A machine may have several Node installations, for example Homebrew plus a
+project-local mise version. `command -v node` from the project shows which one
+wins; when it is not the manager the project declares, invoke that manager
+explicitly so the install and every later command share one runtime.
+
 Install the CLI, its provider contract, and all five official providers together:
 
 ```bash
@@ -52,7 +103,8 @@ This seven-package command is the complete default local CLI installation.
 five installed official providers through its generated trust catalog and does
 not download provider code at runtime.
 
-The CLI package also contains the Syndroo Agent Skill. Its installed path is:
+The CLI package also contains the Syndroo Agent Skill. Its installed path is,
+using the same `npm` that performed the install:
 
 ```bash
 skill_root="$(npm root --global)/@syndroo/cli/skills/syndroo"
@@ -209,6 +261,38 @@ private recovery state are ignored; account and resource IDs are not committed.
 existing Wrangler browser login unless valid project-local Cloudflare credentials
 are already available, preserves existing resources and keys, and refuses to
 adopt same-name foreign resources.
+
+Account selection is separate from authentication. If the selected account is
+not one this login can read, `SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED` asks for
+an account ID: run the project-local `./node_modules/.bin/wrangler whoami`, choose
+an ACCOUNT ID rather than a member or user ID, and pass
+`server deploy --account <ACCOUNT_ID>`. Retry the login only when that check
+reports the session itself failed.
+
+When a deploy cannot be confirmed, the JSON envelope carries allowlisted evidence
+only: `stage` (`deploy` or `verification`), `processStatus`/`processExitCode`, and
+`receipt` (`complete`, `missing`, `unreadable`, `invalid`, `incomplete`,
+`mismatched_worker`, `target_mismatch`) with a retention flag. Follow the reported
+`nextAction`: retry after checking the failure for `RETRY_DEPLOY`, rerun the same project for
+`RERUN_DEPLOY_TO_RECONCILE`, and supply verified evidence only for
+`PROVIDE_DEPLOY_RECOVERY`. A missing or invalid receipt can make that rerun ask
+for evidence; a complete receipt may reconcile without a new deploy.
+
+The exact read-only procedure for obtaining and verifying the Worker tag and
+active version is in the packaged Skill reference
+(`packages/cli/skills/syndroo/references/server.md`). It uses the project-local
+Wrangler pinned to the verified account, never the Worker name or `/health` as
+proof, and checks the public target through the Worker's own Domains & Routes
+metadata rather than `versions view`. Supply the minimal Worker-evidence pair:
+
+```bash
+printf '%s\n' '{"workerTag":"<VERIFIED_WORKER_TAG>","versionId":"<VERIFIED_VERSION_ID>"}' \
+  | syndroo server deploy --yes --recover -
+```
+
+Explicit recovery establishes a baseline only; ownership checks are unchanged and
+the command then deploys a new version under a fresh operation ID, which needs its
+own deployment authorization.
 
 Threads and CI are separate explicit steps:
 

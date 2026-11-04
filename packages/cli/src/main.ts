@@ -210,6 +210,64 @@ function safeResource(value: unknown): { name: string; id?: string } | undefined
   return { name, ...(id === undefined ? {} : { id }) };
 }
 
+const EVIDENCE_STAGE = new Set(["deploy", "verification"] as const);
+const PROCESS_STATUS = new Set([
+  "exited",
+  "timed_out",
+  "output_limit",
+  "spawn_error",
+] as const);
+const RECEIPT_CLASS = new Set([
+  "complete",
+  "missing",
+  "unreadable",
+  "invalid",
+  "incomplete",
+  "mismatched_worker",
+  "target_mismatch",
+] as const);
+
+function safeEvidence(
+  value: unknown,
+): ServerFailureDetails["evidence"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const stage = typeof record["stage"] === "string" &&
+    EVIDENCE_STAGE.has(record["stage"] as "deploy")
+    ? (record["stage"] as "deploy" | "verification")
+    : undefined;
+  if (stage === undefined) return undefined;
+  const processStatus = typeof record["processStatus"] === "string" &&
+    PROCESS_STATUS.has(record["processStatus"] as "exited")
+    ? (record["processStatus"] as
+        | "exited"
+        | "timed_out"
+        | "output_limit"
+        | "spawn_error")
+    : undefined;
+  const exitCode = record["processExitCode"];
+  const processExitCode = exitCode === null
+    ? null
+    : typeof exitCode === "number" && Number.isSafeInteger(exitCode)
+      ? exitCode
+      : undefined;
+  const receipt = typeof record["receipt"] === "string" &&
+    RECEIPT_CLASS.has(record["receipt"] as "complete")
+    ? (record["receipt"] as NonNullable<
+        ServerFailureDetails["evidence"]
+      >["receipt"])
+    : undefined;
+  return {
+    stage,
+    ...(processStatus === undefined ? {} : { processStatus }),
+    ...(processExitCode === undefined ? {} : { processExitCode }),
+    ...(record["receiptRetained"] === true ? { receiptRetained: true } : {}),
+    ...(receipt === undefined ? {} : { receipt }),
+  };
+}
+
 function safeServerDetails(
   error: unknown,
   subcommand: ServerSubcommand,
@@ -279,6 +337,7 @@ function safeServerDetails(
       };
     }
   }
+  const evidence = safeEvidence(raw["evidence"]);
   return {
     subcommand,
     ...(nextAction === undefined ? {} : { nextAction }),
@@ -287,7 +346,93 @@ function safeServerDetails(
     ...(confirmedResources === undefined ? {} : { confirmedResources }),
     ...(raw["receiptRetained"] === true ? { receiptRetained: true } : {}),
     ...(machineRecord === undefined ? {} : { machineRecord }),
+    ...(evidence === undefined ? {} : { evidence }),
   };
+}
+
+/**
+ * Extra human lines for server failures. Everything here comes from the same
+ * allowlisted details the JSON envelope reports, so a hint can never echo raw
+ * tool output, a path, or a secret. Guidance follows the reported `nextAction`
+ * instead of prescribing one remedy for every failure.
+ */
+function humanHints(
+  operation: DispatchOperation | undefined,
+  error: unknown,
+): readonly string[] {
+  if (operation !== "server" || !(error instanceof CliError)) return [];
+  const hints: string[] = [];
+
+  if (error.code === "SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED") {
+    hints.push(
+      "syndroo: run `./node_modules/.bin/wrangler whoami` in the project and choose an accessible ACCOUNT ID.",
+      "syndroo: pass it as `server deploy --account <ACCOUNT_ID>`; an account ID is not a member ID.",
+      "syndroo: retry the login only if that check reports the session itself failed.",
+    );
+    return hints;
+  }
+
+  const evidence = safeEvidence(error.details?.["evidence"]);
+  if (evidence !== undefined) {
+    if (evidence.receipt === "missing") {
+      hints.push(
+        "syndroo: the machine receipt holds no usable record; the remote result is unknown.",
+      );
+    } else if (
+      evidence.receipt === "invalid" ||
+      evidence.receipt === "incomplete" ||
+      evidence.receipt === "unreadable"
+    ) {
+      hints.push(
+        `syndroo: the machine receipt is ${evidence.receipt}; the remote result is unknown.`,
+      );
+    } else if (evidence.receipt === "mismatched_worker") {
+      hints.push(
+        "syndroo: the machine receipt names a different Worker; it is not evidence for this project.",
+      );
+    } else if (evidence.receipt === "target_mismatch") {
+      hints.push(
+        "syndroo: the machine receipt does not name the configured public origin.",
+      );
+    }
+    if (evidence.processStatus === "timed_out") {
+      hints.push(
+        "syndroo: the deploy subprocess timed out; do not assume the version was rejected.",
+      );
+    } else if (evidence.processStatus === "output_limit") {
+      hints.push(
+        "syndroo: the deploy subprocess exceeded its bounded output size.",
+      );
+    } else if (evidence.processStatus === "spawn_error") {
+      hints.push("syndroo: the deploy subprocess could not be started.");
+    }
+  }
+
+  // Guidance follows the reported action even when no optional evidence exists,
+  // so a receipt or identity failure still explains recovery.
+  const nextAction = safeNextAction(error);
+  if (nextAction === "PROVIDE_DEPLOY_RECOVERY") {
+    hints.push(
+      'syndroo: supply --recover <path|-> with at least {"workerTag":"<VERIFIED_WORKER_TAG>","versionId":"<VERIFIED_VERSION_ID>"}',
+      "syndroo: the read-only procedure is in the Syndroo Skill reference references/server.md (packages/cli/skills/syndroo/references/server.md).",
+      "syndroo: never adopt evidence from the Worker name or a `/health` check; --recover only establishes the baseline, then authorization is needed for a new deploy.",
+    );
+  } else if (nextAction === "RERUN_DEPLOY_TO_RECONCILE") {
+    hints.push(
+      "syndroo: rerun the same project to reconcile. If the receipt holds no usable record, that rerun asks for explicit recovery evidence.",
+    );
+  } else if (nextAction === "RETRY_DEPLOY") {
+    if (evidence?.stage === "deploy" && evidence.processStatus === "spawn_error") {
+      hints.push(
+        "syndroo: the deploy did not start; fix the local install and retry.",
+      );
+    } else {
+      hints.push(
+        "syndroo: retry the deployment after checking the reported failure.",
+      );
+    }
+  }
+  return hints;
 }
 
 function reportFailure(
@@ -300,6 +445,10 @@ function reportFailure(
   const failure = classify(error);
 
   io.stderr.write(`syndroo: ${staticMessage(failure.code)}\n`);
+
+  for (const hint of humanHints(operation, error)) {
+    io.stderr.write(`${hint}\n`);
+  }
 
   if (json && operation !== undefined) {
     io.stdout.write(

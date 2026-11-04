@@ -312,6 +312,14 @@ type RunnerBehavior = {
   readonly timeoutCreatesWorker?: boolean;
   readonly deployWritesReceipt?: boolean;
   readonly breakStateAfterDeploy?: boolean;
+  /** Replace the machine receipt with explicit text (for unreadable output). */
+  readonly deployReceiptText?: string;
+  /** Replace the machine receipt with raw bytes (for invalid UTF-8). */
+  readonly deployReceiptBytes?: Uint8Array;
+  /** Remove the receipt file entirely after the subprocess returns. */
+  readonly deployDeletesReceipt?: boolean;
+  /** Replace the receipt file with a directory so the private read fails. */
+  readonly deployReceiptBecomesDirectory?: boolean;
 };
 
 class DeployRunner implements ProcessRunner {
@@ -424,18 +432,20 @@ class DeployRunner implements ProcessRunner {
         if (outputPath !== undefined && writesReceipt) {
           await fs.writeFile(
             outputPath,
-            `${JSON.stringify({
-              type: "deploy",
-              version: 1,
-              worker_name: "demo-worker",
-              worker_tag: workerTag,
-              version_id: versionId,
-              targets: [
-                this.behavior.deployTarget ??
-                  "demo-worker.account-subdomain.workers.dev",
-              ],
-              wrangler_environment: undefined,
-            })}\n`,
+            this.behavior.deployReceiptBytes ??
+              this.behavior.deployReceiptText ??
+              `${JSON.stringify({
+                type: "deploy",
+                version: 1,
+                worker_name: "demo-worker",
+                worker_tag: workerTag,
+                version_id: versionId,
+                targets: [
+                  this.behavior.deployTarget ??
+                    "demo-worker.account-subdomain.workers.dev",
+                ],
+                wrangler_environment: undefined,
+              })}\n`,
             { mode: 0o600 },
           );
         }
@@ -456,6 +466,19 @@ class DeployRunner implements ProcessRunner {
           await fs.rm(stateFile);
           await fs.mkdir(stateFile, { mode: 0o700 });
         }
+      }
+      if (
+        outputPath !== undefined &&
+        this.behavior.deployDeletesReceipt === true
+      ) {
+        await fs.rm(outputPath, { force: true });
+      }
+      if (
+        outputPath !== undefined &&
+        this.behavior.deployReceiptBecomesDirectory === true
+      ) {
+        await fs.rm(outputPath, { force: true });
+        await fs.mkdir(outputPath, { mode: 0o700 });
       }
       return {
         status,
@@ -1767,9 +1790,356 @@ describe("server deploy", () => {
 
     await expect(
       deploy(testProject, runner, cloudFetch(remote), { credentials: SECRETS }),
-    ).rejects.toMatchObject({ code: "SERVER_DEPLOY_TARGET_UNVERIFIED" });
+    ).rejects.toMatchObject({
+      code: "SERVER_DEPLOY_TARGET_UNVERIFIED",
+      details: {
+        nextAction: "VERIFY_PUBLIC_ORIGIN",
+        evidence: { stage: "deploy", receipt: "target_mismatch" },
+      },
+    });
     expect(
       (await loadServerConfig(testProject.root)).config.publicOrigin,
     ).toBeUndefined();
+  });
+
+  it("classifies a timed-out deploy with no machine receipt as missing evidence", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, {
+      deployStatus: "timed_out",
+      deployExitCode: null,
+    });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        failedStep: "deploy-pending",
+        receiptRetained: true,
+        evidence: {
+          stage: "deploy",
+          processStatus: "timed_out",
+          // The receipt file was created but carries no machine record.
+          receipt: "missing",
+          receiptRetained: true,
+        },
+      },
+    });
+    // Raw subprocess output never reaches the structured error.
+    expect(JSON.stringify(error)).not.toContain("CLOUDFLARE-ACCESS-TOKEN-SENTINEL");
+    expect(JSON.stringify(error)).not.toContain("uploaded safely");
+
+    // The rerun still needs verified Worker evidence and reports it safely.
+    const retryRunner = new DeployRunner(remote);
+    const retry = await deploy(testProject, retryRunner, cloudFetch(remote))
+      .catch((caught: unknown) => caught);
+    expect(retry).toMatchObject({
+      code: "SERVER_DEPLOY_RECOVERY_REQUIRED",
+      details: {
+        failedStep: "deploy-pending",
+        nextAction: "PROVIDE_DEPLOY_RECOVERY",
+        evidence: {
+          stage: "verification",
+          receipt: "missing",
+          receiptRetained: true,
+        },
+      },
+    });
+    expect(retryRunner.calls.some((call) => call.args[0] === "deploy")).toBe(
+      false,
+    );
+  });
+
+  it("distinguishes a nonzero deploy subprocess from the receipt it left", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, {
+      deployExitCode: 3,
+      deployWritesReceipt: true,
+    });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        nextAction: "RERUN_DEPLOY_TO_RECONCILE",
+        receiptRetained: true,
+        evidence: {
+          stage: "deploy",
+          processStatus: "exited",
+          processExitCode: 3,
+          receipt: "complete",
+          receiptRetained: true,
+        },
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("CLOUDFLARE-ACCESS-TOKEN-SENTINEL");
+  });
+
+  it.each([
+    ["invalid", "not-json\n"],
+    [
+      "mismatched_worker",
+      `${JSON.stringify({
+        type: "deploy",
+        version: 1,
+        worker_name: "another-worker",
+        worker_tag: "worker-tag-deployed",
+        version_id: "version-deployed",
+        targets: ["another-worker.account-subdomain.workers.dev"],
+        wrangler_environment: undefined,
+      })}\n`,
+    ],
+    [
+      "incomplete",
+      `${JSON.stringify({
+        type: "deploy",
+        version: 1,
+        worker_name: "demo-worker",
+        worker_tag: "worker-tag-deployed",
+      })}\n`,
+    ],
+  ] as const)(
+    "reports a %s machine receipt after a successful subprocess exit",
+    async (classification, receiptText) => {
+      const testProject = await project();
+      const remote = cloud();
+      const runner = new DeployRunner(remote, {
+        deployReceiptText: receiptText,
+      });
+
+      const error = await deploy(testProject, runner, cloudFetch(remote), {
+        credentials: SECRETS,
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        code: "SERVER_DEPLOY_AMBIGUOUS",
+        details: {
+          receiptRetained: true,
+          evidence: {
+            stage: "deploy",
+            processStatus: "exited",
+            processExitCode: 0,
+            receipt: classification,
+          },
+        },
+      });
+      expect(
+        (await loadServerConfig(testProject.root)).config.publicOrigin,
+      ).toBeUndefined();
+    },
+  );
+
+  it("reports a subprocess that never started and keeps the retry action", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, { deployStatus: "spawn_error" });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_FAILED",
+      details: {
+        nextAction: "RETRY_DEPLOY",
+        evidence: { stage: "deploy", processStatus: "spawn_error" },
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("CLOUDFLARE-ACCESS-TOKEN-SENTINEL");
+  });
+
+  it("distinguishes an absent receipt file from an empty one", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, {
+      deployStatus: "timed_out",
+      deployExitCode: null,
+      deployDeletesReceipt: true,
+    });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        receiptRetained: false,
+        evidence: {
+          stage: "deploy",
+          processStatus: "timed_out",
+          receipt: "missing",
+          receiptRetained: false,
+        },
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("CLOUDFLARE-ACCESS-TOKEN-SENTINEL");
+  });
+
+  it("reports an unreadable receipt when the private file cannot be read", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, {
+      deployStatus: "timed_out",
+      deployExitCode: null,
+      deployReceiptBecomesDirectory: true,
+    });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        evidence: {
+          stage: "deploy",
+          processStatus: "timed_out",
+          receipt: "unreadable",
+        },
+      },
+    });
+  });
+
+  it("does not swallow an unreadable receipt during a pending rerun", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const firstRunner = new DeployRunner(remote, {
+      deployStatus: "timed_out",
+      deployExitCode: null,
+    });
+    await expect(
+      deploy(testProject, firstRunner, cloudFetch(remote), {
+        credentials: SECRETS,
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_DEPLOY_AMBIGUOUS" });
+
+    const pending = JSON.parse(
+      await fs.readFile(
+        path.join(
+          testProject.stateRoot,
+          deploymentStateFileName(PROJECT_ID),
+        ),
+        "utf8",
+      ),
+    ) as { operationId: string };
+    const receiptFile = path.join(
+      testProject.stateRoot,
+      deploymentReceiptFileName(pending.operationId),
+    );
+    await fs.rm(receiptFile, { force: true });
+    await fs.mkdir(receiptFile, { mode: 0o700 });
+
+    // A read failure keeps its own fail-closed error; only malformed machine
+    // output becomes unusable evidence.
+    await expect(
+      deploy(testProject, new DeployRunner(remote), cloudFetch(remote)),
+    ).rejects.toMatchObject({ code: "SERVER_DEPLOY_RECEIPT_UNAVAILABLE" });
+  });
+
+  it("keeps a malformed receipt as unusable evidence and still allows verified recovery", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const firstRunner = new DeployRunner(remote, {
+      deployReceiptBytes: Uint8Array.from([0xff, 0xfe, 0x00, 0x7b]),
+    });
+    const first = await deploy(testProject, firstRunner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+    expect(first).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        receiptRetained: true,
+        evidence: {
+          stage: "deploy",
+          processStatus: "exited",
+          receipt: "invalid",
+          receiptRetained: true,
+        },
+      },
+    });
+    // The platform accepted the upload, so the next attempt starts from a
+    // recorded Worker with no readable receipt.
+    expect(remote.worker).toMatchObject({ tag: "worker-tag-deployed" });
+
+    // An ordinary rerun fails closed without mutating anything.
+    const plainRunner = new DeployRunner(remote);
+    const plain = await deploy(testProject, plainRunner, cloudFetch(remote))
+      .catch((caught: unknown) => caught);
+    expect(plain).toMatchObject({
+      code: "SERVER_DEPLOY_RECOVERY_REQUIRED",
+      details: {
+        failedStep: "deploy-pending",
+        nextAction: "PROVIDE_DEPLOY_RECOVERY",
+        evidence: {
+          stage: "verification",
+          receipt: "invalid",
+          receiptRetained: true,
+        },
+      },
+    });
+    expect(plainRunner.calls.some((call) => call.args[0] === "deploy")).toBe(
+      false,
+    );
+    expect(
+      (await loadServerConfig(testProject.root)).config.publicOrigin,
+    ).toBeUndefined();
+
+    // Independently verified evidence is accepted, then a fresh version deploys.
+    const recoveryRunner = new DeployRunner(remote, {
+      deployWorkerTag: "worker-tag-two",
+      deployVersionId: "version-two",
+    });
+    const recovered = await deploy(
+      testProject,
+      recoveryRunner,
+      cloudFetch(remote),
+      {
+        recover: {
+          workerTag: "worker-tag-deployed",
+          versionId: "version-deployed",
+        },
+      },
+    );
+    expect(recovered).toMatchObject({
+      status: "deployed",
+      workerTag: "worker-tag-two",
+      versionId: "version-two",
+    });
+    expect(
+      recoveryRunner.calls.filter((call) => call.args[0] === "deploy"),
+    ).toHaveLength(1);
+  });
+
+  it("reports invalid UTF-8 machine output as invalid", async () => {
+    const testProject = await project();
+    const remote = cloud();
+    const runner = new DeployRunner(remote, {
+      deployReceiptBytes: Uint8Array.from([0xff, 0xfe, 0x00, 0x7b]),
+    });
+
+    const error = await deploy(testProject, runner, cloudFetch(remote), {
+      credentials: SECRETS,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SERVER_DEPLOY_AMBIGUOUS",
+      details: {
+        receiptRetained: true,
+        evidence: {
+          stage: "deploy",
+          processStatus: "exited",
+          receipt: "invalid",
+          receiptRetained: true,
+        },
+      },
+    });
   });
 });

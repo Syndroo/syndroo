@@ -27,6 +27,24 @@ export type ServerFailureDetails = {
     readonly worker?: { readonly name: string; readonly tag: string } | null;
   };
   readonly receiptRetained?: boolean;
+  readonly evidence?: {
+    readonly stage: "deploy" | "verification";
+    readonly processStatus?:
+      | "exited"
+      | "timed_out"
+      | "output_limit"
+      | "spawn_error";
+    readonly processExitCode?: number | null;
+    readonly receiptRetained?: boolean;
+    readonly receipt?:
+      | "complete"
+      | "missing"
+      | "unreadable"
+      | "invalid"
+      | "incomplete"
+      | "mismatched_worker"
+      | "target_mismatch";
+  };
   readonly machineRecord?: {
     readonly status?: string;
     readonly workerTag?: string;
@@ -147,6 +165,33 @@ const MESSAGES: Readonly<Record<string, string>> = {
   SERVER_PROCESS_OUTPUT_LIMIT: "An external tool exceeded its bounded output size.",
   SERVER_STATE_UNAVAILABLE: "The private server state could not be accessed safely.",
   SERVER_DEPLOY_AUTHORIZATION_REQUIRED: "Deployment requires the explicit --yes flag.",
+  SERVER_DEPLOY_FAILED: "The deployment command could not be completed.",
+  SERVER_DEPLOY_CLOUDFLARE_AUTH_REQUIRED:
+    "Authenticate the project-local Wrangler with Cloudflare before deploying.",
+  SERVER_DEPLOY_CLOUDFLARE_AUTH_UNSUPPORTED:
+    "This Cloudflare login type is not supported. Use OAuth or an API token.",
+  SERVER_DEPLOY_AUTH_OR_PERMISSION:
+    "Cloudflare refused the request for the selected account. Check the account and its permissions.",
+  SERVER_DEPLOY_ACCOUNT_SELECTION_REQUIRED:
+    "The selected Cloudflare account is not one this login can read. Choose an accessible account ID.",
+  SERVER_DEPLOY_ACCOUNT_CONFLICT:
+    "Only one Cloudflare account may be selected, and every source must agree.",
+  SERVER_DEPLOY_OWNERSHIP_UNVERIFIED:
+    "Remote resource ownership could not be proven for this project.",
+  SERVER_DEPLOY_RESOURCE_IDENTITY_MISMATCH:
+    "A remote resource does not match the recorded project, account, or Worker identity.",
+  SERVER_DEPLOY_TARGET_UNVERIFIED:
+    "The deployment target could not be verified from machine output.",
+  SERVER_DEPLOY_AMBIGUOUS:
+    "The deployment outcome is unknown. Inspect the remote state before retrying.",
+  SERVER_DEPLOY_RECEIPT_INVALID:
+    "The private deployment receipt is not valid machine output.",
+  SERVER_DEPLOY_RECEIPT_UNAVAILABLE:
+    "The private deployment receipt could not be read.",
+  SERVER_DEPLOY_RECEIPT_STALE:
+    "The retained receipt belongs to an earlier attempt, not this pending deploy.",
+  SERVER_DEPLOY_RECOVERY_REQUIRED:
+    "The pending deploy needs verified Worker and version evidence before it can continue.",
   SERVER_DEPLOY_RECOVERY_INVALID: "The deployment recovery document is not valid.",
   SERVER_DEPLOY_CREDENTIAL_RECOVERY_REQUIRED:
     "Existing deployment credentials must be imported through a safe secret input.",
