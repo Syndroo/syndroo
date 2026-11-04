@@ -1,7 +1,7 @@
 import { randomUUID as systemRandomUUID } from "node:crypto";
 import path from "node:path";
 
-import { Syndroo, type FetchLike } from "@syndroo/sdk";
+import { Syndroo, isSyndrooError, type FetchLike } from "@syndroo/sdk";
 
 import { CliError } from "../cli-error.js";
 import { EXIT_CODE } from "../exit-codes.js";
@@ -187,14 +187,24 @@ async function currentBindingMatches(
   }
 }
 
-function mapThreadsError(error: unknown, operationId?: string): CliError {
+// A publication keeps its safe server code and never uses connection wording.
+function mapThreadsError(
+  error: unknown,
+  phase: "connect" | "publish" = "connect",
+): CliError {
+  const nextAction = phase === "publish" ? "FIX_THREADS_PUBLICATION" : "INSPECT_THREADS_SETUP";
   if (error instanceof CliError) return error;
+  if (phase === "publish" && isSyndrooError(error)) {
+    const serverCode = error.serverError?.code;
+    return serverCode === undefined
+      ? commandError("INTERNAL", nextAction, EXIT_CODE.FAILURE)
+      : commandError(serverCode, nextAction, EXIT_CODE.FAILURE);
+  }
   if (!(error instanceof ThreadsCiError)) {
     return commandError(
-      "SERVER_THREADS_FAILED",
-      "INSPECT_THREADS_SETUP",
+      phase === "publish" ? "INTERNAL" : "SERVER_THREADS_FAILED",
+      nextAction,
       EXIT_CODE.FAILURE,
-      operationId === undefined ? {} : { operationId },
     );
   }
   const mapping: Record<ThreadsCiError["code"], { code: string; action: string }> = {
@@ -232,7 +242,6 @@ function mapThreadsError(error: unknown, operationId?: string): CliError {
     selected.code,
     selected.action,
     error.exitCode === 1 ? EXIT_CODE.FAILURE : EXIT_CODE.USAGE,
-    operationId === undefined ? {} : { operationId },
   );
 }
 
@@ -589,7 +598,7 @@ export async function runServerThreadsPublish(
   try {
     text = parseThreadsPostBytes(bytes);
   } catch (error) {
-    throw mapThreadsError(error, requestId);
+    throw mapThreadsError(error, "publish");
   }
   const client = (dependencies.clientFactory ?? defaultClientFactory(dependencies.fetch))(
     origin,
@@ -607,6 +616,6 @@ export async function runServerThreadsPublish(
     });
     return { subcommand: "publish", ...result };
   } catch (error) {
-    throw mapThreadsError(error, requestId);
+    throw mapThreadsError(error, "publish");
   }
 }

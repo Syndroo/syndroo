@@ -40,20 +40,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The build comes first: every workspace's `check` resolves its sibling
+      # packages through their built declarations, so a checkout with no `dist`
+      # yet fails the type gate for the wrong reason. `--allow-missing` exists
+      # for the pre-build case; CI uses the strict gate once the artifacts are
+      # real.
+      # DCO also compiles scripts that require the built SDK declarations.
+      - name: Build every package
+        run: npm run build
+
       - name: Check DCO sign-offs
         if: github.event_name == 'pull_request'
         run: npm run dco:check
         env:
           SYNDROO_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SYNDROO_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
-      # The build comes first: every workspace's `check` resolves its sibling
-      # packages through their built declarations, so a checkout with no `dist`
-      # yet fails the type gate for the wrong reason. `--allow-missing` exists
-      # for the pre-build case; CI uses the strict gate once the artifacts are
-      # real.
-      - name: Build every package
-        run: npm run build
 
       # Types, generated protocol bindings, the package graph and the bundle
       # rows are all checked against the artifacts the previous step produced.
