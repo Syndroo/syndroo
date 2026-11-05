@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/provider-devto",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "DEV.to Provider plugin for Syndroo architecture v1: articles through the DEV API.",
   "license": "Apache-2.0",
@@ -34,7 +34,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@syndroo/provider-sdk": "0.7.2"
+    "@syndroo/provider-sdk": "0.8.0"
   },
   "devDependencies": {},
   "scripts": {

@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/cli",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "Local-first Syndroo CLI: connect, prepare, confirm, execute and query status for content publishing.",
   "license": "Apache-2.0",
@@ -48,9 +48,9 @@
     "commander": "13.1.0"
   },
   "devDependencies": {
-    "@syndroo/core": "0.7.2",
-    "@syndroo/provider-sdk": "0.7.2",
-    "@syndroo/sdk": "0.7.2",
+    "@syndroo/core": "0.8.0",
+    "@syndroo/provider-sdk": "0.8.0",
+    "@syndroo/sdk": "0.8.0",
     "@types/node": "^26.4.0",
     "esbuild": "0.28.1",
     "jsonc-parser": "^3.3.1"
