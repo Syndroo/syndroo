@@ -7,7 +7,7 @@ on:
 
 # The default token is deliberately downgraded: every write this workflow
 # performs (branches, release PR, tag, GitHub Release, and the catalog refresh
-# push) is made with the RELEASE_PLEASE_TOKEN secret, so the job itself only
+# push) is made with the SYNDROO_RELEASE_TOKEN secret, so the job itself only
 # needs to read contents.
 permissions:
   contents: read
@@ -32,10 +32,10 @@ jobs:
       # token) avoids both.
       - name: Validate publishing token
         env:
-          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          SYNDROO_RELEASE_TOKEN: ${{ secrets.SYNDROO_RELEASE_TOKEN }}
         run: |
-          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
-            echo "Configure RELEASE_PLEASE_TOKEN to create release PRs and trigger downstream CI/npm workflows." >&2
+          if [ -z "$SYNDROO_RELEASE_TOKEN" ]; then
+            echo "Configure SYNDROO_RELEASE_TOKEN to create release PRs and trigger downstream CI/npm workflows." >&2
             exit 1
           fi
 
@@ -46,7 +46,7 @@ jobs:
         id: release
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ secrets.SYNDROO_RELEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -152,7 +152,7 @@ jobs:
       - name: Commit and push the refreshed catalogs
         if: steps.branch.outputs.branch != ''
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNDROO_RELEASE_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           set -euo pipefail

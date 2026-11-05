@@ -33,7 +33,7 @@ and `bootstrap-sha` no longer applies.
 
 ## Workflow permissions
 
-`auto-release.yml` declares `permissions: contents: read` only. Every write it produces — branches, the release PR, the tag, the GitHub Release — is made with the `RELEASE_PLEASE_TOKEN` secret, so the default `GITHUB_TOKEN` is reduced to a read scope rather than being granted `contents: write` and `pull-requests: write` it does not use.
+`auto-release.yml` declares `permissions: contents: read` only. Every write it produces — branches, the release PR, the tag, the GitHub Release — is made with the `SYNDROO_RELEASE_TOKEN` secret, so the default `GITHUB_TOKEN` is reduced to a read scope rather than being granted `contents: write` and `pull-requests: write` it does not use.
 
 `release.yml` keeps `contents: read` plus `id-token: write`. The OIDC token is what npm Trusted Publishing exchanges for a short-lived publish credential. The optional website dispatch uses a separate fine-grained token that is scoped to `Syndroo/syndroo-web` and added only to the notification step's environment, not to the job or any earlier step.
 
@@ -103,7 +103,7 @@ After Release Please runs, the same `auto-release` job:
 5. runs `npm run generate:provider-catalog`, which writes `packages/cli/src/runtime/providers/generated/catalog.ts`;
 6. runs the full `npm run build`, whose Cloudflare stage now passes its `--check` and writes `packages/cloudflare/src/providers/catalog.ts` through `packages/cloudflare/src/build/generate.ts`. No generator runs after the full build;
 7. commits **only** the two catalog files, with `--signoff` and the `github-actions[bot]` identity;
-8. pushes non-force to that same branch, authenticating through `gh auth setup-git` with `RELEASE_PLEASE_TOKEN` in the push step alone.
+8. pushes non-force to that same branch, authenticating through `gh auth setup-git` with `SYNDROO_RELEASE_TOKEN` in the push step alone.
 
 The refresh commit is a normal commit on the PR branch, so it starts a fresh pull-request CI run. **The human must wait for that run (the PR's final head) before merging**; a green run from before the refresh does not cover the refreshed catalogs.
 
@@ -127,11 +127,11 @@ Create a GitHub **fine-grained personal access token** (or equivalent dedicated 
 - **Pull requests: read and write** — open and update the release PR.
 - **Metadata: read** — implicit and always granted on fine-grained tokens; it needs no explicit selection.
 
-Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`. Ensure the repository's Actions settings allow workflows to create pull requests.
+Store it as the GitHub Actions repository secret `SYNDROO_RELEASE_TOKEN`. Ensure the repository's Actions settings allow workflows to create pull requests.
 
 The token's owning account must be able to create PRs and releases on the repository, and its branch-protection bypass must match the repository policy — do not grant bypass just for the bot.
 
-Set a short expiration (for example 90 days) and rotate on a calendar you actually keep. Rotation is: create the replacement token, update the `RELEASE_PLEASE_TOKEN` secret, then delete the old token. A release window that fails with `Validate publishing token` or an authentication error in the release-please step is the usual symptom of an expired or revoked token.
+Set a short expiration (for example 90 days) and rotate on a calendar you actually keep. Rotation is: create the replacement token, update the `SYNDROO_RELEASE_TOKEN` secret, then delete the old token. A release window that fails with `Validate publishing token` or an authentication error in the release-please step is the usual symptom of an expired or revoked token.
 
 ### Personal access token vs GitHub App
 
@@ -199,7 +199,7 @@ Editing the squashed message to remove either the `Signed-off-by` trailer or tha
 
 ## Troubleshooting
 
-- **No release PR:** check Conventional Commit messages, workflow permissions, `RELEASE_PLEASE_TOKEN` expiration, and the release-please step log. The `Validate publishing token` step fails loudly when the secret is missing.
+- **No release PR:** check Conventional Commit messages, workflow permissions, `SYNDROO_RELEASE_TOKEN` expiration, and the release-please step log. The `Validate publishing token` step fails loudly when the secret is missing.
 - **Release PR check did not run:** see the event-chaining note below.
 - **Release PR fails `npm ci` or the catalog drift check:** inspect all workspace versions, `package-lock.json` and the two generated catalogs. The version train must remain synchronized, and the release PR must carry a refreshed catalog. Re-run the `auto-release` job first: with `always-update: true` it re-runs the refresh, and pushes nothing when the catalogs already match. Never hand-edit a catalog; CI compares it byte for byte against the generator output.
 - **Release PR CI ran before the refresh commit:** expected. The refresh commit starts another run; merge only on the final head.
