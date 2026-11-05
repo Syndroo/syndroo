@@ -1,0 +1,177 @@
+name: Prepare GitHub Release
+
+on:
+  push:
+    branches:
+      - main
+
+# The default token is deliberately downgraded: every write this workflow
+# performs (branches, release PR, tag, GitHub Release, and the catalog refresh
+# push) is made with the RELEASE_PLEASE_TOKEN secret, so the job itself only
+# needs to read contents.
+permissions:
+  contents: read
+
+# One release-please run at a time. A constant group (no ref expansion) makes
+# consecutive `main` pushes queue instead of racing, and cancel-in-progress is
+# false so an in-flight run is never interrupted halfway through creating,
+# updating, or refreshing the release PR.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.repository == 'Syndroo/syndroo'
+    runs-on: ubuntu-latest
+    steps:
+      # A user-owned token is required. As of the current GitHub docs, a
+      # GITHUB_TOKEN-created PR opened/synchronized/reopened starts a run that
+      # waits for approval, and a GITHUB_TOKEN-created Release still does not
+      # chain into `release: published` at all. A PAT (or an App installation
+      # token) avoids both.
+      - name: Validate publishing token
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
+            echo "Configure RELEASE_PLEASE_TOKEN to create release PRs and trigger downstream CI/npm workflows." >&2
+            exit 1
+          fi
+
+      # `always-update: true` in release-please-config.json keeps this step from
+      # returning "no changes" early: the PR is always updated, so a rerun of
+      # this job always reports the PR and re-runs the catalog refresh below.
+      - name: Create or update release PR / publish GitHub Release
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # The generated catalogs embed each provider's version, so a release PR
+      # that bumps that version must carry the regenerated catalogs or the
+      # `packages/cloudflare` build fails its own
+      # `generate-provider-catalog.ts --check` stage before the CLI catalog is
+      # written.
+      #
+      # The `pr` output is the release PR JSON and is present whenever the
+      # action reports a PR (it is JSON-encoded into an env var, never
+      # interpolated into a shell command).
+      - name: Resolve release PR branch
+        id: branch
+        if: steps.release.outputs.pr != ''
+        env:
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+          COMPONENT: syndroo
+          TARGET_BRANCH: main
+        run: |
+          set -euo pipefail
+
+          # The branch release-please uses for the single root component:
+          # BranchName.ofComponentTargetBranch("syndroo", "main").
+          expected="release-please--branches--${TARGET_BRANCH}--components--${COMPONENT}"
+
+          branch="$(node -e '
+            let parsed;
+            try {
+              parsed = JSON.parse(process.env.RELEASE_PR ?? "");
+            } catch {
+              process.exit(2);
+            }
+            const branch =
+              parsed && typeof parsed.headBranchName === "string"
+                ? parsed.headBranchName
+                : "";
+            if (branch) process.stdout.write(branch);
+          ')"
+
+          if [ -z "$branch" ]; then
+            echo "release-please reported a PR without a usable headBranchName." >&2
+            exit 1
+          fi
+
+          if [ "$branch" != "$expected" ]; then
+            echo "Refusing to refresh '$branch': expected the release PR branch '$expected'." >&2
+            exit 1
+          fi
+
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the release PR branch
+        if: steps.branch.outputs.branch != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          repository: ${{ github.repository }}
+          # The build must not see a write token; the push step authenticates
+          # separately through `gh`.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.branch.outputs.branch != ''
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        if: steps.branch.outputs.branch != ''
+        run: npm ci
+
+      # Ordered partial build: the catalog generator reads the built provider
+      # manifests, so the providers need their declarations first. A full
+      # `npm run build` cannot go first: the `packages/cloudflare` build runs
+      # `generate-provider-catalog.ts --check` and fails on the very drift this
+      # job exists to fix.
+      - name: Build the provider contracts and official providers
+        if: steps.branch.outputs.branch != ''
+        run: |
+          set -euo pipefail
+          npm run build --workspace @syndroo/provider-sdk
+          npm run build --workspace @syndroo/core
+          npm run build --workspace @syndroo/provider-bluesky
+          npm run build --workspace @syndroo/provider-threads
+          npm run build --workspace @syndroo/provider-linkedin
+          npm run build --workspace @syndroo/provider-mastodon
+          npm run build --workspace @syndroo/provider-devto
+
+      # Writes packages/cli/src/runtime/providers/generated/catalog.ts.
+      - name: Regenerate the checked official catalog
+        if: steps.branch.outputs.branch != ''
+        run: npm run generate:provider-catalog
+
+      # The cloudflare stage of this full build writes
+      # packages/cloudflare/src/providers/catalog.ts (src/build/generate.ts)
+      # once its `--check` stage passes. No generator runs after it.
+      - name: Build every package
+        if: steps.branch.outputs.branch != ''
+        run: npm run build
+
+      - name: Commit and push the refreshed catalogs
+        if: steps.branch.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Only the two generated catalogs may be committed: the release PR
+          # itself owns every other file.
+          git add -- \
+            packages/cli/src/runtime/providers/generated/catalog.ts \
+            packages/cloudflare/src/providers/catalog.ts
+
+          if git diff --cached --quiet; then
+            echo "Catalogs already match the release version; nothing to push."
+            exit 0
+          fi
+
+          git commit --signoff -m "chore(release): refresh provider catalogs"
+
+          gh auth setup-git
+          git push origin "HEAD:${BRANCH}"

@@ -207,17 +207,22 @@ every workspace checks against, then `npm run check` type-checks the packages an
 asserts the bundle rows against real artifacts instead of reporting `PENDING`.
 `npm test`, `npm run test:scripts`, the e2e type check, `npm run e2e:local-only`,
 `npm pack --dry-run` for five public packages and `git diff --exit-code` for
-generated drift follow. The matrix is Node 24 only, because every v1 package
-requires `>=24.19.0`.
+generated drift follow. The Release Please design, the first-release
+`bootstrap-sha`, token setup and verification status are in
+[release-automation.md](release-automation.md). The matrix is Node 24 only,
+because every v1 package requires `>=24.19.0`.
 
 `.github/workflows/release.yml` validates the ten-package train and publishes
-nothing by default. Publishing requires an explicit opt-in — the repository
-variable `SYNDROO_PUBLISH_ON_RELEASE` set to the exact string `true` on a release
-event, or a manual dispatch with `mode: publish` — and the publish step walks the
-train in dependency order, skipping any package the registry already satisfies.
-The OIDC workflow cannot perform a package name's first publish; absent names
-must use the preflighted maintainer bootstrap above and receive package-level
-Trusted Publisher settings before automation is used.
+it when a GitHub Release is published from the release tag; a manual dispatch
+with `mode: publish` does the same after the gates, and `mode: validate` (the
+default) publishes nothing. The publish step walks the train in dependency
+order, skipping any package the registry already satisfies. The OIDC workflow
+cannot perform a package name's first publish; absent names must use the
+preflighted maintainer bootstrap above and receive package-level Trusted
+Publisher settings before automation is used. Release Please opens and refreshes
+the release PR from Conventional Commits on `main`; see
+[release-automation.md](release-automation.md) for the automated flow, the
+catalog refresh and the optional website notification.
 
 Release-preparation commit
 `c656b5ec999bb8363e0f63451df492b825d4ba2f` has successful Linux and macOS

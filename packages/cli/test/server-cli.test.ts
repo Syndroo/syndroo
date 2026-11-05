@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -21,6 +21,15 @@ import type {
   ProcessRunner,
 } from "../src/server/process.js";
 import { createNodeProcessRunner } from "../src/server/process.js";
+
+// The version this package actually publishes, read from its own manifest so a
+// stale literal cannot pin the fixture to a previous release. Read independently
+// of the implementation under test, so a wrong dependency version still fails.
+const CLI_VERSION = (
+  JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 const roots: string[] = [];
 
@@ -301,8 +310,8 @@ async function writeThreadsProject(root: string): Promise<{
     `${JSON.stringify({
       private: true,
       dependencies: {
-        "@syndroo/cli": "0.7.2",
-        "@syndroo/cloudflare": "0.7.2",
+        "@syndroo/cli": CLI_VERSION,
+        "@syndroo/cloudflare": CLI_VERSION,
       },
       devDependencies: { wrangler: "4.132.0" },
       syndroo: { generated: true, server: 1 },
@@ -441,8 +450,8 @@ describe("server init", () => {
     };
     expect(manifest.private).toBe(true);
     expect(manifest.dependencies).toEqual({
-      "@syndroo/cli": "0.7.2",
-      "@syndroo/cloudflare": "0.7.2",
+      "@syndroo/cli": CLI_VERSION,
+      "@syndroo/cloudflare": CLI_VERSION,
     });
     expect(manifest.devDependencies).toEqual({ wrangler: "4.132.0" });
     expect(manifest.syndroo).toEqual({ generated: true, server: 1 });

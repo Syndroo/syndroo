@@ -26,7 +26,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "bluesky",
     "packageName": "@syndroo/provider-bluesky",
     "resolvedRoot": "packages/provider-bluesky",
-    "artifactFingerprint": "bd9a77efaf004f71bfa595006742737c4d1398fe2a0275fb35bbae9b8193ec74",
+    "artifactFingerprint": "00bc38c849983bc88e670d2535f1cfc6e87a08cc3417c100be9d32158a89f8dd",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -86,7 +86,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "devto",
     "packageName": "@syndroo/provider-devto",
     "resolvedRoot": "packages/provider-devto",
-    "artifactFingerprint": "366f8de6169da15f17c85febfcac30378b57e01c41edd9ded28a4b8d89326431",
+    "artifactFingerprint": "935d04ee1df94f9474f1e66cff3e9c2109423dbeae3901dd65ba36e12b013a42",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -170,7 +170,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "linkedin",
     "packageName": "@syndroo/provider-linkedin",
     "resolvedRoot": "packages/provider-linkedin",
-    "artifactFingerprint": "83dcecd291591d308b7f49e2c827ffdbbe83403e34704b82d6ecfe6ec7ca467d",
+    "artifactFingerprint": "ce80fc1e663903d3ae6843100157370fac45e2adeb10e694ba2ad8692684737b",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -281,7 +281,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "mastodon",
     "packageName": "@syndroo/provider-mastodon",
     "resolvedRoot": "packages/provider-mastodon",
-    "artifactFingerprint": "69f120fb196498c3b4f82a3a1ecd36a68eb86137b0648116e4538b22fe08a108",
+    "artifactFingerprint": "3f723b3403e651225a10e836d0ff4abf50c3d3de5d71a194a66a9a1068c4f51b",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -368,7 +368,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "threads",
     "packageName": "@syndroo/provider-threads",
     "resolvedRoot": "packages/provider-threads",
-    "artifactFingerprint": "956c10234de29f257da6e934f3190e50b6d410284585ef473f5e6accc288c1f9",
+    "artifactFingerprint": "fe168f35f3ef5b4e6a735f0c586390ce6662d3843a494d520bae2ea11e0b99aa",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [

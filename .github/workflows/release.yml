@@ -18,6 +18,23 @@ permissions:
   contents: read
   id-token: write
 
+# A separate, constant group from `auto-release` so release-please never blocks
+# the publish train and vice versa, while both `release: published` and a manual
+# `workflow_dispatch` share one queue. cancel-in-progress is false: a *running*
+# publish is never cancelled, so a `publish` dispatch cannot interrupt a
+# release-triggered run midway through the ten-package train.
+#
+# This is narrower than "nothing is cancelled": GitHub only guarantees the
+# running job survives. An older *pending* run in the same group can be replaced
+# by a newer queued run, so a release-triggered publication can be dropped while
+# it waits. Nothing retries that automatically. Recovery is re-running this
+# workflow (Re-run jobs on the dropped run, or `workflow_dispatch` with
+# `mode: publish`); the train publishes only packages still missing, so the
+# rerun resumes instead of conflicting on duplicates.
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
 jobs:
   release:
     if: github.repository == 'Syndroo/syndroo'
@@ -103,6 +120,7 @@ jobs:
       # package is published only when the train reports it as still missing, so
       # a partially completed train resumes instead of failing on duplicates.
       - name: Publish the train
+        id: publish
         if: >-
           ${{ github.event_name == 'release' ||
               (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish') }}
@@ -163,6 +181,27 @@ jobs:
           publish cli               @syndroo/cli
           publish server            @syndroo/server
           publish cloudflare        @syndroo/cloudflare
+
+      # Optional cross-repository notification, deliberately downstream of the
+      # publish outcome. It runs only when the website sync is explicitly
+      # enabled (the exact string `true`), the publish step succeeded (including
+      # an idempotent rerun that found every package already present), and the
+      # train is stable (`latest`). Validate-only runs, failed publishes and
+      # prereleases (`next`) never dispatch.
+      #
+      # The fine-grained token is scoped to Syndroo/syndroo-web Contents write
+      # and is exposed to this step alone. A missing token fails this step
+      # clearly, but only after an enabled run; npm publication has already
+      # finished and is not rolled back by a notification failure.
+      - name: Notify the website of the stable release
+        if: >-
+          ${{ vars.SYNDROO_SYNC_WEBSITE == 'true' &&
+              steps.publish.outcome == 'success' &&
+              steps.train.outputs.dist_tag == 'latest' }}
+        env:
+          SYNDROO_RELEASE_VERSION: ${{ steps.train.outputs.version }}
+          SYNDROO_WEB_DISPATCH_TOKEN: ${{ secrets.SYNDROO_WEB_DISPATCH_TOKEN }}
+        run: node scripts/notify-website-release.ts
 
       - name: Report validation-only run
         if: >-
