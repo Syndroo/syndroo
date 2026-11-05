@@ -6,7 +6,7 @@ from the machine it runs on. That local path has no server, queue or database.
 The same package also ships an optional `server` workflow for a user-owned
 Cloudflare deployment with its own state and credentials.
 
-The repository prepares a `0.7.0` release; registry availability must be checked
+The repository prepares a `0.7.2` release; registry availability must be checked
 before installation is announced. The CLI has **no live-account acceptance**.
 Provider paths are covered by tests against recorded API evidence and controlled
 fixtures.
@@ -55,13 +55,13 @@ providers so explicit provider discovery is complete:
 ```bash
 node --version                         # requires >=24.19.0
 npm install --global \
-  @syndroo/cli@0.7.0 \
-  @syndroo/provider-sdk@0.7.0 \
-  @syndroo/provider-bluesky@0.7.0 \
-  @syndroo/provider-threads@0.7.0 \
-  @syndroo/provider-linkedin@0.7.0 \
-  @syndroo/provider-mastodon@0.7.0 \
-  @syndroo/provider-devto@0.7.0
+  @syndroo/cli@0.7.2 \
+  @syndroo/provider-sdk@0.7.2 \
+  @syndroo/provider-bluesky@0.7.2 \
+  @syndroo/provider-threads@0.7.2 \
+  @syndroo/provider-linkedin@0.7.2 \
+  @syndroo/provider-mastodon@0.7.2 \
+  @syndroo/provider-devto@0.7.2
 syndroo --help
 syndroo --version
 ```

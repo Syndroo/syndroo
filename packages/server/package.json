@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/server",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "type": "module",
   "description": "Self-hosted Syndroo server: authenticated HTTP API, SQLite state and encrypted secrets.",
   "license": "Apache-2.0",
@@ -15,17 +15,37 @@
   "homepage": "https://github.com/Syndroo/syndroo#readme",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./http": { "types": "./dist/http/index.d.ts", "import": "./dist/http/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "import": "./dist/http/index.js"
+    }
+  },
   "sideEffects": false,
-  "files": ["dist", "LICENSE", "NOTICE"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
   "engines": {
     "node": ">=24.19.0"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": { "@syndroo/cli": "0.7.0" },
-  "devDependencies": { "@syndroo/core": "0.7.0", "@syndroo/provider-sdk": "0.7.0", "@types/node": "^26.4.0", "esbuild": "0.28.1" },
+  "dependencies": {
+    "@syndroo/cli": "0.7.2"
+  },
+  "devDependencies": {
+    "@syndroo/core": "0.7.2",
+    "@syndroo/provider-sdk": "0.7.2",
+    "@types/node": "^26.4.0",
+    "esbuild": "0.28.1"
+  },
   "scripts": {
     "build": "node ../../scripts/bundle-v1-server.ts",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",

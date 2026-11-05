@@ -139,7 +139,7 @@ beforeAll(async () => {
   cliBin = path.join(consumerDir, "node_modules", "@syndroo", "cli", "dist", "bin.js");
   expect(existsSync(cliBin)).toBe(true);
 
-  const listing = spawnSync("tar", ["-tzf", path.join(packDir, "syndroo-cli-0.7.0.tgz")], {
+  const listing = spawnSync("tar", ["-tzf", path.join(packDir, "syndroo-cli-0.7.2.tgz")], {
     encoding: "utf8",
   });
 
@@ -224,7 +224,7 @@ describe("packaged consumer", () => {
     const version = spawnSync(process.execPath, [cliBin, "--version"], { cwd: consumerDir, encoding: "utf8", env });
 
     expect(version.status).toBe(0);
-    expect(version.stdout).toContain("0.7.0");
+    expect(version.stdout).toContain("0.7.2");
     expect(version.stderr).toBe("");
 
     const help = spawnSync(process.execPath, [cliBin, "--help"], { cwd: consumerDir, encoding: "utf8", env });

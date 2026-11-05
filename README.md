@@ -5,7 +5,7 @@ machine, or run the same product as an authenticated HTTP service. Every
 surface speaks one protocol generation, **v1**, with three operations:
 `connect`, `publish` and `status`.
 
-The `0.7.0` npm release train is available on npm under `latest`. No deployment
+The `0.7.2` npm release train is available on npm under `latest`. No deployment
 or live social-account acceptance has been performed. Provider behaviour is
 covered by tests against recorded API evidence and controlled fixtures; see
 [Honest boundaries](#honest-boundaries).
@@ -88,13 +88,13 @@ Install the CLI, its provider contract, and all five official providers together
 
 ```bash
 npm install --global \
-  @syndroo/cli@0.7.0 \
-  @syndroo/provider-sdk@0.7.0 \
-  @syndroo/provider-bluesky@0.7.0 \
-  @syndroo/provider-threads@0.7.0 \
-  @syndroo/provider-linkedin@0.7.0 \
-  @syndroo/provider-mastodon@0.7.0 \
-  @syndroo/provider-devto@0.7.0
+  @syndroo/cli@0.7.2 \
+  @syndroo/provider-sdk@0.7.2 \
+  @syndroo/provider-bluesky@0.7.2 \
+  @syndroo/provider-threads@0.7.2 \
+  @syndroo/provider-linkedin@0.7.2 \
+  @syndroo/provider-mastodon@0.7.2 \
+  @syndroo/provider-devto@0.7.2
 syndroo --version
 ```
 

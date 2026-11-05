@@ -194,8 +194,8 @@ async function seedDeployment(
     `${JSON.stringify({
       private: true,
       dependencies: {
-        "@syndroo/cli": "0.7.0",
-        "@syndroo/cloudflare": "0.7.0",
+        "@syndroo/cli": "0.7.2",
+        "@syndroo/cloudflare": "0.7.2",
       },
       devDependencies: { wrangler: "4.132.0" },
       syndroo: { generated: true, server: 1 },

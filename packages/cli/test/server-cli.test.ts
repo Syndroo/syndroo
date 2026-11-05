@@ -301,8 +301,8 @@ async function writeThreadsProject(root: string): Promise<{
     `${JSON.stringify({
       private: true,
       dependencies: {
-        "@syndroo/cli": "0.7.0",
-        "@syndroo/cloudflare": "0.7.0",
+        "@syndroo/cli": "0.7.2",
+        "@syndroo/cloudflare": "0.7.2",
       },
       devDependencies: { wrangler: "4.132.0" },
       syndroo: { generated: true, server: 1 },
@@ -441,8 +441,8 @@ describe("server init", () => {
     };
     expect(manifest.private).toBe(true);
     expect(manifest.dependencies).toEqual({
-      "@syndroo/cli": "0.7.0",
-      "@syndroo/cloudflare": "0.7.0",
+      "@syndroo/cli": "0.7.2",
+      "@syndroo/cloudflare": "0.7.2",
     });
     expect(manifest.devDependencies).toEqual({ wrangler: "4.132.0" });
     expect(manifest.syndroo).toEqual({ generated: true, server: 1 });

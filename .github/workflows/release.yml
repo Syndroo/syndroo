@@ -22,12 +22,8 @@ jobs:
   release:
     if: github.repository == 'Syndroo/syndroo'
     runs-on: ubuntu-latest
-    # Publishing is opt-in and never implicit. A release event validates by
-    # default; set the repository variable SYNDROO_PUBLISH_ON_RELEASE to the
-    # exact string `true`, or dispatch this workflow with `mode: publish`, to
-    # let the train publish.
-    env:
-      SYNDROO_PUBLISH_ON_RELEASE: ${{ vars.SYNDROO_PUBLISH_ON_RELEASE }}
+    # Publishing a GitHub Release automatically publishes the validated npm
+    # train. Manual dispatch retains explicit validate/publish modes.
 
     steps:
       - name: Check out repository
@@ -108,7 +104,7 @@ jobs:
       # a partially completed train resumes instead of failing on duplicates.
       - name: Publish the train
         if: >-
-          ${{ (github.event_name == 'release' && env.SYNDROO_PUBLISH_ON_RELEASE == 'true') ||
+          ${{ github.event_name == 'release' ||
               (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish') }}
         env:
           DIST_TAG: ${{ steps.train.outputs.dist_tag }}
@@ -170,6 +166,5 @@ jobs:
 
       - name: Report validation-only run
         if: >-
-          ${{ !((github.event_name == 'release' && env.SYNDROO_PUBLISH_ON_RELEASE == 'true') ||
-                (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish')) }}
-        run: echo "This event validated the release train only; publishing requires an explicit opt-in."
+          ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'validate' }}
+        run: echo "Manual validation completed; publish a GitHub Release or dispatch mode=publish to publish."
