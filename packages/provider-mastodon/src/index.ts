@@ -64,7 +64,7 @@ import type {
  * Package version. Must stay identical to `package.json` `version`; the test
  * suite reads the manifest file and fails the build on drift.
  */
-export const MASTODON_PROVIDER_VERSION = "0.7.0";
+export const MASTODON_PROVIDER_VERSION = "0.7.2"; // x-release-please-version
 
 /** Provider id. Also the package-name suffix and the registry key. */
 export const MASTODON_PROVIDER_ID = "mastodon";

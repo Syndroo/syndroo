@@ -63,7 +63,7 @@ export const ACCOUNT: T.AccountIdentity = {
 export const IMPLEMENTATION: T.Implementation = {
   provider: "fake",
   packageName: "fake",
-  version: "0.7.0",
+  version: "0.7.2",
   apiVersion: 1,
   artifactFingerprint: "artifact",
   schemaFingerprint: "schema",

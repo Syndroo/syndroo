@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { promises as fs, existsSync } from "node:fs";
+import { promises as fs, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  */
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+// The version this package actually publishes, read from its own manifest so a
+// stale literal cannot pin the packed artifact to a previous release. Read
+// independently of the implementation under test.
+const CLI_VERSION = (
+  JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
+
 const OFFICIAL_IDS = ["bluesky", "devto", "linkedin", "mastodon", "threads"] as const;
 
 /** Workspaces that must be packed for the consumer to install offline. */
@@ -139,7 +149,7 @@ beforeAll(async () => {
   cliBin = path.join(consumerDir, "node_modules", "@syndroo", "cli", "dist", "bin.js");
   expect(existsSync(cliBin)).toBe(true);
 
-  const listing = spawnSync("tar", ["-tzf", path.join(packDir, "syndroo-cli-0.7.0.tgz")], {
+  const listing = spawnSync("tar", ["-tzf", path.join(packDir, `syndroo-cli-${CLI_VERSION}.tgz`)], {
     encoding: "utf8",
   });
 
@@ -224,7 +234,7 @@ describe("packaged consumer", () => {
     const version = spawnSync(process.execPath, [cliBin, "--version"], { cwd: consumerDir, encoding: "utf8", env });
 
     expect(version.status).toBe(0);
-    expect(version.stdout).toContain("0.7.0");
+    expect(version.stdout).toContain(CLI_VERSION);
     expect(version.stderr).toBe("");
 
     const help = spawnSync(process.execPath, [cliBin, "--help"], { cwd: consumerDir, encoding: "utf8", env });

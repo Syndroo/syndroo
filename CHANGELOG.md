@@ -3,6 +3,17 @@
 All notable Syndroo changes are recorded here. Releases use Semantic
 Versioning and matching `v<version>` Git tags.
 
+## 0.7.2 — 2026-11-05
+
+Stable maintenance release based on the published 0.7.0 train.
+
+- Retains the complete self-hosted Server CLI and all 0.7.0 providers.
+- Includes the post-0.7.0 Threads publish text fix and server onboarding/recovery guidance corrections.
+- Advances all eleven workspace versions and internal package pins consistently to 0.7.2, including generated provider catalogs.
+- Publishes matching provider, CLI, SDK, Server and Cloudflare Worker artifacts. No deployment is implied by this source release.
+
+For upgrade, install the matching 0.7.2 package train. See `docs/releasing.md` for release checks; the 0.7.0 historical record below remains unchanged.
+
 ## 0.7.0
 
 The architecture-v1 release train is published at `0.7.0`. It contains ten

@@ -1,5 +1,31 @@
 # Releasing Syndroo
 
+## Current release: v0.7.2
+
+The current release train has eleven source workspaces at `0.7.2` (ten public
+npm packages and private `@syndroo/core`). Publishing a non-draft GitHub Release
+from the exact `v0.7.2` tag **automatically** triggers the `release.yml`
+workflow, validates the release train, then publishes each missing package in
+its dependency order under the matching npm `latest` dist-tag. Any failed gate
+stops publishing. The workflow requires npm Trusted Publisher configured for
+`Syndroo/syndroo` and `.github/workflows/release.yml` on each public package.
+
+The manual `workflow_dispatch` route remains available with `mode=validate`
+(default; no npm publication) and `mode=publish` (publish after validation).
+GitHub tag creation alone does not publish packages; the Release must be
+**published**. A stable version must not be marked as a prerelease. npm
+publication is distinct from deploying a Cloudflare Worker or a Node server.
+
+To validate an intended publication before publishing the GitHub Release:
+
+```bash
+npm ci && npm run build && npm run check && npm test
+npm run test:scripts && npm run check:pack
+SYNDROO_CHECK_REGISTRY=true SYNDROO_RELEASE_TAG=v0.7.2 SYNDROO_RELEASE_PRERELEASE=false npm run release:train
+```
+
+### Historical publication: v0.7.0
+
 Architecture v1 is one coherent tree of eleven packages, all at `0.7.0`. The
 ten public packages are published to npm under the `latest` tag and
 `@syndroo/core` remains private. No Worker or server has been deployed. All ten public versions and their artifact integrity values were verified.
@@ -181,17 +207,22 @@ every workspace checks against, then `npm run check` type-checks the packages an
 asserts the bundle rows against real artifacts instead of reporting `PENDING`.
 `npm test`, `npm run test:scripts`, the e2e type check, `npm run e2e:local-only`,
 `npm pack --dry-run` for five public packages and `git diff --exit-code` for
-generated drift follow. The matrix is Node 24 only, because every v1 package
-requires `>=24.19.0`.
+generated drift follow. The Release Please design, the first-release
+`bootstrap-sha`, token setup and verification status are in
+[release-automation.md](release-automation.md). The matrix is Node 24 only,
+because every v1 package requires `>=24.19.0`.
 
 `.github/workflows/release.yml` validates the ten-package train and publishes
-nothing by default. Publishing requires an explicit opt-in — the repository
-variable `SYNDROO_PUBLISH_ON_RELEASE` set to the exact string `true` on a release
-event, or a manual dispatch with `mode: publish` — and the publish step walks the
-train in dependency order, skipping any package the registry already satisfies.
-The OIDC workflow cannot perform a package name's first publish; absent names
-must use the preflighted maintainer bootstrap above and receive package-level
-Trusted Publisher settings before automation is used.
+it when a GitHub Release is published from the release tag; a manual dispatch
+with `mode: publish` does the same after the gates, and `mode: validate` (the
+default) publishes nothing. The publish step walks the train in dependency
+order, skipping any package the registry already satisfies. The OIDC workflow
+cannot perform a package name's first publish; absent names must use the
+preflighted maintainer bootstrap above and receive package-level Trusted
+Publisher settings before automation is used. Release Please opens and refreshes
+the release PR from Conventional Commits on `main`; see
+[release-automation.md](release-automation.md) for the automated flow, the
+catalog refresh and the optional website notification.
 
 Release-preparation commit
 `c656b5ec999bb8363e0f63451df492b825d4ba2f` has successful Linux and macOS

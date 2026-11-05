@@ -1,0 +1,348 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "always-update": true,
+  "bootstrap-sha": "4bb57531fea9089c8bb31e5456992e1b53924aed",
+  "signoff": "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+  "packages": {
+    ".": {
+      "component": "syndroo",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "packages/provider-sdk/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-sdk'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/core/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/core'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/core/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/core']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/sdk/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/sdk'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/cli/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cli'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/cli/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cli']['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cli/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cli']['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cli/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cli']['devDependencies']['@syndroo/sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/server/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/server'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/server/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/cli']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/server']['dependencies']['@syndroo/cli']"
+        },
+        {
+          "type": "json",
+          "path": "packages/server/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/server']['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "packages/server/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/server']['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/core']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/server']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/server']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-bluesky']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-bluesky']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-threads']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-threads']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-linkedin']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-linkedin']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-mastodon']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-mastodon']"
+        },
+        {
+          "type": "json",
+          "path": "packages/cloudflare/package.json",
+          "jsonpath": "$['devDependencies']['@syndroo/provider-devto']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cloudflare']['devDependencies']['@syndroo/provider-devto']"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-bluesky/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-bluesky'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-bluesky/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-bluesky']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-threads/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-threads'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-threads/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-threads']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-linkedin/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-linkedin'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-linkedin/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-linkedin']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-mastodon/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-mastodon'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-mastodon/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-mastodon']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-devto/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-devto'].version"
+        },
+        {
+          "type": "json",
+          "path": "packages/provider-devto/package.json",
+          "jsonpath": "$['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/provider-devto']['dependencies']['@syndroo/provider-sdk']"
+        },
+        {
+          "type": "generic",
+          "path": "packages/provider-bluesky/src/index.ts"
+        },
+        {
+          "type": "generic",
+          "path": "packages/provider-devto/src/index.ts"
+        },
+        {
+          "type": "generic",
+          "path": "packages/provider-linkedin/src/index.ts"
+        },
+        {
+          "type": "generic",
+          "path": "packages/provider-mastodon/src/index.ts"
+        },
+        {
+          "type": "generic",
+          "path": "packages/provider-threads/src/index.ts"
+        }
+      ]
+    }
+  }
+}

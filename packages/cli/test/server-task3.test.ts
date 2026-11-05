@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -28,6 +28,15 @@ import {
   ThreadsCiError,
   type ThreadsCiSdk,
 } from "../src/server/threads-flow.js";
+
+// The version this package actually publishes, read from its own manifest so a
+// stale literal cannot pin the fixture to a previous release. Read independently
+// of the implementation under test, so a wrong dependency version still fails.
+const CLI_VERSION = (
+  JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 const PROJECT_ID = "f0c4f706-25a4-4df7-a84c-3b247c64abfe";
 const ORIGIN = "https://threads.example";
@@ -194,8 +203,8 @@ async function seedDeployment(
     `${JSON.stringify({
       private: true,
       dependencies: {
-        "@syndroo/cli": "0.7.0",
-        "@syndroo/cloudflare": "0.7.0",
+        "@syndroo/cli": CLI_VERSION,
+        "@syndroo/cloudflare": CLI_VERSION,
       },
       devDependencies: { wrangler: "4.132.0" },
       syndroo: { generated: true, server: 1 },
