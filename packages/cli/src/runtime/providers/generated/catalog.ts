@@ -26,7 +26,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
     "provider": "bluesky",
     "packageName": "@syndroo/provider-bluesky",
     "resolvedRoot": "packages/provider-bluesky",
-    "artifactFingerprint": "00bc38c849983bc88e670d2535f1cfc6e87a08cc3417c100be9d32158a89f8dd",
+    "artifactFingerprint": "88afdb8aba0bc80ba1929909cd79ecaeebc46d9bb140c1cd87c1734213a28977",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -79,14 +79,14 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
           "type": "object"
         }
       },
-      "version": "0.7.2"
+      "version": "0.8.0"
     }
   },
   {
     "provider": "devto",
     "packageName": "@syndroo/provider-devto",
     "resolvedRoot": "packages/provider-devto",
-    "artifactFingerprint": "935d04ee1df94f9474f1e66cff3e9c2109423dbeae3901dd65ba36e12b013a42",
+    "artifactFingerprint": "aec7e75b657274c6ab9c509c7cddb5b259a6f35c74821cd6c4c7d38bdf1bf69c",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -163,14 +163,14 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
           "type": "object"
         }
       },
-      "version": "0.7.2"
+      "version": "0.8.0"
     }
   },
   {
     "provider": "linkedin",
     "packageName": "@syndroo/provider-linkedin",
     "resolvedRoot": "packages/provider-linkedin",
-    "artifactFingerprint": "ce80fc1e663903d3ae6843100157370fac45e2adeb10e694ba2ad8692684737b",
+    "artifactFingerprint": "0d78954374ac898e19bef16550cb578e3e2ccc05d93c2e9b237a9e3a1177926d",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -274,14 +274,14 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
           "type": "object"
         }
       },
-      "version": "0.7.2"
+      "version": "0.8.0"
     }
   },
   {
     "provider": "mastodon",
     "packageName": "@syndroo/provider-mastodon",
     "resolvedRoot": "packages/provider-mastodon",
-    "artifactFingerprint": "3f723b3403e651225a10e836d0ff4abf50c3d3de5d71a194a66a9a1068c4f51b",
+    "artifactFingerprint": "d53fa7b96f6463da98592571bb75815d335e2bf950e00233469306a42e30717c",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -361,14 +361,14 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
           "type": "object"
         }
       },
-      "version": "0.7.2"
+      "version": "0.8.0"
     }
   },
   {
     "provider": "threads",
     "packageName": "@syndroo/provider-threads",
     "resolvedRoot": "packages/provider-threads",
-    "artifactFingerprint": "fe168f35f3ef5b4e6a735f0c586390ce6662d3843a494d520bae2ea11e0b99aa",
+    "artifactFingerprint": "bb3d841a776f4bb2b84287fec9bfbf88076d620642513a24c73da05adc2f1a68",
     "manifest": {
       "apiVersion": 1,
       "declaredCapabilities": [
@@ -462,7 +462,7 @@ export const BUILTIN_PROVIDER_CATALOG: readonly BuiltinProviderCatalogEntry[] = 
           "type": "object"
         }
       },
-      "version": "0.7.2"
+      "version": "0.8.0"
     }
   }
 ];
