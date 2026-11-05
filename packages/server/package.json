@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/server",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "Self-hosted Syndroo server: authenticated HTTP API, SQLite state and encrypted secrets.",
   "license": "Apache-2.0",
@@ -38,11 +38,11 @@
     "access": "public"
   },
   "dependencies": {
-    "@syndroo/cli": "0.7.2"
+    "@syndroo/cli": "0.8.0"
   },
   "devDependencies": {
-    "@syndroo/core": "0.7.2",
-    "@syndroo/provider-sdk": "0.7.2",
+    "@syndroo/core": "0.8.0",
+    "@syndroo/provider-sdk": "0.8.0",
     "@types/node": "^26.4.0",
     "esbuild": "0.28.1"
   },

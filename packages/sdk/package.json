@@ -1,6 +1,6 @@
 {
   "name": "@syndroo/sdk",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "Standalone TypeScript HTTP client for a Syndroo server. No Core or Provider imports.",
   "license": "Apache-2.0",

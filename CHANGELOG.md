@@ -3,6 +3,48 @@
 All notable Syndroo changes are recorded here. Releases use Semantic
 Versioning and matching `v<version>` Git tags.
 
+## [0.8.0](https://github.com/Syndroo/syndroo/compare/v0.7.2...v0.8.0) (2026-11-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* rebuild Syndroo on the architecture-v1 design
+* **cli:** replace public --plan execution with direct publish and retry. Dry runs are read-only; inline JSON is accepted with --data.
+
+### Features
+
+* add one-click Cloudflare deployment ([f12e6bd](https://github.com/Syndroo/syndroo/commit/f12e6bd742d56f0a6a7caed634c1b0621a85eca1))
+* add SDK-backed and native social publishers ([ec1e448](https://github.com/Syndroo/syndroo/commit/ec1e448d88f86ad698b4eb080b61519b96240c9e))
+* add Threads cross-posting ([47e2a11](https://github.com/Syndroo/syndroo/commit/47e2a11cc079ef77fa27967189cbb26d8e82fbc4))
+* agent-guided platform auth + descriptor refactor ([d8206f2](https://github.com/Syndroo/syndroo/commit/d8206f298333eeb83d45d319ea244bbda72c78f7))
+* **cli:** add CLI-first local publishing ([786a76a](https://github.com/Syndroo/syndroo/commit/786a76a9ed2575e45f329c9d8c67361f94e40c13))
+* **cli:** add local connections and five-provider publishing ([f961d8d](https://github.com/Syndroo/syndroo/commit/f961d8d14c088276c919a70f3dfb0031a0ac47f4))
+* **cli:** add the syndroo command ([9c481e9](https://github.com/Syndroo/syndroo/commit/9c481e9921db3287c8424799c96c154bca5c3df1))
+* **cli:** publish directly from document input ([292853b](https://github.com/Syndroo/syndroo/commit/292853b21a7535014642bd043610744ed74c3469))
+* **cli:** ship the official Syndroo Skill with the CLI ([fdef5ec](https://github.com/Syndroo/syndroo/commit/fdef5ec9fd3f7924ee4fe1571d1e82fa2b3ed3c6))
+* **cli:** unify publication output and frozen confirmation ([56d0e2f](https://github.com/Syndroo/syndroo/commit/56d0e2f28065c1def17481e2e1121f5a9811af77))
+* initialize Syndroo publishing pipeline ([c52686d](https://github.com/Syndroo/syndroo/commit/c52686d16da5c8bd649e4aaa3c736f1edcbbadb7))
+* prepare 0.7.0 npm release and server onboarding ([c656b5e](https://github.com/Syndroo/syndroo/commit/c656b5ec999bb8363e0f63451df492b825d4ba2f))
+* prepare v0.2.0 release candidate ([87ba42b](https://github.com/Syndroo/syndroo/commit/87ba42b5e8bc4ad8b79b8e91e0b295c0238c8543))
+* prepare versioned Worker package ([18aac24](https://github.com/Syndroo/syndroo/commit/18aac245d986f7ad5cacbf5e396343adac36392e))
+* rebuild Syndroo on the architecture-v1 design ([780478b](https://github.com/Syndroo/syndroo/commit/780478b24659f6f371ba323a7c6eb2d9caaab481))
+* **release:** add local pack and global install scripts ([edb1422](https://github.com/Syndroo/syndroo/commit/edb1422f98fb177d70dd0eba23310683bb4440ae))
+* **release:** gate the release train and add the E2E entry points ([d03c1c5](https://github.com/Syndroo/syndroo/commit/d03c1c554717a58e491ad9bc0d30bf02bd1c0da2))
+* **sdk:** add the public @syndroo/sdk HTTP client ([14f66be](https://github.com/Syndroo/syndroo/commit/14f66be764dd3eb5959b8919795f9628258d2b5a))
+* **threads:** enable Worker OAuth and scoped CI publishing ([c606a64](https://github.com/Syndroo/syndroo/commit/c606a64f0b0113612be6f2dc3fac037a7394c74a))
+
+
+### Bug Fixes
+
+* **build:** put cli before server and build before check ([ff5a50b](https://github.com/Syndroo/syndroo/commit/ff5a50bcf623d913a80533b5ec40f44d2f27bf57))
+* **cli:** clarify server onboarding and deployment recovery ([#5](https://github.com/Syndroo/syndroo/issues/5)) ([e33a2b6](https://github.com/Syndroo/syndroo/commit/e33a2b61d2ed32db06dd18b8a9ab7eb69b34eda1))
+* **cli:** pass Threads publish text to provider options ([#4](https://github.com/Syndroo/syndroo/issues/4)) ([c78d933](https://github.com/Syndroo/syndroo/commit/c78d9334d850f193a1fd2784c4d2099e598e424d))
+* **deps:** record the server's esbuild dev dependency in the lockfile ([c098be8](https://github.com/Syndroo/syndroo/commit/c098be86c10393e47f723eb6a5c6cc5d78119e31))
+* **devto:** send a User-Agent so DEV.to stops answering 403 ([5016c1e](https://github.com/Syndroo/syndroo/commit/5016c1e6197e99c264c3ef456394971ce49b6ecb))
+* recover missing D1 during deployment ([e6fe7df](https://github.com/Syndroo/syndroo/commit/e6fe7df698f728c17262b5a24dc0a7da81bc404e))
+* **release:** keep inlined workspace packages out of runtime deps ([f48c8f6](https://github.com/Syndroo/syndroo/commit/f48c8f634aafa2c8e3ef2c394759bc697851387e))
+* require Node.js 22 for Wrangler ([809d056](https://github.com/Syndroo/syndroo/commit/809d056628c896d0e4de03a4a6d00bd4ad390cde))
+
 ## 0.7.2 — 2026-11-05
 
 Stable maintenance release based on the published 0.7.0 train.
